@@ -11,3 +11,8 @@ eval_bundle/
 # Local setup
 CLAUDE.md
 wandb/
+*.egg-info/
+nanochat/modeling_nanomoe_gpt.py
+nanochat/configuration_nanomoe_gpt2.py
+scripts/nanoMoE_train.py
+nanochat/gpt2.py
