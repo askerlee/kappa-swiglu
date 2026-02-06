@@ -13,7 +13,6 @@ Notable features:
 """
 
 import math
-import inspect
 from contextlib import nullcontext
 
 import torch
@@ -26,15 +25,10 @@ try:
 except ImportError:
     from manager import MANAGER
 from transformers.activations import SiLUActivation
-from transformers.modeling_outputs import CausalLMOutputWithPast
-try:
-    from .configuration_nanomoe_gpt import GPTConfig
-except ImportError:
-    from configuration_nanomoe_gpt import GPTConfig
-
-from functools import partial
-from dataclasses import dataclass
-import inspect
+from nanochat.common import get_dist_info, print0
+from nanochat.optim import MuonAdamW, DistMuonAdamW
+# Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
+from nanochat.flash_attention import flash_attn
 
 # Revised from RevGrad, by removing the grad negation.
 class ScaleGrad(torch.autograd.Function):
@@ -85,12 +79,6 @@ def gen_gradient_scaler(alpha, debug=False):
         assert alpha == 0
         # Don't use lambda function here, otherwise the object can't be pickled.
         return torch.detach
-
-from nanochat.common import get_dist_info, print0
-from nanochat.optim import MuonAdamW, DistMuonAdamW
-
-# Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
-from nanochat.flash_attention import flash_attn
 
 def norm(x):
     # Purely functional rmsnorm with no learnable params
@@ -1081,14 +1069,7 @@ class GPT(nn.Module):
             # To debug router z loss, we need the properly weighted, un-detached loss to do manual backward.
             self.debug_losses(losses, losses_to_debug=[self.config.router_z_loss_weight * router_z_loss])
 
-        # HuggingFace return format
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=None,
-            hidden_states=None,
-            attentions=None,
-        )
+        return loss, losses
 
     # Revised from collect_grad_stats().
     def debug_losses(self, losses, losses_to_debug=[]):
