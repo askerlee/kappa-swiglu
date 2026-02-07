@@ -18,13 +18,12 @@ import json
 import time
 import math
 import argparse
-from dataclasses import asdict
 from contextlib import nullcontext, contextmanager
 
 import wandb
 import torch
 
-from nanochat.gpt import GPT, GPTConfig
+from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -33,7 +32,10 @@ from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FA3
 from scripts.base_eval import evaluate_core
-print_banner()
+from nanochat.configuration_nanomoe_gpt import GPTConfig
+from nanochat.manager import MANAGER
+
+# print_banner()
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -46,15 +48,18 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
 # Model architecture
-parser.add_argument("--depth", type=int, default=20, help="depth of the Transformer model")
-parser.add_argument("--aspect-ratio", type=int, default=64, help="model_dim = depth * aspect_ratio")
+parser.add_argument("--depth", type=int, default=8, help="depth of the Transformer model")
+parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
+parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
+parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
+parser.add_argument("--aspect-ratio", type=int, default=128, help="model_dim = depth * aspect_ratio")
 parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention")
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--window-pattern", type=str, default="SSSL", help="sliding window pattern tiled across layers: L=full, S=half context (e.g. 'SSL')")
 # Training horizon (only one used, in order of precedence)
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
-parser.add_argument("--target-param-data-ratio", type=float, default=10.5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
+parser.add_argument("--target-param-data-ratio", type=float, default=20, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 # Optimization
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
@@ -78,6 +83,9 @@ parser.add_argument("--sample-every", type=int, default=2000, help="sample from 
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
+parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
+parser.add_argument("--log-interval", type=int, default=100, help="interval (in steps) for logging grad stats")
+
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
@@ -126,12 +134,16 @@ def build_model_meta(depth):
     """Build a model on meta device for a given depth (shapes/dtypes only, no data)."""
     # Model dim is nudged up to nearest multiple of head_dim for clean division
     # (FA3 requires head_dim divisible by 8, and this guarantees head_dim == args.head_dim exactly)
-    base_dim = depth * args.aspect_ratio
+    base_dim = depth * args.aspect_ratio    # 8 * 128 = 1024 for depth=8
+    # (1024 + 128 - 1) // 128 = 8; 8 * 128 = 1024
     model_dim = ((base_dim + args.head_dim - 1) // args.head_dim) * args.head_dim
+    # 1024 // 128 = 8 heads
     num_heads = model_dim // args.head_dim
     config = GPTConfig(
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
-        n_layer=depth, n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
+        n_layer=depth, moe_start_layer=args.moe_start_layer,
+        n_exp=args.n_exp, moe_top_k=args.moe_top_k,
+        n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
     )
     with torch.device("meta"):
@@ -141,7 +153,7 @@ def build_model_meta(depth):
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
-model_config_kwargs = asdict(model_config)
+model_config_kwargs = vars(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
 model.to_empty(device=device) # 2) All tensors get storage on target device but with uninitialized (garbage) data
 model.init_weights() # 3) All tensors get initialized
@@ -246,6 +258,8 @@ param_counts = model.num_scaling_params()
 print0(f"Parameter counts:")
 for key, value in param_counts.items():
     print0(f"{key:24s}: {value:,}")
+active_param_count = model.get_num_active_params(args.n_exp, args.moe_top_k)
+print0(f"Active parameters: {active_param_count:,}")
 num_params = param_counts['total']
 num_flops_per_token = model.estimate_flops()
 print0(f"Estimated FLOPs per token: {num_flops_per_token:e}")
@@ -362,6 +376,90 @@ def get_muon_momentum(it):
 def get_weight_decay(it):
     return weight_decay_scaled * (1 - it / num_iterations)
 
+
+def collect_grad_stats(model, losses, moe_start_layer, n_layer):
+    router_grad_norms = []
+    router_grad_self_alignments = []
+    router_weight_exp_alignments = []
+    exp_gate_grad_norms = []
+    expert_utilities = losses.get('expert_utilities', None)
+    selected_scores = losses.get('selected_scores', None)
+
+    for i in range(moe_start_layer, n_layer):
+        layer = model.transformer.h[i]
+        if hasattr(layer.mlp, 'experts'):
+            # [n_exp, hidden_size]
+            router_gate_grad = layer.mlp.router.w_g.weight.grad
+            router_grad_norm = router_gate_grad.norm(dim=1)
+            router_grad_norms.append(router_grad_norm)
+            losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
+            exp_gate_grad = layer.mlp.experts.gate_proj.grad
+            exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+            exp_gate_grad_norms.append(exp_gate_grad_norm)
+            losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
+
+            # Compute router grad - router weight alignment
+            # Compute router expert - gate weight alignment
+            with torch.no_grad():
+                router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                # Compute the cosine similarity between router weights and router weight grads.
+                # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
+                # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
+                # and negative when it moves against w (tends to decrease ||w||). 
+                rg_rw_alignment = -(router_gate_grad * router_weight).sum(dim=1) / (
+                    router_weight.norm(dim=1) * router_gate_grad.norm(dim=1) + 1e-10
+                )  # [n_exp]
+                router_grad_self_alignments.append(rg_rw_alignment)
+                mean_rg_rw_alignment = rg_rw_alignment.mean().item()
+                losses[f'router_grad_self_alignment_{i}'] = mean_rg_rw_alignment
+
+                # No negative sign here since these are weights, not gradients.
+                rw_ew_alignment = (exp_gate_mean_weight * router_weight).sum(dim=1) / \
+                        (router_weight.norm(dim=1) * (exp_gate_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
+                router_weight_exp_alignments.append(rw_ew_alignment)
+                mean_rw_ew_alignment = rw_ew_alignment.mean().item()
+                losses[f'router_weight_exp_alignment_{i}'] = mean_rw_ew_alignment
+
+                if expert_utilities is not None:
+                    # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
+                    exp_utilities = expert_utilities[i - moe_start_layer]  # [n_exp]
+                    half_experts = exp_utilities.shape[0] // 2
+                    top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
+                    bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
+
+                    top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
+                    bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
+                    losses[f'router_grad_self_alignment_top_{i}']    = top_rg_rw_alignment
+                    losses[f'router_grad_self_alignment_bottom_{i}'] = bottom_rg_rw_alignment
+
+                    top_rw_ew_alignment    = rw_ew_alignment[top_indices].mean().item()
+                    bottom_rw_ew_alignment = rw_ew_alignment[bottom_indices].mean().item()
+                    losses[f'router_weight_exp_alignment_top_{i}']    = top_rw_ew_alignment
+                    losses[f'router_weight_exp_alignment_bottom_{i}'] = bottom_rw_ew_alignment
+
+                    top_router_grad_norm    = router_grad_norm[top_indices].mean().item()
+                    bottom_router_grad_norm = router_grad_norm[bottom_indices].mean().item()
+                    losses[f'router_grad_norm_top_{i}']    = top_router_grad_norm
+                    losses[f'router_grad_norm_bottom_{i}'] = bottom_router_grad_norm
+
+                    if selected_scores is not None:
+                        # selected_scores: Tensor of shape (num_moe_layers, n_exp)
+                        layer_selected_scores = selected_scores[i - moe_start_layer]  # [n_exp]
+                        top_selected_scores    = layer_selected_scores[top_indices].mean().item()
+                        bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
+                        losses[f'selected_scores_top_{i}']    = top_selected_scores
+                        losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
+
+    router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
+    losses['router_grad_norms'] = router_grad_norms
+    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
+    losses['router_grad_self_alignments'] = router_grad_self_alignments
+    router_weight_exp_alignments = torch.stack(router_weight_exp_alignments, dim=0) if router_weight_exp_alignments else None
+    losses['router_weight_exp_alignments'] = router_weight_exp_alignments
+    exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
+    losses['exp_gate_grad_norms'] = exp_gate_grad_norms
+
 # -----------------------------------------------------------------------------
 # Loop state (variables updated by the training loop)
 
@@ -469,6 +567,7 @@ while True:
     if last_step:
         break
 
+    MANAGER.collect_load_balancing_stats = (step % args.log_interval == 0)
     # -------------------------------------------------------------------------
     # single training step
     # evaluate the gradient
@@ -477,10 +576,14 @@ while True:
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
             loss, losses = model(x, y)
-        train_loss = loss.detach() # for logging
+        train_loss = losses['ntp_loss'] # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+
+    if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
+        collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
+    
     # step the optimizer
     lrm = get_lr_multiplier(step)
     muon_momentum = get_muon_momentum(step)
@@ -500,6 +603,7 @@ while True:
 
     # logging (CPU action only)
     ema_beta = 0.9 # EMA decay factor for some smoothing just for nicer logging
+    # We don't do EMA on other types of losses (e.g. router ortho loss). Just the main NTP loss.
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f # EMA the training loss
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1)) # debias the EMA
     pct_done = 100 * step / num_iterations
@@ -519,18 +623,48 @@ while True:
         eta_str = ""
     epoch = dataloader_state_dict["epoch"]
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
-    if step % 100 == 0:
+    if step % args.log_interval == 0:
         log_data = {
             "step": step,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "train/loss": debiased_smooth_loss,
+            "train/aux_loss_step": losses['aux_loss'],
+            "train/router_z_loss_step": losses['router_z_loss'],
+            "train/router_ortho_loss_step": losses['router_ortho_loss'],
+            "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
+            "train/gate_output_loss_step": losses['gate_output_loss'],
+            "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
             "train/mfu": mfu,
             "train/epoch": epoch,
         }
+        drop_rates = losses['drop_rate_per_ks']
+        if drop_rates is not None:
+            if len(drop_rates) >= 1:
+                log_data["inspect/drop_rate_0_step"] = drop_rates[0]
+            if len(drop_rates) >= 2:
+                log_data["inspect/drop_rate_1_step"] = drop_rates[1]
+        for i in range(args.moe_start_layer, args.depth):
+            if f'router_grad_norm_top_{i}' in losses:
+                log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
+            if f'router_grad_norm_bottom_{i}' in losses:
+                log_data.update({f"inspect/router_grad_norm_bottom_{i}": losses[f'router_grad_norm_bottom_{i}']})
+            if f'router_grad_self_alignment_top_{i}' in losses:
+                log_data.update({f"inspect/router_grad_self_alignment_top_{i}": losses[f'router_grad_self_alignment_top_{i}']})
+            if f'router_grad_self_alignment_bottom_{i}' in losses:
+                log_data.update({f"inspect/router_grad_self_alignment_bottom_{i}": losses[f'router_grad_self_alignment_bottom_{i}']})
+            if f'router_weight_exp_alignment_top_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_alignment_top_{i}": losses[f'router_weight_exp_alignment_top_{i}']})
+            if f'router_weight_exp_alignment_bottom_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_alignment_bottom_{i}": losses[f'router_weight_exp_alignment_bottom_{i}']})
+            if f'selected_scores_top_{i}' in losses:
+                log_data.update({f"inspect/selected_scores_top_{i}": losses[f'selected_scores_top_{i}']})
+            if f'selected_scores_bottom_{i}' in losses:
+                log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
+                        
         wandb_run.log(log_data)
 
     # state update

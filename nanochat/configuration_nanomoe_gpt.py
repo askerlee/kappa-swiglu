@@ -5,15 +5,14 @@ Configuration class for NanoMoE GPT models.
 from transformers import PretrainedConfig
 
 
-class GPTConfig(PretrainedConfig):
-    model_type = "nanomoe_gpt"
-    
+class GPTConfig:    
     def __init__(
         self,
-        block_size: int = 2048,
+        sequence_len: int = 2048,
         vocab_size: int = 50304,  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-        n_layer: int = 10,
+        n_layer: int = 8,
         n_head: int = 12,
+        n_kv_head: int = None,  # if None, n_kv_head = n_head
         n_embd: int = 768,
         # MoE-related configs
         n_exp: int = 32,  # if n_exp = 1 we just use regular MLP layers
@@ -44,21 +43,17 @@ class GPTConfig(PretrainedConfig):
         switch_tfm_init_scale: float = 1.0,
         router_use_full_prec: bool = False,  # use float32 precision in the router
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
+        # Sliding window attention pattern string, tiled across layers. Final layer always L.
+        # Characters: L=long (full context), S=short (half context)
+        # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
+        window_pattern: str = "SSSL",
         **kwargs,
-    ):
-        # Set auto_map for trust_remote_code loading before calling super().__init__
-        if "auto_map" not in kwargs:
-            kwargs["auto_map"] = {
-                "AutoConfig": "configuration_nanomoe_gpt.GPTConfig",
-                "AutoModelForCausalLM": "modeling_nanomoe_gpt.GPT"
-            }
-        
-        super().__init__(**kwargs)
-        
-        self.block_size = block_size
+    ):        
+        self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
         self.n_head = n_head
+        self.n_kv_head = n_kv_head if n_kv_head is not None else n_head
         self.n_embd = n_embd
         self.num_hidden_layers = n_layer    # For compatibility with lm-eval
         self.num_attention_heads = n_head   # For compatibility with lm-eval
@@ -89,3 +84,5 @@ class GPTConfig(PretrainedConfig):
         self.switch_tfm_init_scale = switch_tfm_init_scale
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
+        self.window_pattern = window_pattern
+        

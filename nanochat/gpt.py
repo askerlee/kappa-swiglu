@@ -572,7 +572,7 @@ class MOELayer(nn.Module):
         gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
 
         # Filter router probabilities for valid assignments
-        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1)
+        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x.dtype)
 
         # Weight the expert outputs by the router probabilities
         weighted_outputs = gated_expert_outputs * valid_router_probs
@@ -775,22 +775,6 @@ class GPT(nn.Module):
             torch.nn.init.uniform_(block.attn.c_k.weight, -s, s)
             torch.nn.init.uniform_(block.attn.c_v.weight, -s, s)
             torch.nn.init.zeros_(block.attn.c_proj.weight) # projections are zero
-            
-            torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
-            torch.nn.init.zeros_(block.mlp.c_proj.weight)
-
-        # Per-layer scalars
-        self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
-        self.x0_lambdas.fill_(0.1)      # 0.1 => small initial weight for skip connection to input embedding
-
-        # Value embeddings (init like c_v: uniform with same std)
-        for ve in self.value_embeds.values():
-            torch.nn.init.uniform_(ve.weight, -s, s)
-
-        # Gate weights init to zero so gates start at sigmoid(0) = 0.5, scaled by 2 -> 1.0 (neutral)
-        for block in self.transformer.h:
-            if block.attn.ve_gate is not None:
-                torch.nn.init.zeros_(block.attn.ve_gate.weight)
 
             if isinstance(block.mlp, MLP):
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
@@ -805,6 +789,19 @@ class GPT(nn.Module):
                     # Ordinary MLPExperts doesn't have gate_proj.
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
+            
+        # Per-layer scalars
+        self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
+        self.x0_lambdas.fill_(0.1)      # 0.1 => small initial weight for skip connection to input embedding
+
+        # Value embeddings (init like c_v: uniform with same std)
+        for ve in self.value_embeds.values():
+            torch.nn.init.uniform_(ve.weight, -s, s)
+
+        # Gate weights init to zero so gates start at sigmoid(0) = 0.5, scaled by 2 -> 1.0 (neutral)
+        for block in self.transformer.h:
+            if block.attn.ve_gate is not None:
+                torch.nn.init.zeros_(block.attn.ve_gate.weight)
 
         # Per-layer scalars
         with torch.no_grad():
@@ -1201,7 +1198,7 @@ class GPT(nn.Module):
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.sequence_len
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
