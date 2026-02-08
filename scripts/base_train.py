@@ -400,7 +400,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
             # Compute router grad - router weight alignment
             # Compute router expert - gate weight alignment
-            with torch.no_grad():
+            with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
                 exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.

@@ -288,7 +288,7 @@ class MuonAdamW(torch.optim.Optimizer):
         # Copy back to original params
         torch._foreach_copy_(params, list(stacked_params.unbind(0)))
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def step(self):
         for group in self.param_groups:
             if group['kind'] == 'adamw':
@@ -515,7 +515,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 # Muon: copy from stacked buffer back to individual params
                 torch._foreach_copy_(info["params"], list(info["stacked_params"][:len(info["params"])].unbind(0)))
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def step(self):
         rank = dist.get_rank()
         world_size = dist.get_world_size()
