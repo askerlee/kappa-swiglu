@@ -515,7 +515,7 @@ while True:
         with disable_fp8(model), autocast_ctx:
             # val_bpb: Compute summed loss over targets, but normalize by the number of bytes 
             # of the target text, not tokens.
-            val_bpb, ppl = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+            val_bpb, ntp_loss = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -525,7 +525,7 @@ while True:
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
-            "val/loss": ppl,
+            "val/loss": ntp_loss,
         })
         model.train()
 

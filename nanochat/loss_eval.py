@@ -9,7 +9,7 @@ import torch.distributed as dist
 def evaluate_bpb(model, batches, steps, token_bytes):
     """
     Instead of the naive 'mean loss', this function returns the bits per byte (bpb)
-    and a traditional per-token perplexity (ppl).
+    and a traditional ntp loss.
     which is a tokenization vocab size-independent metric, meaning you are still comparing
     apples:apples if you change the vocab size. The way this works is that instead of just
     calculating the average loss as usual, you calculate the sum loss, and independently
@@ -71,5 +71,5 @@ def evaluate_bpb(model, batches, steps, token_bytes):
         return float('inf'), float('inf')
     avg_nats_per_byte = total_nats / total_bytes
     bpb = avg_nats_per_byte / math.log(2)
-    ppl = float('inf') if total_tokens == 0 else math.exp(total_nats / total_tokens)
-    return bpb, ppl
+    ntp_loss = float('inf') if total_tokens == 0 else total_nats / total_tokens
+    return bpb, ntp_loss
