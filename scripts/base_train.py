@@ -513,6 +513,8 @@ while True:
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with disable_fp8(model), autocast_ctx:
+            # val_bpb: Compute summed loss over targets, but normalize by the number of bytes 
+            # of the target text, not tokens.
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
@@ -655,7 +657,7 @@ while True:
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
-            "train/loss": debiased_smooth_loss,
+            "train/loss_step": debiased_smooth_loss,
             "train/aux_loss_step": losses['aux_loss'],
             "train/router_z_loss_step": losses['router_z_loss'],
             "train/router_ortho_loss_step": losses['router_ortho_loss'],
