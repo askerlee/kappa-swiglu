@@ -672,11 +672,11 @@ while True:
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/gate_output_loss_step": losses['gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
-            "train/lrm": lrm,
-            "train/dt": dt,
-            "train/tok_per_sec": tok_per_sec,
-            "train/mfu": mfu,
-            "train/epoch": epoch,
+            "lrm": lrm,
+            "dt": dt,
+            "tok_per_sec": tok_per_sec,
+            "mfu": mfu,
+            "epoch": epoch,
         }
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
