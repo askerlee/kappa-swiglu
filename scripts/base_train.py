@@ -541,7 +541,7 @@ while True:
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
             "val/loss": ntp_loss,
-        })
+        }, step=step)
         model.train()
 
     # once in a while: estimate the CORE metric (all ranks participate)
@@ -559,7 +559,7 @@ while True:
             "total_training_flops": flops_so_far,
             "core_metric": results["core_metric"],
             "centered_results": results["centered_results"],
-        })
+        }, step=step)
         model.train()
 
     # once in a while: sample from the model (only on master process)
@@ -710,7 +710,7 @@ while True:
             if f'selected_scores_bottom_{i}' in losses:
                 log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
                         
-        wandb_run.log(log_data)
+        wandb_run.log(log_data, step=step)
 
     # state update
     first_step_of_run = (step == 0) or (resuming and step == args.resume_from_step)
