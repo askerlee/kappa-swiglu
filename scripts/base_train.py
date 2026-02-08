@@ -107,6 +107,11 @@ else:
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe", name=args.run, config=user_config)
+# logging
+if not use_dummy_wandb:
+    wandb.define_metric("tokens_seen")
+    wandb.define_metric("train/*", step_metric="tokens_seen")
+    wandb.define_metric("val/*", step_metric="tokens_seen")
 
 # Flash Attention status
 if HAS_FA3:
@@ -499,7 +504,8 @@ else:
 # Training loop
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
-    flops_so_far = num_flops_per_token * total_batch_size * step
+    tokens_seen = total_batch_size * step
+    flops_so_far = num_flops_per_token * tokens_seen
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
@@ -513,6 +519,7 @@ while True:
             min_val_bpb = val_bpb
         wandb_run.log({
             "step": step,
+            "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
@@ -530,6 +537,7 @@ while True:
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
         wandb_run.log({
             "step": step,
+            "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "core_metric": results["core_metric"],
             "centered_results": results["centered_results"],
@@ -644,6 +652,7 @@ while True:
     if step % args.log_interval == 0:
         log_data = {
             "step": step,
+            "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "train/loss": debiased_smooth_loss,
