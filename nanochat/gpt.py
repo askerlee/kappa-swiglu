@@ -477,12 +477,7 @@ class Qwen3MLPExperts(nn.Module):
             # padded elements when computing the mean.
             gate_out_gs = torch.bmm(self.grad_scaler(x), self.gate_proj)
             gate_output_losses = (gate_out_gs ** 2).mean(dim=-1) # [n_exp, capacity]
-            # Filter out zero elements.
-            nonzero_mask = gate_output_losses > 0
-            if nonzero_mask.sum() > 0:
-                self.gate_output_loss = gate_output_losses[nonzero_mask].mean()
-            else:
-                self.gate_output_loss = torch.tensor(0.0, device=x.device)
+            self.gate_output_loss = gate_output_losses.mean()
 
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
@@ -513,7 +508,8 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     @torch._dynamo.disable
-    def _build_expert_inputs(self, valid_mask, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
+    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
+        valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
@@ -571,9 +567,8 @@ class MOELayer(nn.Module):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
-        valid_mask = flat_rank < exp_capacity
         self._build_expert_inputs(
-            valid_mask, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs
+            x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs
         )
 
         # --- Run experts ---
