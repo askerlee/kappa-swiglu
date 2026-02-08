@@ -236,7 +236,7 @@ class MuonAdamW(torch.optim.Optimizer):
         Muon update for all params in the group (stacked for efficiency).
         Lazy init the state, fill in all 0-D tensors, call the fused kernel.
         """
-        params: list[Tensor] = group['params']
+        params: list[Tensor] = [p for p in group['params'] if p.grad is not None]
         if not params:
             return
 
