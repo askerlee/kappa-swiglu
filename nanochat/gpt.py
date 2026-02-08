@@ -511,16 +511,36 @@ class MOELayer(nn.Module):
         self.use_gate_output_loss = config.use_gate_output_loss
         # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
         self.grad_scaler = gen_gradient_scaler(0.1) 
+        # Reusable expert input buffer to avoid per-step allocations.
+        self.register_buffer("_expert_input_buffer", torch.empty(0), persistent=False)
 
     @torch._dynamo.disable
-    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
+    def _get_expert_input_buffer(self, exp_capacity: int, x_flat: torch.Tensor) -> torch.Tensor:
+        buf = self._expert_input_buffer
+        need_new = (
+            buf.numel() == 0
+            or buf.device != x_flat.device
+            or buf.dtype != x_flat.dtype
+            or buf.size(0) != self.n_exp
+            or buf.size(2) != x_flat.size(1)
+            or buf.size(1) < exp_capacity
+        )
+        if need_new:
+            new_capacity = exp_capacity if buf.numel() == 0 else max(exp_capacity, buf.size(1))
+            buf = torch.empty(
+                self.n_exp, new_capacity, x_flat.size(1), device=x_flat.device, dtype=x_flat.dtype
+            )
+            self._expert_input_buffer = buf
+        return buf
+
+    @torch._dynamo.disable
+    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_input_buffer):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
-        expert_inputs = torch.zeros(
-            self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
-        )
+        expert_inputs = expert_input_buffer[:, :exp_capacity, :]
+        expert_inputs.zero_()
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
         return expert_inputs
 
@@ -573,8 +593,9 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
+        expert_input_buffer = self._get_expert_input_buffer(exp_capacity, x_flat)
         expert_inputs = self._build_expert_inputs(
-            x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
+            x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_input_buffer
         )
 
         # --- Run experts ---
