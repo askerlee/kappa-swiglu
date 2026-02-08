@@ -520,6 +520,23 @@ class MOELayer(nn.Module):
         valid_ranks = flat_rank[valid_mask]
         return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks
 
+    @torch._dynamo.disable
+    def _dispatch_expert_inputs(self, x_flat, valid_token_indices, valid_expert_indices, valid_ranks, exp_capacity):
+        expert_inputs = torch.zeros(
+            self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
+        )
+        expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
+        return expert_inputs
+
+    @torch._dynamo.disable
+    def _combine_expert_outputs(self, x_flat, expert_outputs, valid_expert_indices, valid_ranks, valid_token_indices, valid_mask, router_probs):
+        output_flat = torch.zeros_like(x_flat)
+        gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
+        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x_flat.dtype)
+        weighted_outputs = gated_expert_outputs * valid_router_probs
+        output_flat.scatter_add_(0, valid_token_indices.unsqueeze(1).expand_as(weighted_outputs), weighted_outputs)
+        return output_flat
+
     def forward(self, x: torch.Tensor):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
@@ -549,7 +566,6 @@ class MOELayer(nn.Module):
 
         # --- Dispatch tokens to experts (the "scatter" part) ---
         exp_capacity = self.router.get_capacity(B * T)
-        expert_inputs = torch.zeros(self.n_exp, exp_capacity, C, dtype=x.dtype, device=x.device)
 
         # Get the indices for the valid assignments that are within capacity
         flat_top_k_indices = top_k_indices.view(-1)
@@ -559,14 +575,11 @@ class MOELayer(nn.Module):
         valid_mask, valid_token_indices, valid_expert_indices, valid_ranks = self._select_valid(
             flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
         )
-
+        # Use advanced indexing to place tokens from the flattened input into the expert buffer.
+        expert_inputs = self._dispatch_expert_inputs(
+            x_flat, valid_token_indices, valid_expert_indices, valid_ranks, exp_capacity
+        )
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
-
-        # Use advanced indexing to place tokens from the flattened input into the expert buffer
-        # x_flat[valid_token_indices] includes multiple copies of the same token,
-        # each sent to one of its top-k experts.
-        # valid_ranks: position within the expert's capacity buffer.
-        expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
@@ -577,20 +590,15 @@ class MOELayer(nn.Module):
             self.experts.gate_output_loss = 0  # reset for next step
 
         # --- Combine expert outputs (the "gather" part) ---
-        output_flat = torch.zeros_like(x_flat)
-
-        # Retrieve the expert outputs using the same valid indices
-        gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
-
-        # Filter router probabilities for valid assignments
-        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x.dtype)
-
-        # Weight the expert outputs by the router probabilities
-        weighted_outputs = gated_expert_outputs * valid_router_probs
-
-        # Use scatter_add_ to combine outputs for tokens sent to multiple experts (k > 1)
-        # This adds the weighted outputs back to their original token positions in the flattened output tensor.
-        output_flat.scatter_add_(0, valid_token_indices.unsqueeze(1).expand_as(weighted_outputs), weighted_outputs)
+        output_flat = self._combine_expert_outputs(
+            x_flat,
+            expert_outputs,
+            valid_expert_indices,
+            valid_ranks,
+            valid_token_indices,
+            valid_mask,
+            router_probs,
+        )
 
         # Reshape output back to the original input shape
         return output_flat.view(B, T, C)
