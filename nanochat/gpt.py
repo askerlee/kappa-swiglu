@@ -573,7 +573,7 @@ class MOELayer(nn.Module):
                 x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
             )
         )
-        self._mark_dynamic_valid_ranks(valid_ranks)
+        self._mark_dynamic_valid_ranks(valid_ranks, valid_expert_indices, valid_token_indices, valid_mask)
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
         # --- Run experts ---
@@ -611,8 +611,17 @@ class MOELayer(nn.Module):
         MANAGER.add("expert_utilities", expert_utilities.detach())
 
     @torch._dynamo.disable
-    def _mark_dynamic_valid_ranks(self, valid_ranks: torch.Tensor) -> None:
+    def _mark_dynamic_valid_ranks(
+        self,
+        valid_ranks: torch.Tensor,
+        valid_expert_indices: torch.Tensor,
+        valid_token_indices: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> None:
         torch._dynamo.mark_dynamic(valid_ranks, 0)
+        torch._dynamo.mark_dynamic(valid_expert_indices, 0)
+        torch._dynamo.mark_dynamic(valid_token_indices, 0)
+        torch._dynamo.mark_dynamic(valid_mask, 0)
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
