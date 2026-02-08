@@ -513,20 +513,16 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     @torch._dynamo.disable
-    def _select_valid(self, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
+    def _select_valid_and_dispatch(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
-        return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks
-
-    @torch._dynamo.disable
-    def _dispatch_expert_inputs(self, x_flat, valid_token_indices, valid_expert_indices, valid_ranks, exp_capacity):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
-        return expert_inputs
+        return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks, expert_inputs
 
     @torch._dynamo.disable
     def _combine_expert_outputs(self, x_flat, expert_outputs, valid_expert_indices, valid_ranks, valid_token_indices, valid_mask, router_probs):
@@ -572,12 +568,10 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
-        valid_mask, valid_token_indices, valid_expert_indices, valid_ranks = self._select_valid(
-            flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
-        )
-        # Use advanced indexing to place tokens from the flattened input into the expert buffer.
-        expert_inputs = self._dispatch_expert_inputs(
-            x_flat, valid_token_indices, valid_expert_indices, valid_ranks, exp_capacity
+        valid_mask, valid_token_indices, valid_expert_indices, valid_ranks, expert_inputs = (
+            self._select_valid_and_dispatch(
+                x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
+            )
         )
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
