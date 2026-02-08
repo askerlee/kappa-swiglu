@@ -51,6 +51,10 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
+parser.add_argument("--router-ortho-loss-weight", type=float, default=0.01, help="weight for router orthogonality loss")
+parser.add_argument("--gate-output-loss-weight", type=float, default=0.0001, help="weight for gate output regularization loss")
+parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
+parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
 parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention")
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
@@ -155,6 +159,10 @@ def build_model_meta(depth):
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, moe_start_layer=args.moe_start_layer,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
+        router_ortho_loss_weight=args.router_ortho_loss_weight,
+        gate_output_loss_weight=args.gate_output_loss_weight,
+        experts_ortho_loss_weight=args.experts_ortho_loss_weight,
+        router_z_loss_weight=args.router_z_loss_weight,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
     )
