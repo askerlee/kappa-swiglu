@@ -19,6 +19,7 @@ import time
 import math
 import argparse
 from contextlib import nullcontext, contextmanager
+import re
 
 import wandb
 import torch
@@ -40,8 +41,6 @@ from nanochat.manager import MANAGER
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
-# Logging
-parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 # FP8 training
@@ -105,8 +104,16 @@ else:
     gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
 
 # wandb logging init
-use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe", name=args.run, config=user_config)
+use_dummy_wandb = args.model_tag is None or not master_process
+ckpt_prefix2 = args.model_tag
+if args.resume_from_step != -1:
+    mat = re.search(r"(\d+)$", str(args.resume_from_step).rstrip('/'))
+    if mat:
+        ckpt_prefix2 += f"-resume{mat.group(1)}"
+
+wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
+
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe", name=wandb_run_name, config=user_config)
 # logging
 if not use_dummy_wandb:
     wandb.define_metric("tokens_seen")
