@@ -512,22 +512,24 @@ class MOELayer(nn.Module):
         # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
+    @torch._dynamo.disable
     def _select_valid_and_dispatch(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
         valid_mask = flat_rank < exp_capacity
-        safe_ranks = flat_rank.clamp_max(exp_capacity - 1)
+        valid_token_indices = flat_token_indices[valid_mask]
+        valid_expert_indices = flat_top_k_indices[valid_mask]
+        valid_ranks = flat_rank[valid_mask]
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
-        token_values = x_flat[flat_token_indices]
-        token_values = token_values * valid_mask.unsqueeze(1).to(dtype=x_flat.dtype)
-        expert_inputs[flat_top_k_indices, safe_ranks] += token_values
-        return valid_mask, flat_token_indices, flat_top_k_indices, safe_ranks, expert_inputs
+        expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
+        return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks, expert_inputs
 
+    @torch._dynamo.disable
     def _combine_expert_outputs(self, x_flat, expert_outputs, valid_expert_indices, valid_ranks, valid_token_indices, valid_mask, router_probs):
         output_flat = torch.zeros_like(x_flat)
         gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
-        valid_router_probs = router_probs.view(-1).unsqueeze(1).to(dtype=x_flat.dtype)
-        weighted_outputs = gated_expert_outputs * valid_router_probs * valid_mask.unsqueeze(1).to(dtype=x_flat.dtype)
+        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x_flat.dtype)
+        weighted_outputs = gated_expert_outputs * valid_router_probs
         output_flat.scatter_add_(0, valid_token_indices.unsqueeze(1).expand_as(weighted_outputs), weighted_outputs)
         return output_flat
 
@@ -571,7 +573,8 @@ class MOELayer(nn.Module):
                 x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
             )
         )
-        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, valid_mask, exp_capacity)
+        torch._dynamo.mark_dynamic(valid_ranks, 0)
+        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
@@ -595,18 +598,15 @@ class MOELayer(nn.Module):
         # Reshape output back to the original input shape
         return output_flat.view(B, T, C)
 
-    def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, valid_mask, exp_capacity):
+    @torch._dynamo.disable
+    def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
         if not MANAGER.collect_load_balancing_stats:
             return
         slot_served = (rank < exp_capacity)                     # [B*T, k]
         drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
         MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
         # Derive expert utilities: fraction of buffers used per expert.
-        expert_util_counts = torch.bincount(
-            valid_expert_indices,
-            weights=valid_mask.to(dtype=torch.float32),
-            minlength=self.n_exp,
-        )
+        expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
         expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
         MANAGER.add("expert_utilities", expert_utilities.detach())
 
