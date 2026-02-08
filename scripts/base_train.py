@@ -84,7 +84,7 @@ parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
-parser.add_argument("--log-interval", type=int, default=100, help="interval (in steps) for logging grad stats")
+parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
@@ -515,7 +515,7 @@ while True:
         with disable_fp8(model), autocast_ctx:
             # val_bpb: Compute summed loss over targets, but normalize by the number of bytes 
             # of the target text, not tokens.
-            val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+            val_bpb, ppl = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -525,6 +525,7 @@ while True:
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
+            "val/loss": ppl,
         })
         model.train()
 
