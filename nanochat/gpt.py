@@ -513,8 +513,7 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     @torch._dynamo.disable
-    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
-        valid_mask = flat_rank < exp_capacity
+    def _build_expert_inputs(self, valid_mask, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
@@ -572,8 +571,9 @@ class MOELayer(nn.Module):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
+        valid_mask = flat_rank < exp_capacity
         self._build_expert_inputs(
-            x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs
+            valid_mask, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs
         )
 
         # --- Run experts ---
