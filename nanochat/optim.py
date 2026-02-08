@@ -19,10 +19,10 @@ https://arxiv.org/abs/1711.05101
 
 @torch.compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(
-    p: Tensor,              # (32768, 768) - parameter tensor
-    grad: Tensor,           # (32768, 768) - gradient, same shape as p
-    exp_avg: Tensor,        # (32768, 768) - first moment, same shape as p
-    exp_avg_sq: Tensor,     # (32768, 768) - second moment, same shape as p
+    p: Tensor,              # parameter tensor (flattened view)
+    grad: Tensor,           # gradient, same shape as p
+    exp_avg: Tensor,        # first moment, same shape as p
+    exp_avg_sq: Tensor,     # second moment, same shape as p
     step_t: Tensor,         # () - 0-D CPU tensor, step count
     lr_t: Tensor,           # () - 0-D CPU tensor, learning rate
     beta1_t: Tensor,        # () - 0-D CPU tensor, beta1
@@ -87,7 +87,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True)
+@torch.compile(dynamic=True, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters
@@ -220,8 +220,13 @@ class MuonAdamW(torch.optim.Optimizer):
             self._adamw_wd_t.fill_(group['weight_decay'])
 
             # Fused update: weight_decay -> momentum -> bias_correction -> param_update
+            # Use flattened views to keep rank stable across params (avoids recompiles).
+            p_flat = p.view(-1)
+            grad_flat = grad.view(-1)
+            exp_avg_flat = exp_avg.view(-1)
+            exp_avg_sq_flat = exp_avg_sq.view(-1)
             adamw_step_fused(
-                p, grad, exp_avg, exp_avg_sq,
+                p_flat, grad_flat, exp_avg_flat, exp_avg_sq_flat,
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
                 self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
             )
