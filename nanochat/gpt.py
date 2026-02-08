@@ -513,7 +513,7 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     @torch._dynamo.disable
-    def _select_valid_and_dispatch(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
+    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
@@ -522,15 +522,20 @@ class MOELayer(nn.Module):
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
-        return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks, expert_inputs
+        return expert_inputs
 
     @torch._dynamo.disable
-    def _combine_expert_outputs(self, x_flat, expert_outputs, valid_expert_indices, valid_ranks, valid_token_indices, valid_mask, router_probs):
+    def _combine_expert_outputs(self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, router_probs, rank):
+        valid_mask = flat_rank < exp_capacity
+        valid_token_indices = flat_token_indices[valid_mask]
+        valid_expert_indices = flat_top_k_indices[valid_mask]
+        valid_ranks = flat_rank[valid_mask]
         output_flat = torch.zeros_like(x_flat)
         gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
         valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x_flat.dtype)
         weighted_outputs = gated_expert_outputs * valid_router_probs
         output_flat.scatter_add_(0, valid_token_indices.unsqueeze(1).expand_as(weighted_outputs), weighted_outputs)
+        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
     def forward(self, x: torch.Tensor):
@@ -568,13 +573,9 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
-        valid_mask, valid_token_indices, valid_expert_indices, valid_ranks, expert_inputs = (
-            self._select_valid_and_dispatch(
-                x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
-            )
+        expert_inputs = self._build_expert_inputs(
+            x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
         )
-        self._mark_dynamic_valid_ranks(valid_ranks, valid_expert_indices, valid_token_indices)
-        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
@@ -588,11 +589,12 @@ class MOELayer(nn.Module):
         output_flat = self._combine_expert_outputs(
             x_flat,
             expert_outputs,
-            valid_expert_indices,
-            valid_ranks,
-            valid_token_indices,
-            valid_mask,
+            flat_rank,
+            exp_capacity,
+            flat_token_indices,
+            flat_top_k_indices,
             router_probs,
+            rank,
         )
 
         # Reshape output back to the original input shape
@@ -610,16 +612,6 @@ class MOELayer(nn.Module):
         expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
         MANAGER.add("expert_utilities", expert_utilities.detach())
 
-    @torch._dynamo.disable
-    def _mark_dynamic_valid_ranks(
-        self,
-        valid_ranks: torch.Tensor,
-        valid_expert_indices: torch.Tensor,
-        valid_token_indices: torch.Tensor,
-    ) -> None:
-        torch._dynamo.mark_dynamic(valid_ranks, 0)
-        torch._dynamo.mark_dynamic(valid_expert_indices, 0)
-        torch._dynamo.mark_dynamic(valid_token_indices, 0)
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
