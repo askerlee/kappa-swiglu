@@ -34,7 +34,7 @@ class GPTConfig:
         experts_ortho_loss_weight: float = 0.01,
         gate_output_loss_weight: float = 0.0001,  # default weight for gate output regularization loss
         projs_diversity_loss_weight: float = 0.01,  # default weight for gate diversity loss
-        train_capacity: float = 1.25,   # default setting from ST-MoE (see top of page 6)
+        train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
         stride: int = 1,  # one in every stride layers are converted to an MoE

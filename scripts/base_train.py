@@ -52,16 +52,16 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
-parser.add_argument("--aspect-ratio", type=int, default=128, help="model_dim = depth * aspect_ratio")
+parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
 parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention")
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
-parser.add_argument("--window-pattern", type=str, default="SSSL", help="sliding window pattern tiled across layers: L=full, S=half context (e.g. 'SSL')")
+parser.add_argument("--window-pattern", type=str, default="LLLL", help="sliding window pattern tiled across layers: L=full, S=half context (e.g. 'SSL')")
 # Training horizon (only one used, in order of precedence)
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
 parser.add_argument("--target-param-data-ratio", type=float, default=20, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 # Optimization
-parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
+parser.add_argument("--device-batch-size", type=int, default=64, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
@@ -306,7 +306,25 @@ print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 # figure out the needed gradient accumulation to reach the desired total batch size
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
-assert total_batch_size % world_tokens_per_fwdbwd == 0
+
+if total_batch_size % world_tokens_per_fwdbwd != 0:
+    if args.total_batch_size == -1:
+        # Auto batch size might not be divisible by world_tokens_per_fwdbwd.
+        rounded = round(total_batch_size / world_tokens_per_fwdbwd) * world_tokens_per_fwdbwd
+        if rounded == 0:
+            rounded = world_tokens_per_fwdbwd
+        print0(
+            "Auto-computed total_batch_size isn't divisible by world_tokens_per_fwdbwd; "
+            f"adjusting from {total_batch_size:,} to {rounded:,}."
+        )
+        total_batch_size = rounded
+    else:
+        raise ValueError(
+            "total_batch_size must be a multiple of world_tokens_per_fwdbwd. "
+            f"Got total_batch_size={total_batch_size:,}, world_tokens_per_fwdbwd={world_tokens_per_fwdbwd:,}. "
+            "Adjust --total-batch-size, --device-batch-size, --max-seq-len, or DDP world size."
+        )
+    
 grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
