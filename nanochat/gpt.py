@@ -513,14 +513,16 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     @torch._dynamo.disable
-    def _debug_shape(self, T):
-        if T != 2048:
-            breakpoint()
+    def _select_valid(self, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices):
+        valid_mask = flat_rank < exp_capacity
+        valid_token_indices = flat_token_indices[valid_mask]
+        valid_expert_indices = flat_top_k_indices[valid_mask]
+        valid_ranks = flat_rank[valid_mask]
+        return valid_mask, valid_token_indices, valid_expert_indices, valid_ranks
 
     def forward(self, x: torch.Tensor):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
-        self._debug_shape(T)
 
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
@@ -554,10 +556,9 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
-        valid_mask = flat_rank < exp_capacity
-        valid_token_indices = flat_token_indices[valid_mask]
-        valid_expert_indices = flat_top_k_indices[valid_mask]
-        valid_ranks = flat_rank[valid_mask]
+        valid_mask, valid_token_indices, valid_expert_indices, valid_ranks = self._select_valid(
+            flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices
+        )
 
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
