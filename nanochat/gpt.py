@@ -512,9 +512,16 @@ class MOELayer(nn.Module):
         # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
+    @torch._dynamo.disable
+    def _debug_shape(self, T):
+        if T != 2048:
+            breakpoint()
+
     def forward(self, x: torch.Tensor):
-        # x: [64, 512, 512]
+        # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
+        self._debug_shape(T)
+
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
