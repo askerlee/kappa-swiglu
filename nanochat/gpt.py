@@ -306,7 +306,7 @@ class Router(nn.Module):
         # equation (5): compute ratio of tokens allocated to each expert
         # total number of tokens is defined as total tokens in batch * k
         # (k = 1) for the Switch Transformer
-        with torch.inference_mode():
+        with torch.no_grad():
             one_hot_indices = F.one_hot(indices, num_classes=self.n_exp)  # [B, T, k, n_exp]
             one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)  # [B, T, n_exp] (sum over k dimension)
             tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
@@ -324,7 +324,7 @@ class Router(nn.Module):
         top_k_indices: [B, T, k]
         returns: aux_scores [n_exp]
         """
-        with torch.inference_mode():
+        with torch.no_grad():
             B, T, n_exp = logits.shape
             k = top_k_indices.shape[-1]
 
@@ -1110,7 +1110,7 @@ class GPT(nn.Module):
 
                 # Compute router grad - router weight alignment
                 # Compute router expert - gate weight alignment
-                with torch.inference_mode():
+                with torch.no_grad():
                     router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
                     exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
                     # Compute the cosine similarity between router weights and router weight grads.
