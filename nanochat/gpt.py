@@ -123,7 +123,9 @@ class CausalSelfAttention(nn.Module):
         v = self.c_v(x).view(B, T, self.n_kv_head, self.head_dim)
 
         # Value residual (ResFormer): mix in value embedding with input-dependent gate per head
-        if ve is not None:
+        # Branch only on a static module attribute to avoid Dynamo recompiles on ve presence.
+        if self.ve_gate is not None:
+            assert ve is not None, "Expected value embeddings for VE-enabled layer"
             ve = ve.view(B, T, self.n_kv_head, self.head_dim)
             gate = 2 * torch.sigmoid(self.ve_gate(x[..., :self.ve_gate_channels]))  # (B, T, n_kv_head), range (0, 2)
             v = v + gate.unsqueeze(-1) * ve
