@@ -12,7 +12,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-s
 import argparse
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
-import time
+import time, re
 import wandb
 import torch
 from contextlib import nullcontext
@@ -72,8 +72,16 @@ synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
 # wandb logging init
-use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=args.run, config=user_config)
+use_dummy_wandb = args.model_tag is None or not master_process
+ckpt_prefix2 = args.model_tag
+if args.model_step != -1:
+    mat = re.search(r"(\d+)$", str(args.model_step).rstrip('/'))
+    if mat:
+        ckpt_prefix2 += f"-{mat.group(1)}"
+
+wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
+
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
 
 # Load the model and tokenizer
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
