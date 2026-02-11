@@ -500,13 +500,16 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
+        self.router_ortho_loss_leave_one_out = config.router_ortho_loss_leave_one_out
+        self.router_ortho_loss_grad_scale = config.router_ortho_loss_grad_scale
         # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
         # But the computation is slow, so disabled by default.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
         self.use_gate_output_loss = config.use_gate_output_loss
-        # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
-        self.grad_scaler = gen_gradient_scaler(0.1) 
+        # scale down gradients back to expert weights by router_ortho_loss_grad_scale during router orthogonality loss computation.
+        # Default: 1, no grad scaling.
+        self.grad_scaler = gen_gradient_scaler(self.router_ortho_loss_grad_scale) 
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -616,10 +619,14 @@ class MOELayer(nn.Module):
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
             # Totally cutting off gradients may not be optimal.
-            # Scale down gradients to expert gate projection weights by 0.2  
+            # Scale down gradients to expert gate projection weights by alpha, 
             # allows adjusting expert weights slightly, without hurting representation learning too much.
             # gate_proj_weights: [n_exp, n_embd, intermediate_size]
-            gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
+            if self.router_ortho_loss_leave_one_out:
+                # Only apply orthogonality loss to all but the first dimension of gate projection weights.
+                gate_proj_weights = self.grad_scaler(self.experts.gate_proj[:, :, 1:])
+            else:
+                gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
 
             # ortho_losses: [n_exp, intermediate_size]
             ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)

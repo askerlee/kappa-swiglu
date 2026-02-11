@@ -53,6 +53,8 @@ parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer 
 parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.01, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-leave-one-out", action="store_true", help="whether to leave one dimension out of the router orthogonality loss.")
+parser.add_argument("--router-ortho-loss-grad-scale", type=float, default=1.0, help="scaling factor for gradients to expert gate projection weights during router orthogonality loss computation. Setting this to a value < 1.0 allows adjusting expert weights slightly, without hurting representation learning too much.")
 parser.add_argument("--gate-output-loss-weight", type=float, default=0.0001, help="weight for gate output regularization loss")
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
@@ -161,6 +163,9 @@ def build_model_meta(depth):
         n_layer=depth, moe_start_layer=args.moe_start_layer,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
+        router_ortho_loss_leave_one_out=args.router_ortho_loss_leave_one_out,
+        # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
+        router_ortho_loss_grad_scale=args.router_ortho_loss_grad_scale,  
         gate_output_loss_weight=args.gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
