@@ -59,48 +59,52 @@ class MOEManager:
     @torch._dynamo.disable
     def add(self, name, value):
         if name == "drop_rate_per_ks":
-            if self._drop_rate_buffer is None:
-                self._drop_rate_buffer = torch.empty(
-                    (self._tensor_var_capacity, value.shape[0]),
-                    device=value.device,
-                    dtype=value.dtype,
-                )
-            new_size = self._drop_rate_size + 1
-            self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
-            self._drop_rate_size = new_size
+            with torch.inference_mode(False):
+                if self._drop_rate_buffer is None:
+                    self._drop_rate_buffer = torch.empty(
+                        (self._tensor_var_capacity, value.shape[0]),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._drop_rate_size + 1
+                self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
+                self._drop_rate_size = new_size
             return
         if name == "expert_utilities":
-            if self._expert_utilities_buffer is None:
-                self._expert_utilities_buffer = torch.empty(
-                    (self._tensor_var_capacity, value.shape[0]),
-                    device=value.device,
-                    dtype=value.dtype,
-                )
-            new_size = self._expert_utilities_size + 1
-            self._expert_utilities_buffer[self._expert_utilities_size:new_size].copy_(value)
-            self._expert_utilities_size = new_size
+            with torch.inference_mode(False):
+                if self._expert_utilities_buffer is None:
+                    self._expert_utilities_buffer = torch.empty(
+                        (self._tensor_var_capacity, value.shape[0]),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._expert_utilities_size + 1
+                self._expert_utilities_buffer[self._expert_utilities_size:new_size].copy_(value)
+                self._expert_utilities_size = new_size
             return
         if name == "router_ortho_losses_by_exp":
-            if self._router_ortho_losses_by_exp_buffer is None:
-                self._router_ortho_losses_by_exp_buffer = torch.empty(
-                    (self._tensor_var_capacity, value.shape[0]),
-                    device=value.device,
-                    dtype=value.dtype,
-                )
-            new_size = self._router_ortho_losses_by_exp_size + 1
-            self._router_ortho_losses_by_exp_buffer[self._router_ortho_losses_by_exp_size:new_size].copy_(value)
-            self._router_ortho_losses_by_exp_size = new_size
+            with torch.inference_mode(False):
+                if self._router_ortho_losses_by_exp_buffer is None:
+                    self._router_ortho_losses_by_exp_buffer = torch.empty(
+                        (self._tensor_var_capacity, value.shape[0]),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._router_ortho_losses_by_exp_size + 1
+                self._router_ortho_losses_by_exp_buffer[self._router_ortho_losses_by_exp_size:new_size].copy_(value)
+                self._router_ortho_losses_by_exp_size = new_size
             return
         if name == "selected_scores":
-            if self._selected_scores_buffer is None:
-                self._selected_scores_buffer = torch.empty(
-                    (self._tensor_var_capacity, value.shape[0]),
-                    device=value.device,
-                    dtype=value.dtype,
-                )
-            new_size = self._selected_scores_size + 1
-            self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
-            self._selected_scores_size = new_size
+            with torch.inference_mode(False):
+                if self._selected_scores_buffer is None:
+                    self._selected_scores_buffer = torch.empty(
+                        (self._tensor_var_capacity, value.shape[0]),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._selected_scores_size + 1
+                self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
+                self._selected_scores_size = new_size
             return
         self._values[name].append(value)
 
