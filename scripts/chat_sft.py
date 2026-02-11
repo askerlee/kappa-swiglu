@@ -326,7 +326,7 @@ while True:
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
             loss, losses = model(x, y)
-        train_loss = loss.detach() # for logging
+        train_loss = losses['ntp_loss'] # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
