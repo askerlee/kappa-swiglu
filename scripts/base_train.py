@@ -185,7 +185,8 @@ output_dirname = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d
 checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 if resuming:
-    print0(f"Resuming optimization from step {args.resume_from_step}")
+    print0(f"Resuming optimization from {checkpoint_dir} step {args.resume_from_step}")
+    # load_optimizer=True: always load the optimizer state when resuming.
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, device, load_optimizer=True, rank=ddp_rank)
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data # free up this memory after the copy

@@ -73,3 +73,7 @@ conflicts = [
         { extra = "gpu" },
     ],
 ]
+
+[tool.setuptools]
+packages = ["nanochat"]
+

@@ -36,6 +36,10 @@ def _document_batches(split, resume_state_dict, tokenizer_batch_size):
     assert len(parquet_paths) != 0, "No dataset parquet files found, did you run dataset.py?"
     parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
 
+    # Load pq_idx and rg_idx from resume state dict if provided. 
+    # NOTE: The parquet_paths are sorted alphabetically. So if we download more parquet files 
+    # after saving the state, we will resume from the correct file, and newer files will 
+    # be used as pq_idx grows beyond the previous number of files.
     resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
     resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
     resume_epoch = resume_state_dict.get("epoch", 1) if resume_state_dict is not None else 1
