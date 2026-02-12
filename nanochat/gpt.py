@@ -177,8 +177,8 @@ class Router(nn.Module):
         # auxiliary / load balancing loss settings
         self.use_aux_loss           = config.use_aux_loss
         self.use_router_z_loss      = config.use_router_z_loss
-        self.use_logits_demeaned_z_loss = config.use_logits_demeaned_z_loss
-        self.penalize_pos_mean_logits = config.penalize_pos_mean_logits
+        self.z_loss_demean_logits = config.z_loss_demean_logits
+        self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
@@ -213,8 +213,8 @@ class Router(nn.Module):
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     z_loss = self.compute_router_z_loss(logits.view(B, T, -1), 
-                                                        demean_logits=self.use_logits_demeaned_z_loss,
-                                                        penalize_pos_mean_logits=self.penalize_pos_mean_logits)
+                                                        demean_logits=self.z_loss_demean_logits,
+                                                        z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
                     MANAGER.add("router_z_loss", z_loss)
 
                 # Find top-k choices for each token
@@ -346,7 +346,7 @@ class Router(nn.Module):
 
         
     def compute_router_z_loss(self, logits: torch.Tensor, demean_logits: bool = True, 
-                              penalize_pos_mean_logits: bool = True):
+                              z_loss_penalize_mean_logits: bool = True):
         """
         Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
         See equation (5) on page 7
@@ -362,12 +362,11 @@ class Router(nn.Module):
         else:
             z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
 
-        if penalize_pos_mean_logits:
+        if z_loss_penalize_mean_logits:
             mean_logit = logits.mean(dim=-1)  # [B, T]
-            #loss_pos_mean = torch.nn.functional.softplus(mean_logit) ** 2.0  # [B, T]
             # Penalize both positive and negative mean logits.
-            loss_pos_mean = mean_logit ** 2.0 # [B, T]
-            z_loss = z_loss + loss_pos_mean
+            loss_mean_logit = mean_logit ** 2.0 # [B, T]
+            z_loss = z_loss + loss_mean_logit
 
         # sum over all tokens and divide by total number of tokens
         return torch.mean(z_loss)

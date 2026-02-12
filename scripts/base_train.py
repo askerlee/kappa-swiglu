@@ -37,7 +37,16 @@ from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.manager import MANAGER
 
 # print_banner()
-
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
@@ -45,7 +54,7 @@ parser = argparse.ArgumentParser(description="Pretrain base model")
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
 # FP8 training
-parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
+parser.add_argument("--fp8", type=str2bool, nargs='?', const=True, default=False, help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=8, help="depth of the Transformer model")
@@ -53,11 +62,13 @@ parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer 
 parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.01, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-loss-leave-one-out", action="store_true", help="whether to leave one dimension out of the router orthogonality loss.")
+parser.add_argument("--router-ortho-loss-leave-one-out", type=str2bool, nargs='?', const=True, default=False, help="whether to leave one dimension out of the router orthogonality loss.")
 parser.add_argument("--router-ortho-loss-grad-scale", type=float, default=1.0, help="scaling factor for gradients to expert gate projection weights during router orthogonality loss computation. Setting this to a value < 1.0 allows adjusting expert weights slightly, without hurting representation learning too much.")
 parser.add_argument("--gate-output-loss-weight", type=float, default=0.0001, help="weight for gate output regularization loss")
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
+parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
+parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
 parser.add_argument("--head-dim", type=int, default=128, help="target head dimension for attention")
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
@@ -169,6 +180,8 @@ def build_model_meta(depth):
         gate_output_loss_weight=args.gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
+        z_loss_demean_logits=args.z_loss_demean_logits,
+        z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
     )
