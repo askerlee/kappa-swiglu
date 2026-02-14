@@ -61,7 +61,7 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=32, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
-parser.add_argument("--router-ortho-loss-weight", type=float, default=0.01, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-leave-one-out", type=str2bool, nargs='?', const=True, default=False, help="whether to leave one dimension out of the router orthogonality loss.")
 parser.add_argument("--router-ortho-loss-grad-scale", type=float, default=1.0, help="scaling factor for gradients to expert gate projection weights during router orthogonality loss computation. Setting this to a value < 1.0 allows adjusting expert weights slightly, without hurting representation learning too much.")
 parser.add_argument("--gate-output-loss-weight", type=float, default=0.0001, help="weight for gate output regularization loss")

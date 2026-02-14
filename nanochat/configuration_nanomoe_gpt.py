@@ -27,7 +27,7 @@ class GPTConfig:
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
         router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
-        router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
+        router_ortho_loss_weight: float = 0.001,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
         router_ortho_loss_leave_one_out: bool = False,  # whether to leave one dimension out of the router orthogonality loss.
         router_ortho_loss_grad_scale: float = 1.0,  # scaling factor for gradients to expert gate projection weights during router orthogonality loss computation.
