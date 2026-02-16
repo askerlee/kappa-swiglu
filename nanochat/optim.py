@@ -87,6 +87,18 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
+def get_muon_lr_scale(param_shape: torch.Size, adjust_lr_fn: str | None = "original") -> float:
+    """Adjust Muon learning-rate scale based on parameter shape."""
+    out_chs, in_chs = (param_shape[-2], param_shape[-1]) if len(param_shape) > 1 else (1.0, 1.0)
+
+    if adjust_lr_fn in (None, "none"):
+        return 1.0
+    if adjust_lr_fn == "original":
+        return max(1.0, out_chs / in_chs) ** 0.5
+    if adjust_lr_fn == "match_rms_adamw":
+        return 0.2 * max(out_chs, in_chs) ** 0.5
+    raise ValueError(f"Invalid Muon adjust_lr_fn: {adjust_lr_fn}")
+
 @torch.compile(dynamic=True, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
@@ -173,7 +185,8 @@ class MuonAdamW(torch.optim.Optimizer):
             - 'params': List of parameters
             - 'kind': 'adamw' or 'muon'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
-            - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+                        - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+                            Optional: 'match_rms_adamw' (bool) or 'adjust_lr_fn' ('original'|'match_rms_adamw'|None)
     """
     def __init__(self, param_groups: list[dict]):
         super().__init__(param_groups, defaults={})
@@ -268,7 +281,10 @@ class MuonAdamW(torch.optim.Optimizer):
         # Fill all the 0-D tensors with current values
         self._muon_momentum_t.fill_(group["momentum"])
         self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
-        self._muon_lr_t.fill_(group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5)
+        adjust_lr_fn = group.get("adjust_lr_fn")
+        if adjust_lr_fn is None:
+            adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
+        self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn))
         self._muon_wd_t.fill_(group["weight_decay"])
 
         # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
@@ -358,7 +374,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
             - 'params': List of parameters
             - 'kind': 'adamw' or 'muon'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
-            - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+                        - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+                            Optional: 'match_rms_adamw' (bool) or 'adjust_lr_fn' ('original'|'match_rms_adamw'|None)
     """
     def __init__(self, param_groups: list[dict]):
         super().__init__(param_groups, defaults={})
@@ -489,7 +506,10 @@ class DistMuonAdamW(torch.optim.Optimizer):
             # Fill 0-D tensors and run fused kernel
             self._muon_momentum_t.fill_(group["momentum"])
             self._muon_beta2_t.fill_(group["beta2"])
-            self._muon_lr_t.fill_(group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5)
+            adjust_lr_fn = group.get("adjust_lr_fn")
+            if adjust_lr_fn is None:
+                adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
+            self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn))
             self._muon_wd_t.fill_(group["weight_decay"])
             muon_step_fused(
                 grad_chunk[:num_owned], stacked_owned,
