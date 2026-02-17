@@ -18,6 +18,9 @@ import json
 import time
 import math
 import argparse
+import shlex
+import subprocess
+import sys
 from contextlib import nullcontext, contextmanager
 import re
 
@@ -46,6 +49,77 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def parse_milestones_arg(milestones_arg):
+    if not milestones_arg:
+        return []
+    milestones = []
+    for raw in milestones_arg.split(','):
+        token = raw.strip()
+        if not token:
+            continue
+        try:
+            milestone = int(token)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"Invalid milestone '{token}'. Milestones must be integers."
+            ) from exc
+        if milestone < 0:
+            raise argparse.ArgumentTypeError(
+                f"Invalid milestone '{token}'. Milestones must be >= 0."
+            )
+        milestones.append(milestone)
+    return sorted(set(milestones))
+
+
+def strip_and_override_runtime_args(argv, remaining_milestones, resume_from_step):
+    cleaned_argv = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--milestones":
+            skip_next = True
+            continue
+        if token == "--resume-from-step":
+            skip_next = True
+            continue
+        if token.startswith("--milestones="):
+            continue
+        if token.startswith("--resume-from-step="):
+            continue
+        cleaned_argv.append(token)
+
+    if remaining_milestones:
+        cleaned_argv.extend(["--milestones", ",".join(str(m) for m in remaining_milestones)])
+    cleaned_argv.extend(["--resume-from-step", str(resume_from_step)])
+
+    return cleaned_argv
+
+
+def build_self_command_with_milestones(remaining_milestones, resume_from_step):
+    # Slurm path: if extra submit-time args were captured in base_train.sbatch,
+    # relaunch via sbatch so the new training run gets a fresh allocation.
+    base_train_extra_args = os.environ.get("BASE_TRAIN_EXTRA_ARGS")
+    slurm_job_id = os.environ.get("SLURM_JOB_ID", "")
+    if slurm_job_id and base_train_extra_args is not None:
+        try:
+            slurm_extra_argv = shlex.split(base_train_extra_args)
+        except ValueError:
+            slurm_extra_argv = []
+        slurm_extra_argv = strip_and_override_runtime_args(
+            slurm_extra_argv,
+            remaining_milestones,
+            resume_from_step,
+        )
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sbatch_script = os.path.join(repo_root, "base_train.sbatch")
+        cmd_parts = ["sbatch", sbatch_script, *slurm_extra_argv]
+        return " ".join(shlex.quote(part) for part in cmd_parts)
+    else:
+        return None
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -53,6 +127,7 @@ parser = argparse.ArgumentParser(description="Pretrain base model")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
+parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
 # FP8 training
 parser.add_argument("--fp8", type=str2bool, nargs='?', const=True, default=False, help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
@@ -99,6 +174,7 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
@@ -106,6 +182,7 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
+milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
@@ -123,7 +200,7 @@ else:
     gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
 
 # wandb logging init
-use_dummy_wandb = args.model_tag is None or not master_process
+use_dummy_wandb = args.mockup_mode or args.model_tag is None or not master_process
 ckpt_prefix2 = args.model_tag
 if args.resume_from_step != -1:
     mat = re.search(r"(\d+)$", str(args.resume_from_step).rstrip('/'))
@@ -537,6 +614,16 @@ else:
     smooth_train_loss = loop_state["smooth_train_loss"]
     total_training_time = loop_state["total_training_time"]
 
+pending_milestones = [m for m in milestones if m > step]
+if milestones:
+    print0(f"Milestones configured: {milestones}")
+if milestones and not pending_milestones:
+    print0(f"All milestones are <= current step ({step}); no milestone spawn will be triggered.")
+if args.mockup_mode:
+    print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
+
+terminate_after_checkpoint = False
+
 # -----------------------------------------------------------------------------
 # Training loop
 while True:
@@ -545,7 +632,7 @@ while True:
     flops_so_far = num_flops_per_token * tokens_seen
 
     # once in a while: evaluate the val bpb (all ranks participate)
-    if args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
+    if (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
@@ -570,7 +657,7 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     # disable FP8 for evaluation to use BF16 for more consistent/accurate results
     results = {}
-    if args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
+    if (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
@@ -586,7 +673,7 @@ while True:
 
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
-    if args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
+    if (not args.mockup_mode) and args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
         model.eval()
         prompts = [
             "The capital of France is",
@@ -628,43 +715,81 @@ while True:
             },
             rank=ddp_rank,
         )
+        if master_process and pending_milestones:
+            hit_milestones = [m for m in pending_milestones if step >= m]
+            if hit_milestones:
+                pending_milestones = [m for m in pending_milestones if m > step]
+                relaunch_cmd = build_self_command_with_milestones(pending_milestones, step)
+                if relaunch_cmd is not None:
+                    subprocess.Popen(relaunch_cmd, shell=True, start_new_session=True)
+                    terminate_after_checkpoint = True
+                    print0(
+                        f"Milestone hit at step {step}: {hit_milestones}. "
+                        f"Spawned self command with remaining milestones {pending_milestones} and --resume-from-step {step}: {relaunch_cmd}"
+                    )
+
+        if ddp:
+            terminate_tensor = torch.tensor(
+                [1 if terminate_after_checkpoint else 0],
+                device=device,
+                dtype=torch.int32,
+            )
+            torch.distributed.broadcast(terminate_tensor, src=0)
+            terminate_after_checkpoint = bool(terminate_tensor.item())
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
-    if is_last_step:
+    if is_last_step or terminate_after_checkpoint:
+        if terminate_after_checkpoint and not is_last_step:
+            print0(f"Stopping current run after milestone-triggered relaunch at step {step}.")
         break
 
     MANAGER.collect_load_balancing_stats = (step % args.log_interval == 0)
     # -------------------------------------------------------------------------
     # single training step
     # evaluate the gradient
-    synchronize()
-    t0 = time.time()
-    for micro_step in range(grad_accum_steps):
-        with autocast_ctx:
-            loss, losses = model(x, y)
-        train_loss = losses['ntp_loss'] # for logging
-        loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
-        loss.backward()
-        x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+    if args.mockup_mode:
+        lrm = get_lr_multiplier(step)
+        losses = {
+            'ntp_loss': 0.0,
+            'aux_loss': 0.0,
+            'router_z_loss': 0.0,
+            'router_ortho_loss': 0.0,
+            'experts_ortho_loss': 0.0,
+            'gate_output_loss': 0.0,
+            'projs_diversity_loss': 0.0,
+            'drop_rate_per_ks': None,
+        }
+        train_loss_f = 0.0
+        dt = 1.0
+    else:
+        synchronize()
+        t0 = time.time()
+        for micro_step in range(grad_accum_steps):
+            with autocast_ctx:
+                loss, losses = model(x, y)
+            train_loss = losses['ntp_loss'] # for logging
+            loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+            loss.backward()
+            x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
 
-    if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
-        collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
-    
-    # step the optimizer
-    lrm = get_lr_multiplier(step)
-    muon_momentum = get_muon_momentum(step)
-    muon_weight_decay = get_weight_decay(step)
-    for group in optimizer.param_groups:
-        group["lr"] = group["initial_lr"] * lrm
-        if group['kind'] == 'muon':
-            group["momentum"] = muon_momentum
-            group["weight_decay"] = muon_weight_decay
-    optimizer.step()
-    model.zero_grad(set_to_none=True)
-    train_loss_f = train_loss.item() # .item() is a CPU-GPU sync point
-    synchronize()
-    t1 = time.time()
-    dt = t1 - t0
+        if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
+            collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
+        
+        # step the optimizer
+        lrm = get_lr_multiplier(step)
+        muon_momentum = get_muon_momentum(step)
+        muon_weight_decay = get_weight_decay(step)
+        for group in optimizer.param_groups:
+            group["lr"] = group["initial_lr"] * lrm
+            if group['kind'] == 'muon':
+                group["momentum"] = muon_momentum
+                group["weight_decay"] = muon_weight_decay
+        optimizer.step()
+        model.zero_grad(set_to_none=True)
+        train_loss_f = train_loss.item() # .item() is a CPU-GPU sync point
+        synchronize()
+        t1 = time.time()
+        dt = t1 - t0
     # -------------------------------------------------------------------------
 
     # logging (CPU action only)
