@@ -20,7 +20,6 @@ import math
 import argparse
 import shlex
 import subprocess
-import sys
 from contextlib import nullcontext, contextmanager
 import re
 
@@ -718,6 +717,7 @@ while True:
         if master_process and pending_milestones:
             hit_milestones = [m for m in pending_milestones if step >= m]
             if hit_milestones:
+                print0(f"Milestone(s) hit at step {step}: {hit_milestones}")
                 pending_milestones = [m for m in pending_milestones if m > step]
                 relaunch_cmd = build_self_command_with_milestones(pending_milestones, step)
                 if relaunch_cmd is not None:
