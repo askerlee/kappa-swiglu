@@ -179,11 +179,14 @@ parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints
 parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
+parser.add_argument("--wandb-api-key", type=str, default=None, help="Weights & Biases API key (optional). If provided, sets WANDB_API_KEY for this run")
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
+if user_config.get("wandb_api_key"):
+    user_config["wandb_api_key"] = "***"
 milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
@@ -210,6 +213,9 @@ if args.resume_from_step != -1:
         ckpt_prefix2 += f"-resume{mat.group(1)}"
 
 wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
+
+if args.wandb_api_key:
+    os.environ["WANDB_API_KEY"] = args.wandb_api_key
 
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe", name=wandb_run_name, config=user_config)
 # logging
