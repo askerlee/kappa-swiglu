@@ -461,7 +461,7 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.gate_output_loss = 0
         self.use_gate_output_loss = config.use_gate_output_loss
-        self.grad_scaler = gen_gradient_scaler(0.1)
+        self.input_grad_scaler = gen_gradient_scaler(0.1)
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
@@ -475,7 +475,7 @@ class Qwen3MLPExperts(nn.Module):
             # NOTE: If some of x are padded zeros, the gate output losses of those elements would be 0.
             # The mean loss would be slightly smaller. So we should filter out those 
             # padded elements when computing the mean.
-            gate_out_gs = torch.bmm(self.grad_scaler(x), self.gate_proj)
+            gate_out_gs = torch.bmm(self.input_grad_scaler(x), self.gate_proj)
             gate_output_losses = (gate_out_gs ** 2).mean(dim=-1) # [n_exp, capacity]
             self.gate_output_loss = gate_output_losses.mean()
 
@@ -508,7 +508,7 @@ class MOELayer(nn.Module):
         self.use_gate_output_loss = config.use_gate_output_loss
         # scale down gradients back to expert weights by router_ortho_loss_grad_scale during router orthogonality loss computation.
         # Default: 1, no grad scaling.
-        self.grad_scaler = gen_gradient_scaler(self.router_ortho_loss_grad_scale) 
+        self.exp_gate_grad_scaler = gen_gradient_scaler(self.router_ortho_loss_grad_scale) 
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -623,9 +623,9 @@ class MOELayer(nn.Module):
             # gate_proj_weights: [n_exp, n_embd, intermediate_size]
             if self.router_ortho_loss_leave_one_out:
                 # Only apply orthogonality loss to all but the first dimension of gate projection weights.
-                gate_proj_weights = self.grad_scaler(self.experts.gate_proj[:, :, 1:])
+                gate_proj_weights = self.exp_gate_grad_scaler(self.experts.gate_proj[:, :, 1:])
             else:
-                gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
+                gate_proj_weights = self.exp_gate_grad_scaler(self.experts.gate_proj)  
 
             # ortho_losses: [n_exp, intermediate_size]
             ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)
