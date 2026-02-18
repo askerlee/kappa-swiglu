@@ -366,6 +366,8 @@ class Router(nn.Module):
             mean_logit = logits.mean(dim=-1)  # [B, T]
             # Penalize both positive and negative mean logits.
             loss_mean_logit = mean_logit ** 2.0 # [B, T]
+            # z_loss: ~[13, 30], loss_mean_logit: ~[0.1, 0.8]. 
+            # So it won't dominate the z_loss, but still has a meaningful effect.
             z_loss = z_loss + loss_mean_logit
 
         # sum over all tokens and divide by total number of tokens

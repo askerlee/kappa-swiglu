@@ -163,6 +163,7 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
 parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
+parser.add_argument("--lr-scheduler-skip-iters", type=int, default=0, help="number of initial iterations to skip for LR scheduling (to allow for redoing warmup when resuming from a later point in training)")
 parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
@@ -493,16 +494,18 @@ x, y, dataloader_state_dict = next(train_loader) # kick off load of the very fir
 # Set up hyperparameter schedulers
 
 # Learning rate scheduler
-def get_lr_multiplier(it):
-    warmup_iters = round(args.warmup_ratio * num_iterations)
-    warmdown_iters = round(args.warmdown_ratio * num_iterations)
+def get_lr_multiplier(it, num_iterations, warmup_ratio, warmdown_ratio, final_lr_frac, lr_scheduler_skip_iters=0):
+    it = max(0, it - lr_scheduler_skip_iters) # allow skipping the LR scheduler for the first N iterations (useful for redoing warmup when resuming from a later point in training)
+    num_iterations = max(1, num_iterations - lr_scheduler_skip_iters) # avoid division by zero or negative iterations
+    warmup_iters = round(warmup_ratio * num_iterations)
+    warmdown_iters = round(warmdown_ratio * num_iterations)
     if it < warmup_iters:
         return (it + 1) / warmup_iters
     elif it <= num_iterations - warmdown_iters:
         return 1.0
     else:
         progress = (num_iterations - it) / warmdown_iters
-        return progress * 1.0 + (1 - progress) * args.final_lr_frac
+        return progress * 1.0 + (1 - progress) * final_lr_frac
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
@@ -750,7 +753,8 @@ while True:
     # single training step
     # evaluate the gradient
     if args.mockup_mode:
-        lrm = get_lr_multiplier(step)
+        lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
+                                args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters)
         losses = {
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
@@ -778,7 +782,8 @@ while True:
             collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
         
         # step the optimizer
-        lrm = get_lr_multiplier(step)
+        lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
+                                args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters)
         muon_momentum = get_muon_momentum(step)
         muon_weight_decay = get_weight_decay(step)
         for group in optimizer.param_groups:
