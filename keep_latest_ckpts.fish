@@ -9,15 +9,17 @@
 # Usage:
 #   ./keep_latest_ckpts.fish /path/to/root
 #   ./keep_latest_ckpts.fish /path/to/root --dry-run
+#   ./keep_latest_ckpts.fish /path/to/root --keep 3
 
 function usage
-    echo "Usage: (basename (status filename)) <root_dir> [--dry-run|-n]"
+    echo "Usage: (basename (status filename)) <root_dir> [--dry-run|-n] [--keep|-k M]"
     exit 2
 end
 
 function process_ckpt_dir
     set -l ckpt_dir $argv[1]
     set -l dry_run $argv[2]
+    set -l keep_count $argv[3]
 
     # Collect steps from meta_*.json (treat meta as the authoritative index)
     set -l meta_files
@@ -31,8 +33,7 @@ function process_ckpt_dir
         return 0
     end
 
-    # Extract step numbers and find max
-    set -l max_step -1
+    # Extract step numbers
     set -l steps
 
     for f in $meta_files
@@ -42,22 +43,32 @@ function process_ckpt_dir
 
         if string match -qr '^\d+$' -- $step
             set steps $steps $step
-            if test $step -gt $max_step
-                set max_step $step
-            end
         end
     end
 
-    if test $max_step -lt 0
+    if test (count $steps) -eq 0
         echo "Skipping $ckpt_dir: could not parse any step numbers"
         return 0
     end
 
-    echo "Processing $ckpt_dir (keeping latest step: $max_step)"
+    # Unique + sort descending (latest first)
+    set -l sorted_steps (printf '%s\n' $steps | sort -nu -r)
+
+    # Keep latest N steps
+    set -l keep_steps
+    set -l i 1
+    for step in $sorted_steps
+        if test $i -le $keep_count
+            set keep_steps $keep_steps $step
+        end
+        set i (math $i + 1)
+    end
+
+    echo "Processing $ckpt_dir (keeping latest $keep_count step(s): "(string join ', ' $keep_steps)")"
 
     # Delete all other steps' triplets
-    for step in $steps
-        if test $step -eq $max_step
+    for step in $sorted_steps
+        if contains -- $step $keep_steps
             continue
         end
 
@@ -77,12 +88,25 @@ function process_ckpt_dir
 end
 
 set -l dry_run 0
+set -l keep_count 1
 set -l root_dir ""
 
-for arg in $argv
+set -l i 1
+while test $i -le (count $argv)
+    set -l arg $argv[$i]
+
     switch $arg
         case --dry-run -n
             set dry_run 1
+        case --keep -k
+            set i (math $i + 1)
+            if test $i -gt (count $argv)
+                echo "Missing value for $arg"
+                usage
+            end
+            set keep_count $argv[$i]
+        case --keep='*'
+            set keep_count (string replace -r '^--keep=' '' -- $arg)
         case '*'
             if test -z "$root_dir"
                 set root_dir $arg
@@ -91,6 +115,13 @@ for arg in $argv
                 usage
             end
     end
+
+    set i (math $i + 1)
+end
+
+if not string match -qr '^[1-9][0-9]*$' -- $keep_count
+    echo "Invalid keep count: $keep_count (expected a positive integer)"
+    usage
 end
 
 if test -z "$root_dir"
@@ -124,7 +155,7 @@ if test (count $unique_ckpt_dirs) -eq 0
 end
 
 for ckpt_dir in $unique_ckpt_dirs
-    process_ckpt_dir "$ckpt_dir" "$dry_run"
+    process_ckpt_dir "$ckpt_dir" "$dry_run" "$keep_count"
 end
 
 echo
