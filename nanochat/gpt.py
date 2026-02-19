@@ -632,8 +632,7 @@ class MOELayer(nn.Module):
             # ortho_losses: [n_exp, intermediate_size]
             ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
-            # Negative correlations could be downweighted by setting router_ortho_neg_corr_weight < 1.
-            # But experiments seem to suggest that it's better to penalize negative correlations equally.
+            # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses_signed.square()
