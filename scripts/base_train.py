@@ -637,6 +637,7 @@ if args.mockup_mode:
     print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
 
 terminate_after_checkpoint = False
+core_results = {}
 
 # -----------------------------------------------------------------------------
 # Training loop
@@ -665,45 +666,6 @@ while True:
             "val/bpb": val_bpb,
             "val/loss": ntp_loss,
         }, step=step)
-        model.train()
-
-    # once in a while: estimate the CORE metric (all ranks participate)
-    # use the original uncompiled model because the inputs keep changing shape
-    # disable FP8 for evaluation to use BF16 for more consistent/accurate results
-    results = {}
-    if (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
-        model.eval()
-        with disable_fp8(orig_model), autocast_ctx:
-            results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
-        wandb_run.log({
-            "step": step,
-            "tokens_seen": tokens_seen,
-            "total_training_flops": flops_so_far,
-            "core_metric": results["core_metric"],
-            "centered_results": results["centered_results"],
-        }, step=step)
-        model.train()
-
-    # once in a while: sample from the model (only on master process)
-    # use the original uncompiled model because the inputs keep changing shape
-    if (not args.mockup_mode) and args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
-        model.eval()
-        prompts = [
-            "The capital of France is",
-            "The chemical symbol of gold is",
-            "If yesterday was Friday, then tomorrow will be",
-            "The opposite of hot is",
-            "The planets of the solar system are:",
-            "My favorite color is",
-            "If 5*x + 3 = 13, then x is",
-        ]
-        engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
-        for prompt in prompts:
-            tokens = tokenizer(prompt, prepend="<|bos|>")
-            with disable_fp8(orig_model), autocast_ctx:
-                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
-            print0(tokenizer.decode(sample[0]))
         model.train()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
@@ -751,6 +713,68 @@ while True:
             )
             torch.distributed.broadcast(terminate_tensor, src=0)
             terminate_after_checkpoint = bool(terminate_tensor.item())
+
+    # If a milestone-triggered relaunch was spawned, stop immediately after
+    # checkpoint save/broadcast to avoid doing expensive eval/sample work.
+    if terminate_after_checkpoint and not is_last_step:
+        print0(f"Stopping current run after milestone-triggered relaunch at step {step}.")
+        break
+
+    # once in a while: estimate the CORE metric (all ranks participate)
+    # use the original uncompiled model because the inputs keep changing shape
+    # disable FP8 for evaluation to use BF16 for more consistent/accurate results
+
+    if (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
+        model.eval()
+        with disable_fp8(orig_model), autocast_ctx:
+            # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
+            max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
+            core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
+        print0(f"Step {step:05d} | CORE metric: {core_results['core_metric']:.4f}")
+        wandb_run.log({
+            "step": step,
+            "tokens_seen": tokens_seen,
+            "total_training_flops": flops_so_far,
+            "core_metric": core_results["core_metric"],
+            "centered_results": core_results["centered_results"],
+        }, step=step)
+        model.train()
+
+        # For the final evaluation at the end of training, write CSV output
+        if is_last_step and ddp_rank == 0:
+            model_slug = f"{output_dirname}_base_{step:06d}"
+            output_csv_path = os.path.join(base_dir, "base_eval", f"{model_slug}.csv")
+            os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+            with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:
+                f.write(f"{'Task':<35}, {'Accuracy':<10}, {'Centered':<10}\n")
+                for label in core_results["results"]:
+                    acc = core_results["results"][label]
+                    centered = core_results["centered_results"][label]
+                    f.write(f"{label:<35}, {acc:<10.6f}, {centered:<10.6f}\n")
+                f.write(f"{'CORE':<35}, {'':<10}, {core_results['core_metric']:<10.6f}\n")
+            print0(f"\nResults written to: {output_csv_path}")
+            print0(f"CORE metric: {core_results['core_metric']:.4f}")
+
+    # once in a while: sample from the model (only on master process)
+    # use the original uncompiled model because the inputs keep changing shape
+    if (not args.mockup_mode) and args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
+        model.eval()
+        prompts = [
+            "The capital of France is",
+            "The chemical symbol of gold is",
+            "If yesterday was Friday, then tomorrow will be",
+            "The opposite of hot is",
+            "The planets of the solar system are:",
+            "My favorite color is",
+            "If 5*x + 3 = 13, then x is",
+        ]
+        engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
+        for prompt in prompts:
+            tokens = tokenizer(prompt, prepend="<|bos|>")
+            with disable_fp8(orig_model), autocast_ctx:
+                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
+            print0(tokenizer.decode(sample[0]))
+        model.train()
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if is_last_step or terminate_after_checkpoint:
@@ -916,7 +940,7 @@ get_report().log(section="Base model training", data=[
     { # stats about training outcomes
         "Minimum validation bpb": min_val_bpb if val_bpb is not None else None,
         "Final validation bpb": val_bpb,
-        "CORE metric estimate": results.get("core_metric", None),
+        "CORE metric estimate": core_results.get("core_metric", None),
         "MFU %": f"{mfu:.2f}%",
         "Total training flops": f"{flops_so_far:e}",
         "Total training time": f"{total_training_time/60:.2f}m",
