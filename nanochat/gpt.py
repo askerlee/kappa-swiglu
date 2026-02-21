@@ -241,8 +241,8 @@ class Router(nn.Module):
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     router_z_loss = compute_z_loss(logits.view(B, T, -1), 
-                                            demean_logits=self.z_loss_demean_logits,
-                                            z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
+                                                   demean_logits=self.z_loss_demean_logits,
+                                                   z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
                     MANAGER.add("router_z_loss", router_z_loss)
 
                 # Find top-k choices for each token
@@ -464,16 +464,18 @@ class Qwen3MLPExperts(nn.Module):
         self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
 
     def forward(self, x):
+        # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
-        if self.use_experts_gate_z_loss:
-            # Compute gate z-loss for experts, similar to router z-loss but applied to gate outputs.
-            # This encourages the gate outputs to not grow too large, which can help with training stability.
-            # We compute it per expert and log the average and max across experts for analysis.
-            gate_out_reshaped = gate_out.view(-1, self.n_exp, self.intermediate_size)  # [B*T, n_exp, intermediate_size]
-            gate_z_loss_per_expert = compute_z_loss(gate_out_reshaped.transpose(1, 2), 
-                                                    demean_logits=True, 
-                                                    z_loss_penalize_mean_logits=False)  # [n_exp]
-            experts_gate_z_loss = gate_z_loss_per_expert.mean()  # Average across experts
+        if self.training and self.use_experts_gate_z_loss:
+            # gate_out: [n_exp, capacity, intermediate_size]
+            # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
+            # so expert dimension should be the final logits dimension.
+            gate_logits = gate_out.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
+            experts_gate_z_loss = compute_z_loss(
+                gate_logits,
+                demean_logits=True,
+                z_loss_penalize_mean_logits=False,
+            )
             MANAGER.add("experts_gate_z_loss", experts_gate_z_loss)
 
         fc_out = torch.bmm(x, self.c_fc)

@@ -205,7 +205,7 @@ else:
 
 # wandb logging init
 use_dummy_wandb = args.mockup_mode or args.model_tag is None or not master_process
-ckpt_prefix2 = args.model_tag
+ckpt_prefix2 = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d12
 if args.resume_from_step != -1:
     mat = re.search(r"(\d+)$", str(args.resume_from_step).rstrip('/'))
     if mat:
