@@ -80,6 +80,34 @@ def gen_gradient_scaler(alpha, debug=False):
         # Don't use lambda function here, otherwise the object can't be pickled.
         return torch.detach
 
+def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True, 
+                   z_loss_penalize_mean_logits: bool = True):
+    """
+    Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
+    See equation (5) on page 7
+    """
+
+    # exponentiate logits, sum logits of each expert, take log, and square
+    # code below is the same as:
+    # > z_loss = torch.exp(logits)
+    # > z_loss = torch.sum(z_loss, dim=-1)
+    # > z_loss = torch.log(z_loss) ** 2.0
+    if demean_logits:
+        z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
+    else:
+        z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
+
+    if z_loss_penalize_mean_logits:
+        mean_logit = logits.mean(dim=-1)  # [B, T]
+        # Penalize both positive and negative mean logits.
+        loss_mean_logit = mean_logit ** 2.0 # [B, T]
+        # z_loss: ~[13, 30], loss_mean_logit: ~[0.1, 0.8]. 
+        # So it won't dominate the z_loss, but still has a meaningful effect.
+        z_loss = z_loss + loss_mean_logit
+
+    # sum over all tokens and divide by total number of tokens
+    return torch.mean(z_loss)
+
 def norm(x):
     # Purely functional rmsnorm with no learnable params
     return F.rms_norm(x, (x.size(-1),))
@@ -212,10 +240,10 @@ class Router(nn.Module):
             if self.training:
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
-                    z_loss = self.compute_router_z_loss(logits.view(B, T, -1), 
-                                                        demean_logits=self.z_loss_demean_logits,
-                                                        z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
-                    MANAGER.add("router_z_loss", z_loss)
+                    router_z_loss = compute_z_loss(logits.view(B, T, -1), 
+                                            demean_logits=self.z_loss_demean_logits,
+                                            z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
+                    MANAGER.add("router_z_loss", router_z_loss)
 
                 # Find top-k choices for each token
                 top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1) # [B*T, k]
@@ -345,33 +373,6 @@ class Router(nn.Module):
             return mean_selected_scores
 
         
-    def compute_router_z_loss(self, logits: torch.Tensor, demean_logits: bool = True, 
-                              z_loss_penalize_mean_logits: bool = True):
-        """
-        Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
-        See equation (5) on page 7
-        """
-    
-        # exponentiate logits, sum logits of each expert, take log, and square
-        # code below is the same as:
-        # > z_loss = torch.exp(logits)
-        # > z_loss = torch.sum(z_loss, dim=-1)
-        # > z_loss = torch.log(z_loss) ** 2.0
-        if demean_logits:
-            z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
-        else:
-            z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
-
-        if z_loss_penalize_mean_logits:
-            mean_logit = logits.mean(dim=-1)  # [B, T]
-            # Penalize both positive and negative mean logits.
-            loss_mean_logit = mean_logit ** 2.0 # [B, T]
-            # z_loss: ~[13, 30], loss_mean_logit: ~[0.1, 0.8]. 
-            # So it won't dominate the z_loss, but still has a meaningful effect.
-            z_loss = z_loss + loss_mean_logit
-
-        # sum over all tokens and divide by total number of tokens
-        return torch.mean(z_loss)
 
     def get_capacity(self, tokens_per_batch):
         # expert capacity is given by (tokens_per_batch / num_experts) * capacity_factor
@@ -421,7 +422,6 @@ class MLPExperts(nn.Module):
         super().__init__()
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
-        self.gate_output_loss = 0
     
     def forward(self, x):
         x = torch.bmm(x, self.c_fc)
@@ -461,25 +461,20 @@ class Qwen3MLPExperts(nn.Module):
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
-        self.gate_output_loss = 0
-        self.use_gate_output_loss = config.use_gate_output_loss
-        self.input_grad_scaler = gen_gradient_scaler(0.1)
+        self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
-        if self.use_gate_output_loss:
-            # Compute mean squared value of gate outputs.
-            # But we don't want large gradients to flow back to input features here.
-            # So we scale down the bp stage of x with a grad scaler.
-            # x: [n_exp, capacity, n_embd], gate_proj: [n_exp, n_embd, intermediate_size]
-            # gate_out_cutoff: [n_exp, capacity, intermediate_size]
-            # capacity: number of tokens sent to each expert.
-            # NOTE: If some of x are padded zeros, the gate output losses of those elements would be 0.
-            # The mean loss would be slightly smaller. So we should filter out those 
-            # padded elements when computing the mean.
-            gate_out_gs = torch.bmm(self.input_grad_scaler(x), self.gate_proj)
-            gate_output_losses = (gate_out_gs ** 2).mean(dim=-1) # [n_exp, capacity]
-            self.gate_output_loss = gate_output_losses.mean()
+        if self.use_experts_gate_z_loss:
+            # Compute gate z-loss for experts, similar to router z-loss but applied to gate outputs.
+            # This encourages the gate outputs to not grow too large, which can help with training stability.
+            # We compute it per expert and log the average and max across experts for analysis.
+            gate_out_reshaped = gate_out.view(-1, self.n_exp, self.intermediate_size)  # [B*T, n_exp, intermediate_size]
+            gate_z_loss_per_expert = compute_z_loss(gate_out_reshaped.transpose(1, 2), 
+                                                    demean_logits=True, 
+                                                    z_loss_penalize_mean_logits=False)  # [n_exp]
+            experts_gate_z_loss = gate_z_loss_per_expert.mean()  # Average across experts
+            MANAGER.add("experts_gate_z_loss", experts_gate_z_loss)
 
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
@@ -507,7 +502,7 @@ class MOELayer(nn.Module):
         # But the computation is slow, so disabled by default.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
-        self.use_gate_output_loss = config.use_gate_output_loss
+        self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
         # scale down gradients back to expert weights by router_ortho_loss_grad_scale during router orthogonality loss computation.
         # Default: 1, no grad scaling.
         self.exp_gate_grad_scaler = gen_gradient_scaler(self.router_ortho_loss_grad_scale) 
@@ -578,11 +573,6 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
-
-        # Only collect gate output loss after self.experts forward.
-        if self.training and self.use_gate_output_loss:
-            MANAGER.add("gate_output_loss", self.experts.gate_output_loss)
-            self.experts.gate_output_loss = 0  # reset for next step
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -1023,7 +1013,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
-                   'gate_output_loss': 0,
+                   'experts_gate_z_loss': 0,
                    'projs_diversity_loss': 0,
                    'router_ortho_losses_by_exp': None,
                    'drop_rate_per_ks': None,
@@ -1058,6 +1048,7 @@ class GPT(nn.Module):
                 MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
+                # router_z_loss_weight: default 1e-5.
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
@@ -1075,11 +1066,11 @@ class GPT(nn.Module):
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
                 losses['experts_ortho_loss'] = experts_ortho_loss.detach() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
                 MANAGER.reset("experts_ortho_loss")
-            if self.config.n_exp > 1 and self.config.use_gate_output_loss:
-                gate_output_loss = MANAGER.aggregate("gate_output_loss")
-                loss += self.config.gate_output_loss_weight * gate_output_loss
-                losses['gate_output_loss'] = gate_output_loss.detach() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
-                MANAGER.reset("gate_output_loss")
+            if self.config.n_exp > 1 and self.config.use_experts_gate_z_loss:
+                experts_gate_z_loss = MANAGER.aggregate("experts_gate_z_loss")
+                loss += self.config.experts_gate_z_loss_weight * experts_gate_z_loss
+                losses['experts_gate_z_loss'] = experts_gate_z_loss.detach() if isinstance(experts_gate_z_loss, torch.Tensor) else experts_gate_z_loss
+                MANAGER.reset("experts_gate_z_loss")
         else:
             # inference: just return the logits directly
             return logits
