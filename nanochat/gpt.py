@@ -52,6 +52,30 @@ class ScaleGrad(torch.autograd.Function):
             grad_output2 = None
         return grad_output2, None, None
 
+class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, output, left, right, alpha):
+        ctx.save_for_backward(left, right, alpha)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        left, right, alpha = ctx.saved_tensors
+
+        grad_output_for_output = None
+
+        if ctx.needs_input_grad[1]:
+            grad_left = torch.bmm(grad_output, right.transpose(1, 2)) * alpha
+        else:
+            grad_left = None
+
+        if ctx.needs_input_grad[2]:
+            grad_right = torch.bmm(left.transpose(1, 2), grad_output)
+        else:
+            grad_right = None
+
+        return grad_output_for_output, grad_left, grad_right, None
+
 class GradientScaler(nn.Module):
     def __init__(self, alpha=1., debug=False, *args, **kwargs):
         """
@@ -464,13 +488,17 @@ class Qwen3MLPExperts(nn.Module):
         self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.input_grad_scaler = gen_gradient_scaler(0.1)
+        self.input_grad_scale = 0.1
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
         if self.training and self.use_experts_gate_z_loss:
-            gate_out_gs = torch.bmm(self.input_grad_scaler(x), self.gate_proj)
+            if self.input_grad_scale == 1:
+                gate_out_gs = gate_out
+            else:
+                alpha_t = torch.as_tensor(self.input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
+                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, x, self.gate_proj, alpha_t)
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
             # so expert dimension should be the final logits dimension.
