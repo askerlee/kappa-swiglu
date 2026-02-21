@@ -464,17 +464,19 @@ class Qwen3MLPExperts(nn.Module):
         self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
+        self.input_grad_scaler = gen_gradient_scaler(0.1)
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
         if self.training and self.use_experts_gate_z_loss:
-            # gate_out: [n_exp, capacity, intermediate_size]
+            gate_out_gs = torch.bmm(self.input_grad_scaler(x), self.gate_proj)
+            # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
             # so expert dimension should be the final logits dimension.
-            gate_logits = gate_out.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
+            gate_out_gs = gate_out_gs.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
             experts_gate_z_loss = compute_z_loss(
-                gate_logits,
+                gate_out_gs,
                 demean_logits=self.z_loss_demean_logits,
                 z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits,
             )
