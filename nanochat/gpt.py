@@ -462,6 +462,8 @@ class Qwen3MLPExperts(nn.Module):
         self.fc_bias = None
         self.proj_bias = None
         self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
+        self.z_loss_demean_logits = config.z_loss_demean_logits
+        self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
@@ -473,8 +475,8 @@ class Qwen3MLPExperts(nn.Module):
             gate_logits = gate_out.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
             experts_gate_z_loss = compute_z_loss(
                 gate_logits,
-                demean_logits=True,
-                z_loss_penalize_mean_logits=False,
+                demean_logits=self.z_loss_demean_logits,
+                z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits,
             )
             MANAGER.add("experts_gate_z_loss", experts_gate_z_loss)
 
