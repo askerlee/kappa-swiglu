@@ -485,7 +485,7 @@ class Qwen3MLPExperts(nn.Module):
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
-        self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
+        self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.input_grad_scale = 0.1
@@ -493,7 +493,7 @@ class Qwen3MLPExperts(nn.Module):
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
-        if self.training and self.use_experts_gate_z_loss:
+        if self.training and self.use_experts_gate_output_loss:
             if self.input_grad_scale == 1:
                 gate_out_gs = gate_out
             else:
@@ -503,12 +503,8 @@ class Qwen3MLPExperts(nn.Module):
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
             # so expert dimension should be the final logits dimension.
             gate_out_gs = gate_out_gs.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
-            experts_gate_z_loss = compute_z_loss(
-                gate_out_gs,
-                demean_logits=self.z_loss_demean_logits,
-                z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits,
-            )
-            MANAGER.add("experts_gate_z_loss", experts_gate_z_loss)
+            experts_gate_output_loss = (gate_out_gs ** 2).mean()
+            MANAGER.add("experts_gate_output_loss", experts_gate_output_loss)
 
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
@@ -536,7 +532,7 @@ class MOELayer(nn.Module):
         # But the computation is slow, so disabled by default.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
-        self.use_experts_gate_z_loss = config.use_experts_gate_z_loss
+        self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
         # scale down gradients back to expert weights by router_ortho_loss_grad_scale during router orthogonality loss computation.
         # Default: 1, no grad scaling.
         self.exp_gate_grad_scaler = gen_gradient_scaler(self.router_ortho_loss_grad_scale) 
@@ -1047,7 +1043,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
-                   'experts_gate_z_loss': 0,
+                   'experts_gate_output_loss': 0,
                    'projs_diversity_loss': 0,
                    'router_ortho_losses_by_exp': None,
                    'drop_rate_per_ks': None,
@@ -1100,11 +1096,11 @@ class GPT(nn.Module):
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
                 losses['experts_ortho_loss'] = experts_ortho_loss.detach() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
                 MANAGER.reset("experts_ortho_loss")
-            if self.config.n_exp > 1 and self.config.use_experts_gate_z_loss:
-                experts_gate_z_loss = MANAGER.aggregate("experts_gate_z_loss")
-                loss += self.config.experts_gate_z_loss_weight * experts_gate_z_loss
-                losses['experts_gate_z_loss'] = experts_gate_z_loss.detach() if isinstance(experts_gate_z_loss, torch.Tensor) else experts_gate_z_loss
-                MANAGER.reset("experts_gate_z_loss")
+            if self.config.n_exp > 1 and self.config.use_experts_gate_output_loss:
+                experts_gate_output_loss = MANAGER.aggregate("experts_gate_output_loss")
+                loss += self.config.experts_gate_output_loss_weight * experts_gate_output_loss
+                losses['experts_gate_output_loss'] = experts_gate_output_loss.detach() if isinstance(experts_gate_output_loss, torch.Tensor) else experts_gate_output_loss
+                MANAGER.reset("experts_gate_output_loss")
         else:
             # inference: just return the logits directly
             return logits

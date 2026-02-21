@@ -23,7 +23,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
-        use_experts_gate_z_loss: bool = True,  # Always compute gate output regularization loss for ablation study
+        use_experts_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
         router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
@@ -34,7 +34,7 @@ class GPTConfig:
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
-        experts_gate_z_loss_weight: float = 0.00001,  # default weight for gate output regularization loss
+        experts_gate_output_loss_weight: float = 0.00001,  # default weight for gate output regularization loss
         projs_diversity_loss_weight: float = 0.01,  # default weight for gate diversity loss
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
@@ -68,7 +68,7 @@ class GPTConfig:
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_router_ortho_loss = use_router_ortho_loss
         self.use_experts_ortho_loss = use_experts_ortho_loss
-        self.use_experts_gate_z_loss = use_experts_gate_z_loss
+        self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
@@ -77,7 +77,7 @@ class GPTConfig:
         self.router_ortho_loss_leave_one_out = router_ortho_loss_leave_one_out
         self.router_ortho_loss_grad_scale = router_ortho_loss_grad_scale
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
-        self.experts_gate_z_loss_weight = experts_gate_z_loss_weight
+        self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight
         self.train_capacity = train_capacity
         self.eval_capacity = eval_capacity

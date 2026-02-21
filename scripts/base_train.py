@@ -139,7 +139,7 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, hel
 parser.add_argument("--router-ortho-loss-leave-one-out", type=str2bool, nargs='?', const=True, default=False, help="whether to leave one dimension out of the router orthogonality loss.")
 parser.add_argument("--router-ortho-loss-grad-scale", type=float, default=1.0, help="scaling factor for gradients to expert gate projection weights during router orthogonality loss computation. Setting this to a value < 1.0 allows adjusting expert weights slightly, without hurting representation learning too much.")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=0.1, help="weight for negative correlations in router-ortho loss.")
-parser.add_argument("--experts-gate-z-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
+parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
@@ -264,7 +264,7 @@ def build_model_meta(depth):
         router_ortho_loss_leave_one_out=args.router_ortho_loss_leave_one_out,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         router_ortho_loss_grad_scale=args.router_ortho_loss_grad_scale,  
-        experts_gate_z_loss_weight=args.experts_gate_z_loss_weight,
+        experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -795,7 +795,7 @@ while True:
             'router_z_loss': 0.0,
             'router_ortho_loss': 0.0,
             'experts_ortho_loss': 0.0,
-            'experts_gate_z_loss': 0.0,
+            'experts_gate_output_loss': 0.0,
             'projs_diversity_loss': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -867,7 +867,7 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_ortho_loss_step": losses['router_ortho_loss'],
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
-            "train/experts_gate_z_loss_step": losses['experts_gate_z_loss'],
+            "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
             "lrm": lrm,
             "dt": dt,
