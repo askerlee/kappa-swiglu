@@ -76,6 +76,32 @@ class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
+class ReuseMmWithScaledInputGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, output, left, right, alpha):
+        ctx.save_for_backward(left, right, alpha)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        left, right, alpha = ctx.saved_tensors
+
+        grad_output_for_output = None
+
+        if ctx.needs_input_grad[1]:
+            # output = left @ right.T  => dleft = grad_output @ right
+            grad_left = torch.mm(grad_output, right) * alpha
+        else:
+            grad_left = None
+
+        if ctx.needs_input_grad[2]:
+            # output = left @ right.T  => dright = grad_output.T @ left
+            grad_right = torch.mm(grad_output.transpose(0, 1), left)
+        else:
+            grad_right = None
+
+        return grad_output_for_output, grad_left, grad_right, None
+
 class GradientScaler(nn.Module):
     def __init__(self, alpha=1., debug=False, *args, **kwargs):
         """
@@ -235,6 +261,7 @@ class Router(nn.Module):
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
+        self.router_z_loss_input_grad_scale = 0.1
 
     def forward(self, x):
         """
@@ -264,7 +291,13 @@ class Router(nn.Module):
             if self.training:
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
-                    router_z_loss = compute_z_loss(logits.view(B, T, -1), 
+                    if self.router_z_loss_input_grad_scale == 1:
+                        logits_for_z_loss = logits
+                    else:
+                        alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
+                        logits_for_z_loss = ReuseMmWithScaledInputGrad.apply(logits, x_flat, self.w_g.weight, alpha_t)
+
+                    router_z_loss = compute_z_loss(logits_for_z_loss.view(B, T, -1), 
                                                    demean_logits=self.z_loss_demean_logits,
                                                    z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
                     MANAGER.add("router_z_loss", router_z_loss)
@@ -488,16 +521,16 @@ class Qwen3MLPExperts(nn.Module):
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.input_grad_scale = 0.1
+        self.experts_gate_output_loss_input_grad_scale = 0.1
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
         if self.training and self.use_experts_gate_output_loss:
-            if self.input_grad_scale == 1:
+            if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out
             else:
-                alpha_t = torch.as_tensor(self.input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
+                alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
                 gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, x, self.gate_proj, alpha_t)
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
