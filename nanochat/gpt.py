@@ -315,7 +315,8 @@ class Router(nn.Module):
                     # To compute aux loss, we need the full probability distribution,
                     # not just for the top k. We can create this sparsely.
                     all_probs = torch.zeros_like(logits)
-                    top_k_probs = F.softmax(top_k_logits, dim=-1).to(dtype=all_probs.dtype)
+                    top_k_logits_for_aux, _ = logits_for_z_loss.topk(self.top_k, dim=-1) # [B*T, k]
+                    top_k_probs = F.softmax(top_k_logits_for_aux, dim=-1).to(dtype=all_probs.dtype)
                     all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
