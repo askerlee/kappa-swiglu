@@ -261,7 +261,7 @@ class Router(nn.Module):
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
-        self.router_z_loss_input_grad_scale = 0.1
+        self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
 
     def forward(self, x):
         """
@@ -295,6 +295,11 @@ class Router(nn.Module):
                         logits_for_z_loss = logits
                     else:
                         alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
+                        # self.w_g(x_flat) => torch.mm(x_flat, self.w_g.weight.t())
+                        # So the left is x_flat, the right is self.w_g.weight.
+                        # In ReuseMmWithScaledInputGrad, we will scale the gradient 
+                        # to the left (input) but not the right (weights), since we want to stabilize the
+                        # input representations to the router.
                         logits_for_z_loss = ReuseMmWithScaledInputGrad.apply(logits, x_flat, self.w_g.weight, alpha_t)
 
                     router_z_loss = compute_z_loss(logits_for_z_loss.view(B, T, -1), 
