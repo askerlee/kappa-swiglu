@@ -140,6 +140,7 @@ parser.add_argument("--router-ortho-loss-leave-one-out", type=str2bool, nargs='?
 parser.add_argument("--router-ortho-loss-grad-scale", type=float, default=1.0, help="scaling factor for gradients to expert gate projection weights during router orthogonality loss computation. Setting this to a value < 1.0 allows adjusting expert weights slightly, without hurting representation learning too much.")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=0.1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
+# use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
