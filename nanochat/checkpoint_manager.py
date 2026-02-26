@@ -94,8 +94,8 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     model_config_kwargs = meta_data["model_config"]
-    # Override model config with any kwargs provided
-    model_config_kwargs.update(kwargs)
+    # Override model config with any kwargs provided whose values are not None
+    model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)

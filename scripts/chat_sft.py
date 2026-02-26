@@ -103,6 +103,7 @@ wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
 
 # Load the model and tokenizer
+# Add router_ortho_loss_weight only if it's non-negative
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, 
                                     step=args.model_step, router_ortho_loss_weight=args.router_ortho_loss_weight if args.router_ortho_loss_weight >= 0 else None)
 pretrain_batch_size = meta.get("device_batch_size", None)
