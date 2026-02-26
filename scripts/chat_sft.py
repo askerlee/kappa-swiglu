@@ -69,6 +69,8 @@ parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bp
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
 # Output
 parser.add_argument("--dry-run", action="store_true", help="log to wandb but skip checkpoints/report")
+parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
+
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -83,6 +85,10 @@ synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
 # wandb logging init
+if args.wandb_api_key_file:
+    with open(args.wandb_api_key_file, "r") as f:
+        os.environ["WANDB_API_KEY"] = f.read().strip()
+
 use_dummy_wandb = args.model_tag is None or not master_process
 ckpt_prefix2 = args.model_tag
 if args.model_step != -1:
