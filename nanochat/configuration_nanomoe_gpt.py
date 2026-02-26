@@ -15,7 +15,7 @@ class GPTConfig:
         n_kv_head: int = None,  # if None, n_kv_head = n_head
         n_embd: int = 768,
         # MoE-related configs
-        n_exp: int = 32,  # if n_exp = 1 we just use regular MLP layers
+        n_exp: int = 64,  # if n_exp = 1 we just use regular MLP layers
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
         use_aux_loss: bool = True,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
