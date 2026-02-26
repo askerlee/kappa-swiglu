@@ -61,8 +61,9 @@ parser.add_argument("--total-batch-size", type=int, default=524288, help="total 
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
+parser.add_argument("--lr-base-scale", type=float, default=1.0, help="base scale for learning rate")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
-parser.add_argument("--weight-decay", type=float, default=0.0, help="cautious weight decay for the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--init-lr-frac", type=float, default=1.0, help="initial LR as fraction of base LR")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved model config)")
@@ -278,9 +279,9 @@ build_val_loader = lambda: sft_data_generator_bos_bestfit("val")
 progress = 0 # will go from 0 to 1 over the course of the epoch
 
 # Learning rate scheduler
-def get_lr_multiplier(progress):
+def get_lr_multiplier(progress, lr_base_scale=1.0):
     # first 80% of training: no decay, then linearly ramp down to 0.
-    return 1 if progress < 0.8 else 1 - (progress - 0.8) / 0.2
+    return lr_base_scale if progress < 0.8 else lr_base_scale * (1 - (progress - 0.8) / 0.2)
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
@@ -289,7 +290,7 @@ def get_muon_momentum(it):
     return momentum
 
 # Weight decay scheduler for Muon optimizer (linear to zero over the course of training)
-def get_weight_decay(progress):
+def get_weight_decay(progress, weight_decay_scaled):
     progress = min(max(progress, 0.0), 1.0)
     return weight_decay_scaled * (1 - progress)
 
@@ -372,9 +373,9 @@ while True:
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
     # step the optimizer
-    lrm = get_lr_multiplier(progress)
+    lrm = get_lr_multiplier(progress, args.lr_base_scale)
     muon_momentum = get_muon_momentum(step)
-    muon_weight_decay = get_weight_decay(progress)
+    muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':

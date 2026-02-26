@@ -526,7 +526,7 @@ def get_muon_momentum(it):
     return momentum
 
 # Weight decay scheduler for Muon optimizer (linear to zero over the course of training)
-def get_weight_decay(it):
+def get_weight_decay(it, weight_decay_scaled, num_iterations):
     return weight_decay_scaled * (1 - it / num_iterations)
 
 
@@ -823,7 +823,7 @@ while True:
                                 args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
-        muon_weight_decay = get_weight_decay(step)
+        muon_weight_decay = get_weight_decay(step, weight_decay_scaled, num_iterations)
         for group in optimizer.param_groups:
             group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':
