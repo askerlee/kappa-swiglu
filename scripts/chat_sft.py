@@ -62,7 +62,7 @@ parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning ra
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
-parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay for embedding/unembedding parameters (Adam)")
+parser.add_argument("--weight-decay", type=float, default=0.0, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--init-lr-frac", type=float, default=1.0, help="initial LR as fraction of base LR")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved model config)")
@@ -122,12 +122,18 @@ print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
 print0(f"Total batch size {args.total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
 token_bytes = get_token_bytes(device=device)
 
+# Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
+# (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
+weight_decay_scaled = args.weight_decay * (12 / depth)**2
+if depth != 12:
+    print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
+
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
 optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr,
     embedding_lr=args.embedding_lr,
     matrix_lr=args.matrix_lr,
-    weight_decay=args.weight_decay,
+    weight_decay=weight_decay_scaled,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
 )
 # Override the initial learning rate as a fraction of the base learning rate
@@ -282,6 +288,11 @@ def get_muon_momentum(it):
     momentum = (1 - frac) * 0.85 + frac * 0.95
     return momentum
 
+# Weight decay scheduler for Muon optimizer (linear to zero over the course of training)
+def get_weight_decay(progress):
+    progress = min(max(progress, 0.0), 1.0)
+    return weight_decay_scaled * (1 - progress)
+
 # -----------------------------------------------------------------------------
 # Training loop
 x, y = next(train_loader) # prefetch the very first batch of data
@@ -363,10 +374,12 @@ while True:
     # step the optimizer
     lrm = get_lr_multiplier(progress)
     muon_momentum = get_muon_momentum(step)
+    muon_weight_decay = get_weight_decay(progress)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
+            group["weight_decay"] = muon_weight_decay
     optimizer.step()
     model.zero_grad(set_to_none=True)
     synchronize()
