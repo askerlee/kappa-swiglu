@@ -6,13 +6,9 @@
 #SBATCH -t 18:00:00
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
-# if your cluster provides job-local tmp:
-export TMPDIR="${SLURM_TMPDIR:-/scratch/$USER/tmp/$SLURM_JOB_ID}"
-mkdir -p "$TMPDIR"
-
-export WANDB_DIR="$TMPDIR/wandb"
-export WANDB_CACHE_DIR="$TMPDIR/wandb_cache"
-export WANDB_DATA_DIR="$TMPDIR/wandb_data"
+export WANDB_DIR="wandb/$SLURM_JOB_ID"
+export WANDB_CACHE_DIR="$WANDB_DIR/wandb_cache"
+export WANDB_DATA_DIR="$WANDB_DIR/wandb_data"
 mkdir -p "$WANDB_DIR" "$WANDB_CACHE_DIR" "$WANDB_DATA_DIR"
 
 export PYTHONUNBUFFERED=1
