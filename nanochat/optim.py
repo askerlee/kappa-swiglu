@@ -410,6 +410,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
         param_infos = {}
         for p in group['params']:
             grad = p.grad
+            if grad is None:
+                grad = torch.zeros_like(p)
             if p.numel() < 1024:
                 # Small params: all_reduce (no scatter/gather needed)
                 future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
@@ -432,7 +434,10 @@ class DistMuonAdamW(torch.optim.Optimizer):
         shape, device, dtype = p.shape, p.device, p.dtype
 
         # Stack grads and zero-pad to padded_num_params
-        grad_stack = torch.stack([p.grad for p in params])
+        grad_stack = torch.stack([
+            param.grad if param.grad is not None else torch.zeros_like(param)
+            for param in params
+        ])
         stacked_grads = torch.empty(padded_num_params, *shape, dtype=dtype, device=device)
         stacked_grads[:len(params)].copy_(grad_stack)
         if len(params) < padded_num_params:

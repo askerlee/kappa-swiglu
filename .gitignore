@@ -18,3 +18,7 @@ scripts/nanoMoE_train.py
 nanochat/gpt2.py
 output
 .vscode/*
+slurm-*.out
+slurm-*.err
+
+tmp/*
