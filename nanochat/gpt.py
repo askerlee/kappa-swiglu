@@ -1122,8 +1122,10 @@ class GPT(nn.Module):
                 MANAGER.reset("router_z_loss")
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate("router_ortho_loss")
-                loss += self.config.router_ortho_loss_weight * router_ortho_loss 
-                losses['router_ortho_loss'] = router_ortho_loss.detach() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
+                # We use dynamic weight for router_ortho_loss, so we just save it in losses (without detach()), 
+                # and don't add it to the main loss here. 
+                # loss += self.config.router_ortho_loss_weight * router_ortho_loss 
+                losses['router_ortho_loss'] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset("router_ortho_loss")
                 projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss

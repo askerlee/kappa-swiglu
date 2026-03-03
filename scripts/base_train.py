@@ -529,6 +529,9 @@ def get_muon_momentum(it):
 def get_weight_decay(it, weight_decay_scaled, num_iterations):
     return weight_decay_scaled * (1 - it / num_iterations)
 
+def get_router_ortho_loss_weight(it, base_weight, num_iterations):
+    # Linear to zero over the course of training
+    return base_weight * (1 - it / num_iterations)
 
 def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     router_grad_norms = []
@@ -811,6 +814,9 @@ while True:
             with autocast_ctx:
                 loss, losses = model(x, y)
             train_loss = losses['ntp_loss'] # for logging
+            # Most values in losses are detached and for logging only, but router_ortho_loss is not.
+            router_ortho_loss = losses['router_ortho_loss'] 
+            loss = loss + get_router_ortho_loss_weight(step, args.router_ortho_loss_weight, num_iterations) * router_ortho_loss
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
@@ -868,7 +874,7 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/router_ortho_loss_step": losses['router_ortho_loss'],
+            "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
