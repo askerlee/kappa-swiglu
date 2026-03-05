@@ -40,6 +40,8 @@ def _document_batches(split, resume_state_dict, tokenizer_batch_size):
     # NOTE: The parquet_paths are sorted alphabetically. So if we download more parquet files 
     # after saving the state, we will resume from the correct file, and newer files will 
     # be used as pq_idx grows beyond the previous number of files.
+    # NOTE: resume_rg_idx is always rank-0-relative (i.e. base * world_size + 0),
+    # so integer division by world_size is always exact.
     resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
     resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
     resume_epoch = resume_state_dict.get("epoch", 1) if resume_state_dict is not None else 1
@@ -66,8 +68,9 @@ def _document_batches(split, resume_state_dict, tokenizer_batch_size):
             while rg_idx < pf.num_row_groups:
                 rg = pf.read_row_group(rg_idx)
                 batch = rg.column('text').to_pylist()
+                rank0_rg_idx = rg_idx - ddp_rank  # normalize to rank 0's rg_idx (base * world_size + 0)
                 for i in range(0, len(batch), tokenizer_batch_size):
-                    yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx, epoch)
+                    yield batch[i:i+tokenizer_batch_size], (pq_idx, rank0_rg_idx, epoch)
                 rg_idx += ddp_world_size
             pq_idx += 1
         first_pass = False
