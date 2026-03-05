@@ -50,6 +50,7 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--dtype", type=str, default="bfloat16", help="float32|bfloat16")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
+parser.add_argument("--model-save-tag", type=str, default=None, help="extra model tag to append to the saved folder")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
@@ -99,6 +100,9 @@ if args.model_step != -1:
     if mat:
         ckpt_prefix2 += f"-{mat.group(1)}"
 
+if args.model_save_tag:
+    ckpt_prefix2 = ckpt_prefix2 + '-' + args.model_save_tag
+    
 wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
@@ -336,7 +340,10 @@ while True:
     # save checkpoint at the end of the run (only on master process)
     if master_process and last_step and not args.dry_run:
         output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
+        if args.model_save_tag:
+            output_dirname += f"-{args.model_save_tag}"
         checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
+
         save_checkpoint(
             checkpoint_dir,
             step,

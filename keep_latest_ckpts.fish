@@ -75,14 +75,11 @@ function process_ckpt_dir
         set -l meta "$ckpt_dir/meta_$step.json"
         set -l model "$ckpt_dir/model_$step.pt"
 
-        for i in 0 1 2 3
-            set -l optim "$ckpt_dir/optim_{$step}_rank{$i}.pt"
-            for p in $meta $model $optim
-                if test -e "$p"
-                    echo "rm -f -- $p"
-                    if test $dry_run -eq 0
-                        rm -f -- "$p"
-                    end
+        for p in $meta $model "$ckpt_dir"/optim_"$step"_rank*.pt
+            if test -e "$p"
+                echo "rm -f -- $p"
+                if test $dry_run -eq 0
+                    rm -f -- "$p"
                 end
             end
         end
