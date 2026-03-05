@@ -294,6 +294,10 @@ def get_weight_decay(progress, weight_decay_scaled):
     progress = min(max(progress, 0.0), 1.0)
     return weight_decay_scaled * (1 - progress)
 
+def get_router_ortho_loss_weight(progress, base_weight):
+    # Linear to zero over the course of training
+    return base_weight * (1 - progress)
+
 # -----------------------------------------------------------------------------
 # Training loop
 x, y = next(train_loader) # prefetch the very first batch of data
@@ -368,6 +372,10 @@ while True:
         with autocast_ctx:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
+        # Most values in losses are detached and for logging only, but router_ortho_loss is not.
+        router_ortho_loss = losses['router_ortho_loss'] 
+        loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
+
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
