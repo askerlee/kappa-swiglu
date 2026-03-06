@@ -798,6 +798,7 @@ while True:
         losses = {
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
+            'latent_aux_loss': 0.0,
             'router_z_loss': 0.0,
             'router_ortho_loss': 0.0,
             'experts_ortho_loss': 0.0,
@@ -873,6 +874,7 @@ while True:
             "total_training_time": total_training_time,
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
+            "train/latent_aux_loss_step":   losses['latent_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],

@@ -122,7 +122,9 @@ orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 if args.router_ortho_loss_weight == -1:
-    args.router_ortho_loss_weight = model.config.get("router_ortho_loss_weight", 0.0) * args.router_ortho_loss_weight_scale
+    # model.config.router_ortho_loss_weight is the weight used in base training.
+    args.router_ortho_loss_weight = model.config.router_ortho_loss_weight * args.router_ortho_loss_weight_scale
+    print0(f"Override router_ortho_loss_weight: {args.router_ortho_loss_weight}")
 
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank

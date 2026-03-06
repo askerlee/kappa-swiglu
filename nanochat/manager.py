@@ -11,6 +11,7 @@ class MOEManager:
         self.collect_load_balancing_stats = False
         self._values = {
             "aux_loss": [],
+            "latent_aux_loss": [],
             "router_z_loss": [],
             "router_ortho_loss": [],
             "experts_ortho_loss": [],

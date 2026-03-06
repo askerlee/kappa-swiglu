@@ -262,6 +262,8 @@ class Router(nn.Module):
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
+        self.expert_probs = None
+        self.top_k_indices = None
 
     def forward(self, x):
         """
@@ -319,6 +321,8 @@ class Router(nn.Module):
                     all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
+                    self.expert_probs = all_probs.detach().clone()
+                    self.top_k_indices = top_k_indices.clone()
             else:
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
@@ -527,10 +531,13 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
+        self.gate_out = None
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
+        self.gate_out = gate_out.detach().clone()
+
         if self.training and self.use_experts_gate_output_loss:
             if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out
@@ -562,6 +569,7 @@ class MOELayer(nn.Module):
 
         self.n_exp = config.n_exp
         self.top_k = config.moe_top_k
+        self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         self.router_ortho_loss_leave_one_out = config.router_ortho_loss_leave_one_out
@@ -641,6 +649,10 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
+        if self.training and self.use_aux_loss:
+            latent_aux_loss = self.compute_latent_aux_loss(self.router.expert_probs, 
+                                                        self.router.top_k_indices, self.experts.gate_out)
+            MANAGER.add("latent_aux_loss", latent_aux_loss)
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -701,6 +713,27 @@ class MOELayer(nn.Module):
             ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
             return ortho_loss, ortho_losses_by_exp
 
+    def compute_latent_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor, 
+                                experts_gate_out: torch.Tensor):
+        """
+        Computes latent auxiliary loss
+        """
+
+        # equation (5): compute ratio of tokens allocated to each expert
+        # total number of tokens is defined as total tokens in batch * k
+        # (k = 1) for the Switch Transformer
+        with torch.no_grad():
+            one_hot_indices = F.one_hot(indices, num_classes=self.n_exp)  # [B, T, k, n_exp]
+            one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)  # [B, T, n_exp] (sum over k dimension)
+            tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
+
+        # equation (6): compute ratio of router probability allocated to each expert
+        prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
+
+        # equation (4): take a scaled dot product between prob/token allocation vectors
+        # multiply the result by the number of experts
+        return self.n_exp * torch.sum(prob_per_expert * tokens_per_expert)
+                
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
         loss = 0
@@ -1078,6 +1111,7 @@ class GPT(nn.Module):
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
+                   'latent_aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
@@ -1114,6 +1148,9 @@ class GPT(nn.Module):
                 loss += self.config.aux_loss_weight * aux_loss
                 losses['aux_loss'] = aux_loss.detach() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 MANAGER.reset("aux_loss")
+                # latent_aux_loss is not for optimization but only for visualization.
+                losses['latent_aux_loss'] = MANAGER.aggregate("latent_aux_loss")
+                MANAGER.reset("latent_aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
                 # router_z_loss_weight: default 1e-5.
