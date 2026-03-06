@@ -67,7 +67,12 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--init-lr-frac", type=float, default=1.0, help="initial LR as fraction of base LR")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
-                    help="weight for router orthogonality loss (default: -1.0, inherit from saved model config)")
+                    help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
+# If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
+# If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
+parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
+                    help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
+                         "Only effective when --router-ortho-loss-weight is not specified.")
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
@@ -108,15 +113,17 @@ wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
 
 # Load the model and tokenizer
-# Add router_ortho_loss_weight only if it's non-negative
-model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, 
-                                    step=args.model_step, router_ortho_loss_weight=args.router_ortho_loss_weight if args.router_ortho_loss_weight >= 0 else None)
+# We don't have to update router_ortho_loss_weight here, since it's used outside the model.
+model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and args.device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device-batch-size to this script?")
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
+if args.router_ortho_loss_weight == -1:
+    args.router_ortho_loss_weight = model.config.get("router_ortho_loss_weight", 0.0) * args.router_ortho_loss_weight_scale
+
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
