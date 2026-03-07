@@ -10,4 +10,4 @@
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
 export BASE_TRAIN_EXTRA_ARGS="$@"
-torchrun --standalone --nproc_per_node=4 -m scripts.base_train --save-every 17778 --model-tag "$SLURM_JOB_ID" "$@"
+torchrun --standalone --nproc_per_node=4 -m scripts.base_train --save-every 8889 --model-tag "$SLURM_JOB_ID" "$@"

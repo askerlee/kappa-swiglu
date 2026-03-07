@@ -321,8 +321,8 @@ class Router(nn.Module):
                     all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
-                    self.expert_probs = all_probs.detach().clone()
-                    self.top_k_indices = top_k_indices.clone()
+                    self.expert_probs = all_probs.view(B, T, -1).detach().clone()
+                    self.top_k_indices = top_k_indices.view(B, T, -1).clone()
             else:
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
@@ -531,12 +531,12 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
-        self.gate_out = None
+        self.gate_out_acts = None
 
     def forward(self, x):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
-        self.gate_out = gate_out.detach().clone()
+        self.gate_out_acts = self.act_fn(gate_out.detach())
 
         if self.training and self.use_experts_gate_output_loss:
             if self.experts_gate_output_loss_input_grad_scale == 1:
@@ -640,6 +640,10 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
+        valid_mask = flat_rank < exp_capacity
+        valid_expert_indices = flat_top_k_indices[valid_mask]
+        num_valid_tokens_per_expert = torch.bincount(valid_expert_indices, minlength=self.n_exp)
+
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
@@ -650,9 +654,13 @@ class MOELayer(nn.Module):
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
         if self.training and self.use_aux_loss:
-            latent_aux_loss = self.compute_latent_aux_loss(self.router.expert_probs, 
-                                                        self.router.top_k_indices, self.experts.gate_out)
-            MANAGER.add("latent_aux_loss", latent_aux_loss)
+            gated_aux_loss = self.compute_gated_aux_loss(
+                self.router.expert_probs,
+                self.router.top_k_indices,
+                self.experts.gate_out_acts,
+                num_valid_tokens_per_expert,
+            )
+            MANAGER.add("gated_aux_loss", gated_aux_loss)
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -713,8 +721,13 @@ class MOELayer(nn.Module):
             ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
             return ortho_loss, ortho_losses_by_exp
 
-    def compute_latent_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor, 
-                                experts_gate_out: torch.Tensor):
+    def compute_gated_aux_loss(
+        self,
+        expert_probs: torch.Tensor,
+        indices: torch.Tensor,
+        expert_gate_out_acts: torch.Tensor,
+        num_valid_tokens_per_expert: torch.Tensor,
+    ):
         """
         Computes latent auxiliary loss
         """
@@ -728,11 +741,24 @@ class MOELayer(nn.Module):
             tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
 
         # equation (6): compute ratio of router probability allocated to each expert
+        # expert_probs: [B, T, n_exp]. prob_per_expert: [n_exp].
         prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
-
+        # expert_gate_out_acts: [n_exp, capacity, intermediate_size]
+        # num_valid_tokens_per_expert: [n_exp], counts only routed tokens that were within capacity.
+        # Average over valid expert slots only; empty capacity slots are zero-padded and must not dilute the mean.
+        abs_act_sums = expert_gate_out_acts.abs().sum(dim=(1, 2))
+        denom = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts.dtype).clamp_min(1)
+        denom = denom * expert_gate_out_acts.size(-1)
+        expert_mean_abs_acts = abs_act_sums / denom
+        mean_abs_act_across_experts = expert_mean_abs_acts.mean()
+        expert_mean_act_ratios = expert_mean_abs_acts / mean_abs_act_across_experts
+        # Apply expert_mean_act_ratios to prob_per_expert.
+        prob_per_expert_adj = prob_per_expert * expert_mean_act_ratios
+        # Renormalize the adjusted prob_per_expert to sum to 1.
+        prob_per_expert_adj = prob_per_expert_adj / prob_per_expert_adj.sum()  
         # equation (4): take a scaled dot product between prob/token allocation vectors
         # multiply the result by the number of experts
-        return self.n_exp * torch.sum(prob_per_expert * tokens_per_expert)
+        return self.n_exp * torch.sum(prob_per_expert_adj * tokens_per_expert)
                 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
@@ -1111,7 +1137,7 @@ class GPT(nn.Module):
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
-                   'latent_aux_loss': 0,
+                   'gated_aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
@@ -1148,9 +1174,9 @@ class GPT(nn.Module):
                 loss += self.config.aux_loss_weight * aux_loss
                 losses['aux_loss'] = aux_loss.detach() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 MANAGER.reset("aux_loss")
-                # latent_aux_loss is not for optimization but only for visualization.
-                losses['latent_aux_loss'] = MANAGER.aggregate("latent_aux_loss")
-                MANAGER.reset("latent_aux_loss")
+                # gated_aux_loss is not for optimization but only for visualization.
+                losses['gated_aux_loss'] = MANAGER.aggregate("gated_aux_loss")
+                MANAGER.reset("gated_aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
                 # router_z_loss_weight: default 1e-5.

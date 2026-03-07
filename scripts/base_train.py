@@ -798,7 +798,7 @@ while True:
         losses = {
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
-            'latent_aux_loss': 0.0,
+            'gated_aux_loss': 0.0,
             'router_z_loss': 0.0,
             'router_ortho_loss': 0.0,
             'experts_ortho_loss': 0.0,
@@ -818,6 +818,7 @@ while True:
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
             router_ortho_loss = losses['router_ortho_loss'] 
             loss = loss + get_router_ortho_loss_weight(step, args.router_ortho_loss_weight, num_iterations) * router_ortho_loss
+            
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
@@ -874,7 +875,7 @@ while True:
             "total_training_time": total_training_time,
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
-            "train/latent_aux_loss_step":   losses['latent_aux_loss'],
+            "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
