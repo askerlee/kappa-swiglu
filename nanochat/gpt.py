@@ -65,12 +65,25 @@ class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
         grad_output_for_output = None
 
         if ctx.needs_input_grad[1]:
-            grad_left = torch.bmm(grad_output, right.transpose(1, 2)) * alpha
+            right_t = right.transpose(1, 2)
+            if right_t.dtype != grad_output.dtype:
+                right_t = right_t.to(dtype=grad_output.dtype)
+            grad_left = torch.bmm(grad_output, right_t)
+            if alpha.dtype != grad_left.dtype:
+                alpha = alpha.to(dtype=grad_left.dtype)
+            grad_left = grad_left * alpha
+            if grad_left.dtype != left.dtype:
+                grad_left = grad_left.to(dtype=left.dtype)
         else:
             grad_left = None
 
         if ctx.needs_input_grad[2]:
-            grad_right = torch.bmm(left.transpose(1, 2), grad_output)
+            left_t = left.transpose(1, 2)
+            if left_t.dtype != grad_output.dtype:
+                left_t = left_t.to(dtype=grad_output.dtype)
+            grad_right = torch.bmm(left_t, grad_output)
+            if grad_right.dtype != right.dtype:
+                grad_right = grad_right.to(dtype=right.dtype)
         else:
             grad_right = None
 
@@ -90,13 +103,26 @@ class ReuseMmWithScaledInputGrad(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             # output = left @ right.T  => dleft = grad_output @ right
-            grad_left = torch.mm(grad_output, right) * alpha
+            right_for_grad_left = right
+            if right_for_grad_left.dtype != grad_output.dtype:
+                right_for_grad_left = right_for_grad_left.to(dtype=grad_output.dtype)
+            grad_left = torch.mm(grad_output, right_for_grad_left)
+            if alpha.dtype != grad_left.dtype:
+                alpha = alpha.to(dtype=grad_left.dtype)
+            grad_left = grad_left * alpha
+            if grad_left.dtype != left.dtype:
+                grad_left = grad_left.to(dtype=left.dtype)
         else:
             grad_left = None
 
         if ctx.needs_input_grad[2]:
             # output = left @ right.T  => dright = grad_output.T @ left
-            grad_right = torch.mm(grad_output.transpose(0, 1), left)
+            left_for_grad_right = left
+            if left_for_grad_right.dtype != grad_output.dtype:
+                left_for_grad_right = left_for_grad_right.to(dtype=grad_output.dtype)
+            grad_right = torch.mm(grad_output.transpose(0, 1), left_for_grad_right)
+            if grad_right.dtype != right.dtype:
+                grad_right = grad_right.to(dtype=right.dtype)
         else:
             grad_right = None
 
@@ -438,8 +464,6 @@ class Router(nn.Module):
             mean_selected_scores = score_sum / counts.clamp_min(1.0)          # [n_exp]
             return mean_selected_scores
 
-        
-
     def get_capacity(self, tokens_per_batch):
         # expert capacity is given by (tokens_per_batch / num_experts) * capacity_factor
         # see eq (3) in Switch Transformer (https://arxiv.org/abs/2101.03961)
@@ -605,6 +629,12 @@ class MOELayer(nn.Module):
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
+    @torch._dynamo.disable
+    def _count_valid_tokens_per_expert(self, flat_rank, exp_capacity, flat_top_k_indices):
+        valid_mask = flat_rank < exp_capacity
+        valid_expert_indices = flat_top_k_indices[valid_mask]
+        return torch.bincount(valid_expert_indices, minlength=self.n_exp)
+
     def forward(self, x: torch.Tensor):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
@@ -640,10 +670,6 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
-        valid_mask = flat_rank < exp_capacity
-        valid_expert_indices = flat_top_k_indices[valid_mask]
-        num_valid_tokens_per_expert = torch.bincount(valid_expert_indices, minlength=self.n_exp)
-
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
@@ -654,6 +680,11 @@ class MOELayer(nn.Module):
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
         if self.training and self.use_aux_loss:
+            num_valid_tokens_per_expert = self._count_valid_tokens_per_expert(
+                flat_rank,
+                exp_capacity,
+                flat_top_k_indices,
+            )
             gated_aux_loss = self.compute_gated_aux_loss(
                 self.router.expert_probs,
                 self.router.top_k_indices,
@@ -746,12 +777,11 @@ class MOELayer(nn.Module):
         # expert_gate_out_acts: [n_exp, capacity, intermediate_size]
         # num_valid_tokens_per_expert: [n_exp], counts only routed tokens that were within capacity.
         # Average over valid expert slots only; empty capacity slots are zero-padded and must not dilute the mean.
-        abs_act_sums = expert_gate_out_acts.abs().sum(dim=(1, 2))
-        denom = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts.dtype).clamp_min(1)
-        denom = denom * expert_gate_out_acts.size(-1)
-        expert_mean_abs_acts = abs_act_sums / denom
-        mean_abs_act_across_experts = expert_mean_abs_acts.mean()
-        expert_mean_act_ratios = expert_mean_abs_acts / mean_abs_act_across_experts
+        abs_act_per_slot = expert_gate_out_acts.abs().mean(dim=-1) # [n_exp, capacity]
+        valid_counts = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts.dtype)
+        expert_mean_abs_acts = abs_act_per_slot.sum(dim=1) / valid_counts.clamp_min(1)
+        mean_abs_act_across_experts = abs_act_per_slot.sum() / valid_counts.sum().clamp_min(1)
+        expert_mean_act_ratios = expert_mean_abs_acts / mean_abs_act_across_experts  # [n_exp]
         # Apply expert_mean_act_ratios to prob_per_expert.
         prob_per_expert_adj = prob_per_expert * expert_mean_act_ratios
         # Renormalize the adjusted prob_per_expert to sum to 1.
