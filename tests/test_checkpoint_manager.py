@@ -141,3 +141,40 @@ def test_load_optimizer_state_dict_reshards_without_current_rank_file(tmp_path):
     assert loaded_state["exp_avg_sq"].shape == (16, 32)
     assert torch.equal(loaded_state["exp_avg"], make_row_tensor(48, 16, 32))
     assert torch.equal(loaded_state["exp_avg_sq"], make_row_tensor(1048, 16, 32))
+
+
+def test_load_optimizer_state_dict_reshards_when_world_size_shrinks(tmp_path):
+    step = 34
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    param = torch.nn.Parameter(torch.zeros(64, 32))
+    optimizer = make_optimizer([
+        {"kind": "adamw", "params": [param], "lr": 1e-3}
+    ])
+    saved_param_groups = [{"kind": "adamw", "params": [0], "lr": 1e-3}]
+
+    for saved_rank in range(4):
+        shard = make_adamw_shard(
+            saved_param_groups,
+            0,
+            make_row_tensor(saved_rank * 16, 16, 32),
+            make_row_tensor(2000 + saved_rank * 16, 16, 32),
+        )
+        torch.save(shard, checkpoint_dir / f"optim_{step:06d}_rank{saved_rank}.pt")
+
+    state_dict = load_optimizer_state_dict(
+        str(checkpoint_dir),
+        step,
+        optimizer,
+        device="cpu",
+        rank=1,
+        current_world_size=2,
+        saved_world_size=4,
+    )
+
+    loaded_state = state_dict["state"][0]
+    assert loaded_state["exp_avg"].shape == (32, 32)
+    assert loaded_state["exp_avg_sq"].shape == (32, 32)
+    assert torch.equal(loaded_state["exp_avg"], make_row_tensor(32, 32, 32))
+    assert torch.equal(loaded_state["exp_avg_sq"], make_row_tensor(2032, 32, 32))
