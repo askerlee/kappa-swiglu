@@ -31,8 +31,6 @@ class GPTConfig:
         router_wg_grad_scale: float = 1.0,  # scale gradients for router w_g weights without affecting router inputs.
         router_ortho_loss_weight: float = 0.0001,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 0.1,  # weight for negative correlations in router-ortho loss
-        router_ortho_loss_leave_one_out: bool = False,  # whether to leave one dimension out of the router orthogonality loss.
-        router_ortho_loss_grad_scale: float = 1.0,  # scaling factor for gradients to expert gate projection weights during router orthogonality loss computation.
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
@@ -78,8 +76,6 @@ class GPTConfig:
         self.router_wg_grad_scale = router_wg_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        self.router_ortho_loss_leave_one_out = router_ortho_loss_leave_one_out
-        self.router_ortho_loss_grad_scale = router_ortho_loss_grad_scale
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight
