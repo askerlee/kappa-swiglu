@@ -286,8 +286,17 @@ class Router(nn.Module):
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
+        self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.expert_probs = None
         self.top_k_indices = None
+        self._router_wg_grad_hook = None
+        if self.router_wg_grad_scale != 1.0:
+            self._router_wg_grad_hook = self.w_g.weight.register_hook(self._scale_router_wg_grad)
+
+    def _scale_router_wg_grad(self, grad):
+        if grad is None or self.router_wg_grad_scale == 1.0:
+            return grad
+        return grad * self.router_wg_grad_scale
 
     def forward(self, x):
         """
@@ -307,6 +316,7 @@ class Router(nn.Module):
             # 1. GET ROUTING LOGITS
             # ---------------------
             logits = self.w_g(x_flat)  # [B*T, n_exp]
+
             if self.training and self.use_noisy_top_k:
                 noise = F.softplus(self.w_noise(x_flat))
                 noise *= torch.randn_like(noise)
