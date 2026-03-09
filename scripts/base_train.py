@@ -297,14 +297,14 @@ if resuming:
     print0(f"Resuming optimization from {checkpoint_dir} step {args.resume_from_step}")
     optimizer_shards = glob.glob(os.path.join(checkpoint_dir, f"optim_{args.resume_from_step:06d}_rank*.pt"))
     saved_optimizer_world_size = len(optimizer_shards)
-    load_optimizer_state = saved_optimizer_world_size == ddp_world_size
+    load_optimizer_state = saved_optimizer_world_size <= ddp_world_size
     skip_optimizer_reason = None
     if saved_optimizer_world_size == 0:
         skip_optimizer_reason = "No optimizer checkpoint shard found; resuming with fresh optimizer state."
     elif not load_optimizer_state:
         skip_optimizer_reason = (
             "Skipping optimizer state load because checkpoint optimizer shards "
-            f"({saved_optimizer_world_size}) do not match current world size ({ddp_world_size})."
+            f"({saved_optimizer_world_size}) > current world size ({ddp_world_size})."
         )
     model_data, optimizer_data, meta_data = load_checkpoint(
         checkpoint_dir,
@@ -314,13 +314,13 @@ if resuming:
         rank=ddp_rank,
     )
     saved_optimizer_world_size = meta_data.get("optimizer_world_size", saved_optimizer_world_size)
-    if saved_optimizer_world_size != ddp_world_size:
+    if saved_optimizer_world_size > ddp_world_size:
         if optimizer_data is not None:
             del optimizer_data
             optimizer_data = None
         skip_optimizer_reason = (
             "Skipping optimizer state load because checkpoint optimizer world size "
-            f"({saved_optimizer_world_size}) does not match current world size ({ddp_world_size})."
+            f"({saved_optimizer_world_size}) > current world size ({ddp_world_size})."
         )
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
