@@ -193,6 +193,10 @@ milestones = parse_milestones_arg(args.milestones)
 # Compute init and wandb logging
 
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
+# ddp is just a boolean meaning “this run was launched in distributed mode,” 
+# not “the model is wrapped in PyTorch DistributedDataParallel.”
+# The model is only assigned to orig_model and optionally passed to torch.compile; 
+# it is never wrapped in DistributedDataParallel(...).
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type, seed=args.seed)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16) if device_type == "cuda" else nullcontext()
@@ -561,6 +565,42 @@ def get_router_ortho_loss_weight(it, base_weight, num_iterations):
     # Linear to zero over the course of training
     return base_weight * (1 - it / num_iterations)
 
+def accumulate_step_losses(step_losses, micro_losses):
+    """Accumulate detached per-microstep losses for step-level logging."""
+    if step_losses is None:
+        step_losses = {}
+
+    for key, value in micro_losses.items():
+        if value is None:
+            step_losses.setdefault(key, None)
+            continue
+
+        if torch.is_tensor(value):
+            detached_value = value.detach()
+            if key not in step_losses or step_losses[key] is None:
+                step_losses[key] = detached_value.clone()
+            else:
+                step_losses[key].add_(detached_value)
+        else:
+            if key not in step_losses or step_losses[key] is None:
+                step_losses[key] = value
+            else:
+                step_losses[key] += value
+
+    return step_losses
+
+def average_step_losses(step_losses, grad_accum_steps):
+    """Average accumulated losses across microsteps."""
+    averaged_losses = {}
+    for key, value in step_losses.items():
+        if value is None:
+            averaged_losses[key] = None
+        elif torch.is_tensor(value):
+            averaged_losses[key] = value / grad_accum_steps
+        else:
+            averaged_losses[key] = value / grad_accum_steps
+    return averaged_losses
+
 def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     router_grad_norms = []
     router_grad_self_alignments = []
@@ -840,17 +880,20 @@ while True:
     else:
         synchronize()
         t0 = time.time()
+        step_losses = None
         for micro_step in range(grad_accum_steps):
             with autocast_ctx:
-                loss, losses = model(x, y)
-            train_loss = losses['ntp_loss'] # for logging
+                loss, micro_losses = model(x, y)
+            step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-            router_ortho_loss = losses['router_ortho_loss'] 
+            router_ortho_loss = micro_losses['router_ortho_loss'] 
             loss = loss + get_router_ortho_loss_weight(step, args.router_ortho_loss_weight, num_iterations) * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+
+        losses = average_step_losses(step_losses, grad_accum_steps)
 
         if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
             collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
@@ -868,7 +911,7 @@ while True:
                 group["weight_decay"] = muon_weight_decay
         optimizer.step()
         model.zero_grad(set_to_none=True)
-        train_loss_f = train_loss.item() # .item() is a CPU-GPU sync point
+        train_loss_f = losses['ntp_loss'].item() # .item() is a CPU-GPU sync point
         synchronize()
         t1 = time.time()
         dt = t1 - t0

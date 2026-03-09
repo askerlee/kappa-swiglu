@@ -223,6 +223,11 @@ def load_optimizer_state_dict(checkpoint_dir, step, optimizer, device, rank=0, c
         current_world_size=current_world_size,
     )
 
+# the sharding being handled is optimizer-state sharding, not model-weight sharding. 
+# Rank 0 saves one full model checkpoint, while every rank saves its own optimizer 
+# shard as optim_<step>_rank<rank>.pt. 
+# It's data-parallel training with a custom ZeRO-2-style optimizer/update sharding scheme, 
+# not FSDP or tensor/pipeline/expert parallelism.
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
     if rank == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
