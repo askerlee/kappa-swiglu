@@ -165,9 +165,7 @@ def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True,
 
     # exponentiate logits, sum logits of each expert, take log, and square
     # code below is the same as:
-    # > z_loss = torch.exp(logits)
-    # > z_loss = torch.sum(z_loss, dim=-1)
-    # > z_loss = torch.log(z_loss) ** 2.0
+    # > z_loss = torch.log(torch.exp(logits).sum(dim=-1)) ** 2.0
     if demean_logits:
         z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
     else:
@@ -555,12 +553,17 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
-        self.gate_out_acts = None
+        self.gate_out_acts_normed = None
 
     def forward(self, x):
+        # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
-        self.gate_out_acts = self.act_fn(gate_out.detach())
+        # gate_out_acts_normed: [n_exp, capacity, intermediate_size]
+        # silu can be viewed as two pieces of linear functions, of the positive and negative regions.
+        # So we can normalize the output activations by the input norms.
+        #denom = x.norm(dim=-1, keepdim=True) * self.gate_proj.norm(dim=1, keepdim=True)
+        #self.gate_out_acts_normed = self.act_fn(gate_out.detach()) / denom.clamp_min(1e-12)
 
         if self.training and self.use_experts_gate_output_loss:
             if self.experts_gate_output_loss_input_grad_scale == 1:
@@ -679,19 +682,25 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
+        '''
         if self.training and self.use_aux_loss:
             num_valid_tokens_per_expert = self._count_valid_tokens_per_expert(
                 flat_rank,
                 exp_capacity,
                 flat_top_k_indices,
             )
-            gated_aux_loss = self.compute_gated_aux_loss(
+            gated_aux_loss, expert_mean_act_ratios = self.compute_gated_aux_loss(
                 self.router.expert_probs,
                 self.router.top_k_indices,
-                self.experts.gate_out_acts,
+                self.experts.gate_out_acts_normed,
                 num_valid_tokens_per_expert,
             )
             MANAGER.add("gated_aux_loss", gated_aux_loss)
+            print0("expert_mean_act_ratios:")
+            print0(expert_mean_act_ratios)
+            print0("router_ortho_losses_by_exp:")
+            print0(router_ortho_losses_by_exp)
+        '''
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -752,11 +761,12 @@ class MOELayer(nn.Module):
             ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
             return ortho_loss, ortho_losses_by_exp
 
+    @torch._dynamo.disable
     def compute_gated_aux_loss(
         self,
         expert_probs: torch.Tensor,
         indices: torch.Tensor,
-        expert_gate_out_acts: torch.Tensor,
+        expert_gate_out_acts_normed: torch.Tensor,
         num_valid_tokens_per_expert: torch.Tensor,
     ):
         """
@@ -774,21 +784,22 @@ class MOELayer(nn.Module):
         # equation (6): compute ratio of router probability allocated to each expert
         # expert_probs: [B, T, n_exp]. prob_per_expert: [n_exp].
         prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
-        # expert_gate_out_acts: [n_exp, capacity, intermediate_size]
+        # expert_gate_out_acts_normed: [n_exp, capacity, intermediate_size]
         # num_valid_tokens_per_expert: [n_exp], counts only routed tokens that were within capacity.
         # Average over valid expert slots only; empty capacity slots are zero-padded and must not dilute the mean.
-        abs_act_per_slot = expert_gate_out_acts.abs().mean(dim=-1) # [n_exp, capacity]
-        valid_counts = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts.dtype)
+        abs_act_per_slot = expert_gate_out_acts_normed.abs().mean(dim=-1) # [n_exp, capacity]
+        valid_counts = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts_normed.dtype)
         expert_mean_abs_acts = abs_act_per_slot.sum(dim=1) / valid_counts.clamp_min(1)
         mean_abs_act_across_experts = abs_act_per_slot.sum() / valid_counts.sum().clamp_min(1)
         expert_mean_act_ratios = expert_mean_abs_acts / mean_abs_act_across_experts  # [n_exp]
         # Apply expert_mean_act_ratios to prob_per_expert.
         prob_per_expert_adj = prob_per_expert * expert_mean_act_ratios
         # Renormalize the adjusted prob_per_expert to sum to 1.
-        prob_per_expert_adj = prob_per_expert_adj / prob_per_expert_adj.sum()  
+        prob_per_expert_adj = prob_per_expert_adj / prob_per_expert_adj.sum()
         # equation (4): take a scaled dot product between prob/token allocation vectors
         # multiply the result by the number of experts
-        return self.n_exp * torch.sum(prob_per_expert_adj * tokens_per_expert)
+        gated_aux_loss = self.n_exp * torch.sum(prob_per_expert_adj * tokens_per_expert)
+        return gated_aux_loss, expert_mean_act_ratios
                 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
