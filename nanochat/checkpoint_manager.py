@@ -1,6 +1,7 @@
 """
 Utilities for saving and loading model/optim/state checkpoints.
 """
+import copy
 import os
 import re
 import glob
@@ -40,6 +41,188 @@ def _patch_missing_keys(model_data, model_config):
         model_data["x0_lambdas"] = torch.zeros(n_layer)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
 
+
+def _optimizer_shard_path(checkpoint_dir, step, rank):
+    return os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
+
+
+def find_optimizer_shard_ranks(checkpoint_dir, step):
+    shard_pattern = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank*.pt")
+    ranks = []
+    for shard_path in glob.glob(shard_pattern):
+        match = re.search(r"_rank(\d+)\.pt$", os.path.basename(shard_path))
+        if match is not None:
+            ranks.append(int(match.group(1)))
+    return sorted(ranks)
+
+
+def _clone_optimizer_state_value(value):
+    if torch.is_tensor(value):
+        return value.clone()
+    return copy.deepcopy(value)
+
+
+def _require_complete_shard_entries(shard_entries, description):
+    present_entries = [entry for entry in shard_entries if entry is not None]
+    if not present_entries:
+        return None
+    if len(present_entries) != len(shard_entries):
+        missing_ranks = [idx for idx, entry in enumerate(shard_entries) if entry is None]
+        raise ValueError(f"Incomplete optimizer state for {description}; missing shards {missing_ranks}")
+    return present_entries
+
+
+def _reshard_adamw_state(shard_entries, param, rank, current_world_size):
+    if param.numel() < 1024:
+        return {key: _clone_optimizer_state_value(value) for key, value in shard_entries[0].items()}
+
+    if param.shape[0] % current_world_size != 0:
+        raise ValueError(
+            "AdamW optimizer state reshard requires shape[0] divisible by current world size. "
+            f"Got shape[0]={param.shape[0]} and world size={current_world_size}."
+        )
+
+    rank_size = param.shape[0] // current_world_size
+    start = rank * rank_size
+    end = start + rank_size
+    local_state = {}
+    for key, value in shard_entries[0].items():
+        if torch.is_tensor(value) and value.ndim > 0:
+            full_value = torch.cat([entry[key] for entry in shard_entries], dim=0)
+            if full_value.shape[0] != param.shape[0]:
+                raise ValueError(
+                    f"AdamW state shape mismatch for key '{key}': "
+                    f"reconstructed dim0={full_value.shape[0]}, expected={param.shape[0]}"
+                )
+            local_state[key] = full_value[start:end].clone()
+        else:
+            local_state[key] = _clone_optimizer_state_value(value)
+    return local_state
+
+
+def _reshard_muon_state(shard_entries, num_params, rank, current_world_size):
+    chunk_size = (num_params + current_world_size - 1) // current_world_size
+    start = rank * chunk_size
+    end = min(start + chunk_size, num_params)
+    local_state = {}
+
+    for key, value in shard_entries[0].items():
+        if torch.is_tensor(value) and value.ndim > 0:
+            full_value = torch.cat([entry[key] for entry in shard_entries], dim=0)
+            if full_value.shape[0] < num_params:
+                raise ValueError(
+                    f"Muon state shape mismatch for key '{key}': "
+                    f"reconstructed dim0={full_value.shape[0]}, expected at least {num_params}"
+                )
+            full_value = full_value[:num_params]
+            local_value = value.new_zeros((chunk_size, *value.shape[1:]))
+            if start < num_params:
+                local_value[:end - start].copy_(full_value[start:end])
+            local_state[key] = local_value
+        else:
+            local_state[key] = _clone_optimizer_state_value(value)
+    return local_state
+
+
+def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_world_size=1, current_world_size=1):
+    if not shard_state_dicts:
+        raise ValueError("No optimizer state shards provided for resharding")
+    if current_world_size <= 0:
+        raise ValueError(f"Current optimizer world size must be positive, got {current_world_size}")
+    if not (0 <= rank < current_world_size):
+        raise ValueError(f"Optimizer rank {rank} is out of bounds for world size {current_world_size}")
+
+    saved_param_groups = shard_state_dicts[0]["param_groups"]
+    current_param_groups = optimizer.param_groups
+    if len(saved_param_groups) != len(current_param_groups):
+        raise ValueError(
+            "Optimizer param group count mismatch between checkpoint and current optimizer: "
+            f"{len(saved_param_groups)} != {len(current_param_groups)}"
+        )
+
+    resharded_state = {}
+    for group_idx, (saved_group, current_group) in enumerate(zip(saved_param_groups, current_param_groups)):
+        saved_param_ids = saved_group.get("params", [])
+        current_params = current_group.get("params", [])
+        if len(saved_param_ids) != len(current_params):
+            raise ValueError(
+                f"Optimizer param count mismatch in group {group_idx}: "
+                f"{len(saved_param_ids)} != {len(current_params)}"
+            )
+
+        saved_kind = saved_group.get("kind")
+        current_kind = current_group.get("kind")
+        if saved_kind != current_kind:
+            raise ValueError(
+                f"Optimizer group kind mismatch in group {group_idx}: "
+                f"checkpoint={saved_kind}, current={current_kind}"
+            )
+
+        if saved_kind == "adamw":
+            for param_id, param in zip(saved_param_ids, current_params):
+                shard_entries = _require_complete_shard_entries(
+                    [shard_state_dict["state"].get(param_id) for shard_state_dict in shard_state_dicts],
+                    f"AdamW parameter {param_id}",
+                )
+                if shard_entries is None:
+                    continue
+                resharded_state[param_id] = _reshard_adamw_state(shard_entries, param, rank, current_world_size)
+        elif saved_kind == "muon":
+            if not saved_param_ids:
+                continue
+            state_param_id = saved_param_ids[0]
+            shard_entries = _require_complete_shard_entries(
+                [shard_state_dict["state"].get(state_param_id) for shard_state_dict in shard_state_dicts],
+                f"Muon group {group_idx}",
+            )
+            if shard_entries is None:
+                continue
+            resharded_state[state_param_id] = _reshard_muon_state(
+                shard_entries,
+                len(current_params),
+                rank,
+                current_world_size,
+            )
+        else:
+            raise ValueError(f"Unsupported optimizer kind '{saved_kind}' in checkpoint group {group_idx}")
+
+    return {
+        "state": resharded_state,
+        "param_groups": copy.deepcopy(saved_param_groups),
+    }
+
+
+def load_optimizer_state_dict(checkpoint_dir, step, optimizer, device, rank=0, current_world_size=1, saved_world_size=None):
+    available_ranks = find_optimizer_shard_ranks(checkpoint_dir, step)
+    detected_world_size = len(available_ranks)
+    if saved_world_size is None:
+        saved_world_size = detected_world_size
+    if saved_world_size <= 0:
+        raise FileNotFoundError(f"No optimizer checkpoint shards found for step {step} in {checkpoint_dir}")
+
+    expected_ranks = list(range(saved_world_size))
+    missing_ranks = [saved_rank for saved_rank in expected_ranks if saved_rank not in available_ranks]
+    if missing_ranks:
+        raise FileNotFoundError(
+            f"Missing optimizer checkpoint shards for step {step}: expected ranks {expected_ranks}, "
+            f"found {available_ranks}"
+        )
+
+    if current_world_size == saved_world_size:
+        return torch.load(_optimizer_shard_path(checkpoint_dir, step, rank), map_location=device)
+
+    shard_state_dicts = [
+        torch.load(_optimizer_shard_path(checkpoint_dir, step, saved_rank), map_location=device)
+        for saved_rank in expected_ranks
+    ]
+    return reshard_optimizer_state_dict(
+        shard_state_dicts,
+        optimizer,
+        rank=rank,
+        saved_world_size=saved_world_size,
+        current_world_size=current_world_size,
+    )
+
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
     if rank == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -55,7 +238,7 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
     # Note that optimizer state is sharded across ranks, so each rank must save its own.
     if optimizer_data is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
-        optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
+        optimizer_path = _optimizer_shard_path(checkpoint_dir, step, rank)
         torch.save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
 
@@ -66,7 +249,7 @@ def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     # Load the optimizer state if requested
     optimizer_data = None
     if load_optimizer:
-        optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
+        optimizer_path = _optimizer_shard_path(checkpoint_dir, step, rank)
         optimizer_data = torch.load(optimizer_path, map_location=device)
     # Load the metadata
     meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")

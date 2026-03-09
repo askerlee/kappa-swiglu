@@ -17,7 +17,6 @@ import gc
 import json
 import time
 import math
-import glob
 import argparse
 import shlex
 import subprocess
@@ -31,7 +30,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
+from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, find_optimizer_shard_ranks, load_optimizer_state_dict
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FA3
@@ -293,34 +292,26 @@ base_dir = get_base_dir()
 output_dirname = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d12
 checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
+load_optimizer_state = False
+saved_optimizer_world_size = 0
 if resuming:
     print0(f"Resuming optimization from {checkpoint_dir} step {args.resume_from_step}")
-    optimizer_shards = glob.glob(os.path.join(checkpoint_dir, f"optim_{args.resume_from_step:06d}_rank*.pt"))
-    saved_optimizer_world_size = len(optimizer_shards)
-    load_optimizer_state = saved_optimizer_world_size <= ddp_world_size
+    optimizer_shard_ranks = find_optimizer_shard_ranks(checkpoint_dir, args.resume_from_step)
     skip_optimizer_reason = None
-    if saved_optimizer_world_size == 0:
-        skip_optimizer_reason = "No optimizer checkpoint shard found; resuming with fresh optimizer state."
-    elif not load_optimizer_state:
-        skip_optimizer_reason = (
-            "Skipping optimizer state load because checkpoint optimizer shards "
-            f"({saved_optimizer_world_size}) > current world size ({ddp_world_size})."
-        )
-    model_data, optimizer_data, meta_data = load_checkpoint(
+    model_data, _, meta_data = load_checkpoint(
         checkpoint_dir,
         args.resume_from_step,
         device,
-        load_optimizer=load_optimizer_state,
-        rank=ddp_rank,
+        load_optimizer=False,
     )
-    saved_optimizer_world_size = meta_data.get("optimizer_world_size", saved_optimizer_world_size)
-    if saved_optimizer_world_size > ddp_world_size:
-        if optimizer_data is not None:
-            del optimizer_data
-            optimizer_data = None
-        skip_optimizer_reason = (
-            "Skipping optimizer state load because checkpoint optimizer world size "
-            f"({saved_optimizer_world_size}) > current world size ({ddp_world_size})."
+    saved_optimizer_world_size = meta_data.get("optimizer_world_size", len(optimizer_shard_ranks))
+    load_optimizer_state = saved_optimizer_world_size > 0
+    if not load_optimizer_state:
+        skip_optimizer_reason = "No optimizer checkpoint shard found; resuming with fresh optimizer state."
+    elif saved_optimizer_world_size != ddp_world_size:
+        print0(
+            "Resharding optimizer state from checkpoint world size "
+            f"{saved_optimizer_world_size} to current world size {ddp_world_size}."
         )
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
@@ -518,9 +509,18 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
 )
 
-if resuming and optimizer_data is not None:
-    optimizer.load_state_dict(optimizer_data)
-    del optimizer_data
+if resuming and load_optimizer_state:
+    optimizer_state_dict = load_optimizer_state_dict(
+        checkpoint_dir,
+        args.resume_from_step,
+        optimizer,
+        device,
+        rank=ddp_rank,
+        current_world_size=ddp_world_size,
+        saved_world_size=saved_optimizer_world_size,
+    )
+    optimizer.load_state_dict(optimizer_state_dict)
+    del optimizer_state_dict
 
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
