@@ -146,8 +146,8 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 # since --moe-top-k determines how dilluted the router wg gradients are across experts?
 # If --moe-top-k == 4, then each row of router wg weight receives gradients scaled down by 1/4
 # (the softmax weights) on average, so we suggest scaling wg grad by 
-# 4 (actual moe_top_k) / 2 (default moe_top_k) * 4.0 (default router_wg_grad_scale) = 8.
-parser.add_argument("--router-wg-grad-scale", type=float, default=4.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
+# 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
+parser.add_argument("--router-wg-grad-scale", type=float, default=2.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")

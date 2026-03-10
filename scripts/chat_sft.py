@@ -76,9 +76,10 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0,
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
                     help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
                          "Only effective when --router-ortho-loss-weight is not specified.")
-parser.add_argument("--router-wg-grad-scale", type=float, default=-1.0,
-                help="scaling factor for gradients to router w_g weights only (-1.0 = inherit from saved config of base model). "
-                    "This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--router-wg-grad-scale", type=float, default=2.0,
+                    help="scaling factor for gradients to router w_g weights only (-1.0 = inherit from saved config of base model). "
+                         "This does not affect gradients flowing back into router inputs.")
+
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
