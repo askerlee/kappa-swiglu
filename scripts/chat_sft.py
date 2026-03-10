@@ -76,6 +76,9 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0,
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
                     help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
                          "Only effective when --router-ortho-loss-weight is not specified.")
+parser.add_argument("--router-wg-grad-scale", type=float, default=-1.0,
+                help="scaling factor for gradients to router w_g weights only (-1.0 = inherit from saved config of base model). "
+                    "This does not affect gradients flowing back into router inputs.")
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
@@ -88,6 +91,21 @@ parser.add_argument("--log-interval", type=int, default=10, help="interval (in s
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
+
+
+def set_router_wg_grad_scale(model, router_wg_grad_scale):
+    router_wg_grad_scale = float(router_wg_grad_scale)
+    model.config.router_wg_grad_scale = router_wg_grad_scale
+    for layer in model.transformer.h:
+        router = getattr(getattr(layer, "mlp", None), "router", None)
+        if router is None:
+            continue
+        if getattr(router, "_router_wg_grad_hook", None) is not None:
+            router._router_wg_grad_hook.remove()
+            router._router_wg_grad_hook = None
+        router.router_wg_grad_scale = router_wg_grad_scale
+        if router_wg_grad_scale != 1.0:
+            router._router_wg_grad_hook = router.w_g.weight.register_hook(router._scale_router_wg_grad)
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -123,6 +141,13 @@ model, tokenizer, meta = load_model("base", device, phase="train", model_tag=arg
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and args.device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device-batch-size to this script?")
+if args.router_wg_grad_scale == -1:
+    args.router_wg_grad_scale = model.config.router_wg_grad_scale
+    print0(f"Inherited router_wg_grad_scale: {args.router_wg_grad_scale}")
+else:
+    set_router_wg_grad_scale(model, args.router_wg_grad_scale)
+    print0(f"Specified router_wg_grad_scale: {args.router_wg_grad_scale}")
+    
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
@@ -463,6 +488,7 @@ while True:
                     "window_pattern": model.config.window_pattern,
                     "n_exp": model.config.n_exp,
                     "moe_top_k": model.config.moe_top_k,
+                    "router_wg_grad_scale": model.config.router_wg_grad_scale,
                 },
                 "user_config": user_config, # inputs to the training script
             }
