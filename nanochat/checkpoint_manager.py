@@ -307,7 +307,7 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
 
 
 def validate_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_ranks=None):
-    expected_roles = {"model", "meta"}
+    expected_roles = {"model"}
     if expected_optimizer_ranks is not None:
         expected_roles.update(f"optim_rank{rank}" for rank in expected_optimizer_ranks)
 
@@ -323,7 +323,7 @@ def validate_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_rank
     comparison_files = None
     for older_step in _older_checkpoint_steps(checkpoint_dir, step):
         candidate_files = _checkpoint_files_for_step(checkpoint_dir, older_step)
-        if set(candidate_files) == expected_roles:
+        if expected_roles.issubset(candidate_files):
             comparison_step = older_step
             comparison_files = candidate_files
             break

@@ -247,6 +247,27 @@ def test_validate_checkpoint_file_sizes_matches_previous_checkpoint(tmp_path):
     assert comparison_step == 10
 
 
+def test_validate_checkpoint_file_sizes_ignores_meta_size_changes(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 4096)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 180)
+
+    comparison_step = validate_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0],
+    )
+
+    assert comparison_step == 10
+
+
 def test_validate_checkpoint_file_sizes_raises_when_current_files_are_missing(tmp_path):
     checkpoint_dir = tmp_path / "ckpt"
     checkpoint_dir.mkdir()
