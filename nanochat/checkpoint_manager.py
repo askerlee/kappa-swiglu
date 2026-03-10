@@ -46,6 +46,64 @@ def _optimizer_shard_path(checkpoint_dir, step, rank):
     return os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
 
 
+def _parse_checkpoint_filename(filename):
+    match = re.match(r"model_(\d+)\.pt$", filename)
+    if match is not None:
+        return int(match.group(1)), "model"
+
+    match = re.match(r"meta_(\d+)\.json$", filename)
+    if match is not None:
+        return int(match.group(1)), "meta"
+
+    match = re.match(r"optim_(\d+)_rank(\d+)\.pt$", filename)
+    if match is not None:
+        return int(match.group(1)), f"optim_rank{int(match.group(2))}"
+
+    return None, None
+
+
+def _checkpoint_step_from_filename(filename):
+    step, _ = _parse_checkpoint_filename(filename)
+    return step
+
+
+def _checkpoint_files_for_step(checkpoint_dir, step):
+    checkpoint_files = {}
+    if not os.path.isdir(checkpoint_dir):
+        return checkpoint_files
+
+    for entry in os.scandir(checkpoint_dir):
+        if not entry.is_file():
+            continue
+        entry_step, role = _parse_checkpoint_filename(entry.name)
+        if entry_step != step or role is None:
+            continue
+        checkpoint_files[role] = entry.path
+
+    return checkpoint_files
+
+
+def _older_checkpoint_steps(checkpoint_dir, step):
+    if not os.path.isdir(checkpoint_dir):
+        return []
+
+    older_steps = set()
+    for entry in os.scandir(checkpoint_dir):
+        if not entry.is_file():
+            continue
+        entry_step = _checkpoint_step_from_filename(entry.name)
+        if entry_step is not None and entry_step < step:
+            older_steps.add(entry_step)
+
+    return sorted(older_steps, reverse=True)
+
+
+def _checkpoint_file_size_tolerance(role, reference_size):
+    if role == "model":
+        return 0
+    return max(16, min(4096, reference_size // 100))
+
+
 def find_optimizer_shard_ranks(checkpoint_dir, step):
     shard_pattern = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank*.pt")
     ranks = []
@@ -246,6 +304,93 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
         optimizer_path = _optimizer_shard_path(checkpoint_dir, step, rank)
         torch.save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
+
+
+def validate_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_ranks=None):
+    expected_roles = {"model", "meta"}
+    if expected_optimizer_ranks is not None:
+        expected_roles.update(f"optim_rank{rank}" for rank in expected_optimizer_ranks)
+
+    current_files = _checkpoint_files_for_step(checkpoint_dir, step)
+    missing_roles = sorted(expected_roles.difference(current_files))
+    if missing_roles:
+        raise ValueError(
+            f"Checkpoint step {step:06d} is missing expected files for size validation: "
+            f"{', '.join(missing_roles)}"
+        )
+
+    comparison_step = None
+    comparison_files = None
+    for older_step in _older_checkpoint_steps(checkpoint_dir, step):
+        candidate_files = _checkpoint_files_for_step(checkpoint_dir, older_step)
+        if set(candidate_files) == expected_roles:
+            comparison_step = older_step
+            comparison_files = candidate_files
+            break
+
+    if comparison_files is None:
+        logger.warning(
+            "Skipping checkpoint file size validation for step %06d; no previous checkpoint with matching file layout was found.",
+            step,
+        )
+        return None
+
+    mismatches = []
+    for role in sorted(expected_roles):
+        current_path = current_files[role]
+        comparison_path = comparison_files[role]
+        current_size = os.path.getsize(current_path)
+        comparison_size = os.path.getsize(comparison_path)
+        allowed_delta = _checkpoint_file_size_tolerance(role, comparison_size)
+        if abs(current_size - comparison_size) > allowed_delta:
+            mismatches.append(
+                f"{role}: current={current_size} bytes ({os.path.basename(current_path)}), "
+                f"previous={comparison_size} bytes ({os.path.basename(comparison_path)}), "
+                f"allowed_delta={allowed_delta} bytes"
+            )
+
+    if mismatches:
+        raise ValueError(
+            f"Checkpoint file size validation failed for step {step:06d} against step {comparison_step:06d}: "
+            + "; ".join(mismatches)
+        )
+
+    logger.info(
+        "Validated checkpoint file sizes for step %06d against step %06d",
+        step,
+        comparison_step,
+    )
+    return comparison_step
+
+
+def delete_old_checkpoints(checkpoint_dir, step):
+    if not os.path.isdir(checkpoint_dir):
+        return []
+
+    deleted_paths = []
+    deleted_steps = set()
+    for entry in os.scandir(checkpoint_dir):
+        if not entry.is_file():
+            continue
+        checkpoint_step = _checkpoint_step_from_filename(entry.name)
+        if checkpoint_step is None or checkpoint_step >= step:
+            continue
+        try:
+            os.remove(entry.path)
+        except FileNotFoundError:
+            continue
+        deleted_paths.append(entry.path)
+        deleted_steps.add(checkpoint_step)
+
+    if deleted_paths:
+        logger.info(
+            "Deleted %d checkpoint file(s) older than step %06d (steps: %s)",
+            len(deleted_paths),
+            step,
+            ", ".join(f"{deleted_step:06d}" for deleted_step in sorted(deleted_steps)),
+        )
+
+    return sorted(deleted_paths)
 
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     # Load the model state

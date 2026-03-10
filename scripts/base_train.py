@@ -30,7 +30,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, find_optimizer_shard_ranks, load_optimizer_state_dict
+from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, find_optimizer_shard_ranks, load_optimizer_state_dict, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FA3
@@ -136,13 +136,13 @@ parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer 
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.0001, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1.0, help="weight for negative correlations in router-ortho loss.")
+parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=0.1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
-parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--router-wg-grad-scale", type=float, default=4.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -178,6 +178,7 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=False, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
@@ -763,6 +764,42 @@ while True:
             },
             rank=ddp_rank,
         )
+        if ddp:
+            torch.distributed.barrier()
+        delete_old_ckpts_failed = False
+        delete_old_ckpts_error = ""
+        if args.delete_old_ckpts and master_process:
+            try:
+                comparison_step = validate_checkpoint_file_sizes(
+                    checkpoint_dir,
+                    step,
+                    expected_optimizer_ranks=range(ddp_world_size),
+                )
+                if comparison_step is None:
+                    print0(
+                        f"Skipping old checkpoint deletion at step {step}: "
+                        "no prior checkpoint with matching file layout was found for file-size validation."
+                    )
+                else:
+                    delete_old_checkpoints(checkpoint_dir, step)
+            except ValueError as exc:
+                delete_old_ckpts_failed = True
+                delete_old_ckpts_error = str(exc)
+                print0(delete_old_ckpts_error)
+        if ddp:
+            delete_status = torch.tensor(
+                [1 if delete_old_ckpts_failed else 0],
+                device=device,
+                dtype=torch.int32,
+            )
+            torch.distributed.broadcast(delete_status, src=0)
+            delete_old_ckpts_failed = bool(delete_status.item())
+        if delete_old_ckpts_failed:
+            if master_process:
+                raise ValueError(delete_old_ckpts_error)
+            raise RuntimeError(
+                f"Checkpoint file size validation failed on rank 0 at step {step}. See rank 0 logs for details."
+            )
         if master_process and pending_milestones:
             hit_milestones = [m for m in pending_milestones if step >= m]
             if hit_milestones:

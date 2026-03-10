@@ -1,9 +1,11 @@
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-from nanochat.checkpoint_manager import load_optimizer_state_dict, reshard_optimizer_state_dict
+from nanochat.checkpoint_manager import delete_old_checkpoints, load_optimizer_state_dict, reshard_optimizer_state_dict, validate_checkpoint_file_sizes
 
 
 def make_optimizer(param_groups):
@@ -26,6 +28,10 @@ def make_adamw_shard(param_groups, param_id, exp_avg, exp_avg_sq, step=7):
 def make_row_tensor(start_row, rows, cols):
     row_values = torch.arange(start_row, start_row + rows, dtype=torch.float32)
     return row_values.unsqueeze(1).expand(rows, cols).clone()
+
+
+def write_sized_file(path, size):
+    path.write_bytes(b"x" * size)
 
 
 def test_reshard_optimizer_state_dict_preserves_small_adamw_replica():
@@ -178,3 +184,127 @@ def test_load_optimizer_state_dict_reshards_when_world_size_shrinks(tmp_path):
     assert loaded_state["exp_avg_sq"].shape == (32, 32)
     assert torch.equal(loaded_state["exp_avg"], make_row_tensor(32, 32, 32))
     assert torch.equal(loaded_state["exp_avg_sq"], make_row_tensor(2032, 32, 32))
+
+
+def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    for filename in (
+        "model_000010.pt",
+        "meta_000010.json",
+        "optim_000010_rank0.pt",
+        "optim_000010_rank3.pt",
+        "model_000015.pt",
+        "meta_000015.json",
+        "optim_000015_rank1.pt",
+        "model_000020.pt",
+        "meta_000020.json",
+        "optim_000020_rank0.pt",
+        "notes.txt",
+    ):
+        (checkpoint_dir / filename).write_text("x", encoding="utf-8")
+
+    deleted_paths = delete_old_checkpoints(str(checkpoint_dir), 20)
+
+    assert {Path(path).name for path in deleted_paths} == {
+        "model_000010.pt",
+        "meta_000010.json",
+        "optim_000010_rank0.pt",
+        "optim_000010_rank3.pt",
+        "model_000015.pt",
+        "meta_000015.json",
+        "optim_000015_rank1.pt",
+    }
+    assert not (checkpoint_dir / "model_000010.pt").exists()
+    assert not (checkpoint_dir / "optim_000015_rank1.pt").exists()
+    assert (checkpoint_dir / "model_000020.pt").exists()
+    assert (checkpoint_dir / "meta_000020.json").exists()
+    assert (checkpoint_dir / "optim_000020_rank0.pt").exists()
+    assert (checkpoint_dir / "notes.txt").exists()
+
+
+def test_validate_checkpoint_file_sizes_matches_previous_checkpoint(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+    write_sized_file(checkpoint_dir / "optim_000010_rank1.pt", 180)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 132)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 192)
+    write_sized_file(checkpoint_dir / "optim_000020_rank1.pt", 180)
+
+    comparison_step = validate_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0, 1],
+    )
+
+    assert comparison_step == 10
+
+
+def test_validate_checkpoint_file_sizes_raises_when_current_files_are_missing(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+    write_sized_file(checkpoint_dir / "optim_000010_rank1.pt", 180)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 180)
+
+    with pytest.raises(ValueError, match="missing expected files"):
+        validate_checkpoint_file_sizes(
+            str(checkpoint_dir),
+            20,
+            expected_optimizer_ranks=[0, 1],
+        )
+
+
+def test_validate_checkpoint_file_sizes_returns_none_without_matching_layout(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 180)
+    write_sized_file(checkpoint_dir / "optim_000020_rank1.pt", 180)
+
+    comparison_step = validate_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0, 1],
+    )
+
+    assert comparison_step is None
+
+
+def test_validate_checkpoint_file_sizes_raises_on_large_size_mismatch(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 240)
+
+    with pytest.raises(ValueError, match="validation failed"):
+        validate_checkpoint_file_sizes(
+            str(checkpoint_dir),
+            20,
+            expected_optimizer_ranks=[0],
+        )
