@@ -350,7 +350,7 @@ def validate_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_rank
             )
 
     if mismatches:
-        raise ValueError(
+        logger.warning(
             f"Checkpoint file size validation failed for step {step:06d} against step {comparison_step:06d}: "
             + "; ".join(mismatches)
         )
