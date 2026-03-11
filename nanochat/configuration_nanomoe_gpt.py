@@ -28,7 +28,8 @@ class GPTConfig:
         aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
         router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
-        router_wg_grad_scale: float = 1.0,  # scale gradients for router w_g weights without affecting router inputs.
+        router_wg_grad_scale: float = 2.0,  # scale gradients for router w_g weights without affecting router inputs.
+        use_router_wg_dyn_grad_scale: bool = False,  # whether to use dynamic gradient scaling for router w_g weights
         router_ortho_loss_weight: float = 0.0001,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 0.1,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
@@ -74,6 +75,7 @@ class GPTConfig:
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
         self.router_wg_grad_scale = router_wg_grad_scale
+        self.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_ortho_loss_weight = experts_ortho_loss_weight

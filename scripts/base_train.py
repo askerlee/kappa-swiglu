@@ -148,6 +148,8 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 # (the softmax weights) on average, so we suggest scaling wg grad by 
 # 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
 parser.add_argument("--router-wg-grad-scale", type=float, default=2.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
+                    help="whether to use dynamic gradient scaling for router w_g weights")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -183,7 +185,7 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
-parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=False, help="after saving a checkpoint, delete all older checkpoints based on step number")
+parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
@@ -278,6 +280,7 @@ def build_model_meta(depth):
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         router_wg_grad_scale=args.router_wg_grad_scale,
+        use_router_wg_dyn_grad_scale=args.use_router_wg_dyn_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,

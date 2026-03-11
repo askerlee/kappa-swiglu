@@ -286,18 +286,24 @@ class Router(nn.Module):
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
-        self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.expert_probs = None
+        self.mean_expert_probs = None
         self.top_k_indices = None
         self._router_wg_grad_hook = None
-        if self.router_wg_grad_scale != 1.0:
-            self._router_wg_grad_hook = self.w_g.weight.register_hook(self._scale_router_wg_grad)
+        self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
+        self._router_wg_grad_hook = self.w_g.weight.register_hook(self._scale_router_wg_grad)
+        self.use_router_wg_dyn_grad_scale = getattr(config, 'use_router_wg_dyn_grad_scale', False)
 
     def _scale_router_wg_grad(self, grad):
-        if grad is None or self.router_wg_grad_scale == 1.0:
+        if grad is None:
             return grad
-        return grad * self.router_wg_grad_scale
-
+        if not self.use_router_wg_dyn_grad_scale or self.mean_expert_probs is None:
+            return grad * self.router_wg_grad_scale
+        with torch.no_grad():
+            scale = 1 / torch.sqrt(self.mean_expert_probs.clamp_min(1e-4))
+            scale = scale * self.router_wg_grad_scale / scale.mean()
+            return grad * scale.unsqueeze(1)
+        
     def forward(self, x):
         """
         Computes routing information for tokens, including which experts to use,
@@ -312,6 +318,7 @@ class Router(nn.Module):
             B, T, C = x.size()
             num_tokens = B * T
             x_flat = x.view(num_tokens, C)
+            self.mean_expert_probs = None
 
             # 1. GET ROUTING LOGITS
             # ---------------------
@@ -345,22 +352,29 @@ class Router(nn.Module):
 
                 # Find top-k choices for each token
                 top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1) # [B*T, k]
+                router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
                 
                 # The auxiliary loss encourages load balancing across experts
                 if self.use_aux_loss:
                     # To compute aux loss, we need the full probability distribution,
                     # not just for the top k. We can create this sparsely.
                     all_probs = torch.zeros_like(logits)
-                    top_k_probs = F.softmax(top_k_logits, dim=-1).to(dtype=all_probs.dtype)
+                    top_k_probs = router_probs.to(dtype=all_probs.dtype)
                     all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
+                    if self.use_router_wg_dyn_grad_scale:
+                        self.mean_expert_probs = all_probs.mean(dim=0).detach().clone()
                     self.expert_probs = all_probs.view(B, T, -1).detach().clone()
                     self.top_k_indices = top_k_indices.view(B, T, -1).clone()
+                elif self.use_router_wg_dyn_grad_scale:
+                    mean_expert_probs = router_probs.detach().new_zeros(self.n_exp)
+                    mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.detach().reshape(-1))
+                    self.mean_expert_probs = mean_expert_probs.div_(num_tokens)
             else:
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
-
+                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
@@ -368,7 +382,6 @@ class Router(nn.Module):
             # 3. COMPUTE ROUTER PROBABILITIES
             # --------------------------------
             # We normalize the probabilities over the top-k experts
-            router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
             # 4. DETERMINE TOKEN RANKS WITH CAPACITY LIMITING
             # -----------------------------------------------
