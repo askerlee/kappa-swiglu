@@ -76,9 +76,11 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0,
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
                     help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
                          "Only effective when --router-ortho-loss-weight is not specified.")
-parser.add_argument("--router-wg-grad-scale", type=float, default=2.0,
+parser.add_argument("--router-wg-grad-scale", type=float, default=-1,
                     help="scaling factor for gradients to router w_g weights only (-1.0 = inherit from saved config of base model). "
                          "This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
+                    help="whether to use dynamic gradient scaling for router w_g weights (default: inherit from saved config of base model)")
 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
@@ -94,9 +96,14 @@ user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
 
 
-def set_router_wg_grad_scale(model, router_wg_grad_scale):
+def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad_scale=None):
     router_wg_grad_scale = float(router_wg_grad_scale)
     model.config.router_wg_grad_scale = router_wg_grad_scale
+    if use_router_wg_dyn_grad_scale is None:
+        use_router_wg_dyn_grad_scale = bool(getattr(model.config, "use_router_wg_dyn_grad_scale", False))
+    else:
+        use_router_wg_dyn_grad_scale = bool(use_router_wg_dyn_grad_scale)
+    model.config.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
     for layer in model.transformer.h:
         router = getattr(getattr(layer, "mlp", None), "router", None)
         if router is None:
@@ -105,7 +112,8 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale):
             router._router_wg_grad_hook.remove()
             router._router_wg_grad_hook = None
         router.router_wg_grad_scale = router_wg_grad_scale
-        if router_wg_grad_scale != 1.0:
+        router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
+        if router_wg_grad_scale != 1.0 or use_router_wg_dyn_grad_scale:
             router._router_wg_grad_hook = router.w_g.weight.register_hook(router._scale_router_wg_grad)
 
 # Compute init
@@ -146,8 +154,13 @@ if args.router_wg_grad_scale == -1:
     args.router_wg_grad_scale = model.config.router_wg_grad_scale
     print0(f"Inherited router_wg_grad_scale: {args.router_wg_grad_scale}")
 else:
-    set_router_wg_grad_scale(model, args.router_wg_grad_scale)
     print0(f"Specified router_wg_grad_scale: {args.router_wg_grad_scale}")
+if args.use_router_wg_dyn_grad_scale is None:
+    args.use_router_wg_dyn_grad_scale = getattr(model.config, "use_router_wg_dyn_grad_scale", False)
+    print0(f"Inherited use_router_wg_dyn_grad_scale: {args.use_router_wg_dyn_grad_scale}")
+else:
+    print0(f"Specified use_router_wg_dyn_grad_scale: {args.use_router_wg_dyn_grad_scale}")
+set_router_wg_grad_scale(model, args.router_wg_grad_scale, args.use_router_wg_dyn_grad_scale)
     
 orig_model = model
 model = torch.compile(model, dynamic=False)
@@ -490,6 +503,7 @@ while True:
                     "n_exp": model.config.n_exp,
                     "moe_top_k": model.config.moe_top_k,
                     "router_wg_grad_scale": model.config.router_wg_grad_scale,
+                    "use_router_wg_dyn_grad_scale": model.config.use_router_wg_dyn_grad_scale,
                 },
                 "user_config": user_config, # inputs to the training script
             }
