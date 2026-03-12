@@ -67,7 +67,6 @@ class MOEManager:
 
     @torch._dynamo.disable
     def add(self, name, value):
-        name = self._normalize_name(name)
         if name == "drop_rate_per_ks":
             with torch.inference_mode(False):
                 if self._drop_rate_buffer is None:
@@ -131,7 +130,6 @@ class MOEManager:
         self._values[name].append(value)
 
     def aggregate(self, name):
-        name = self._normalize_name(name)
         values = self._values.get(name, [])
         if name in self._start_frac_names:
             # If ortho_loss_start_frac = 0.25 and there are 8 moe layers, then 0.25*8 = 2.0, 
