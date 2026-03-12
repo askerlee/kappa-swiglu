@@ -294,15 +294,18 @@ class Router(nn.Module):
         self._router_wg_grad_hook = self.w_g.weight.register_hook(self._scale_router_wg_grad)
         self.use_router_wg_dyn_grad_scale = getattr(config, 'use_router_wg_dyn_grad_scale', False)
 
+    @torch._dynamo.disable
     def _scale_router_wg_grad(self, grad):
         if grad is None:
             return grad
         if not self.use_router_wg_dyn_grad_scale or self.mean_expert_probs is None:
             return grad * self.router_wg_grad_scale
         with torch.no_grad():
-            scale = 1 / torch.sqrt(self.mean_expert_probs.clamp_min(1e-4))
-            scale = scale * self.router_wg_grad_scale / scale.mean()
-            return grad * scale.unsqueeze(1)
+            dyn_scales = 1 / torch.sqrt(self.mean_expert_probs.clamp_min(1e-4))
+            dyn_scales = dyn_scales * self.router_wg_grad_scale / dyn_scales.mean()
+            if MANAGER.collect_backward_stats:
+                MANAGER.add("router_wg_grad_dyn_scales", dyn_scales)
+            return grad * dyn_scales.unsqueeze(1)
         
     def forward(self, x):
         """
@@ -737,16 +740,14 @@ class MOELayer(nn.Module):
 
     @torch._dynamo.disable
     def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
-        if not MANAGER.collect_load_balancing_stats:
-            return
-        slot_served = (rank < exp_capacity)                     # [B*T, k]
-        drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
-        MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
-        # Derive expert utilities: fraction of buffers used per expert.
-        expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
-        expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
-        MANAGER.add("expert_utilities", expert_utilities.detach())
-
+        if MANAGER.collect_load_balancing_stats:
+            slot_served = (rank < exp_capacity)                     # [B*T, k]
+            drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
+            MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
+            # Derive expert utilities: fraction of buffers used per expert.
+            expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
+            expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
+            MANAGER.add("expert_utilities", expert_utilities.detach())
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
