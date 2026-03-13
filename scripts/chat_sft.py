@@ -108,13 +108,9 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         router = getattr(getattr(layer, "mlp", None), "router", None)
         if router is None:
             continue
-        if getattr(router, "_router_wg_grad_hook", None) is not None:
-            router._router_wg_grad_hook.remove()
-            router._router_wg_grad_hook = None
         router.router_wg_grad_scale = router_wg_grad_scale
         router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
-        if router_wg_grad_scale != 1.0 or use_router_wg_dyn_grad_scale:
-            router._router_wg_grad_hook = router.w_g.weight.register_hook(router._scale_router_wg_grad)
+
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -509,7 +505,8 @@ while True:
             checkpoint_dir,
             step,
             orig_model.state_dict(),
-            optimizer.state_dict(),
+            # No need to save the optimizer stats, as currently our chat sft models are used one-off.
+            None, # optimizer.state_dict(),
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
@@ -533,8 +530,8 @@ while True:
     if last_step:
         break
 
-    MANAGER.collect_load_balancing_stats = (step % args.log_interval == 0)
-    MANAGER.collect_backward_stats = args.log_grad_stats and MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = args.log_grad_stats and (step % args.log_interval == 0)
+    MANAGER.collect_backward_stats = MANAGER.collect_load_balancing_stats
 
     # -------------------------------------------------------------------------
     # single training step
@@ -554,7 +551,7 @@ while True:
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
 
-    if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
+    if MANAGER.collect_load_balancing_stats:
         collect_grad_stats(model, losses, model.config.moe_start_layer, depth)
 
     # step the optimizer

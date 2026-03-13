@@ -626,6 +626,9 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.view(
                 -1, num_moe_layers, router_wg_grad_dyn_scales.shape[1]
             ).mean(dim=0)
+            # router_wg_grad_dyn_scales are collected during backward, where the layer order
+            # is from higher to lower. Therefore we flip the tensor to be from lower to higher,
+            # same as other quantities.
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.flip(0)
         losses['router_wg_grad_dyn_scales'] = router_wg_grad_dyn_scales.detach()
 
@@ -921,7 +924,7 @@ while True:
         break
 
     MANAGER.collect_load_balancing_stats = args.log_grad_stats and (step % args.log_interval == 0)
-    MANAGER.collect_backward_stats = (step % args.log_interval == 0)
+    MANAGER.collect_backward_stats = False
 
     # -------------------------------------------------------------------------
     # single training step
@@ -948,6 +951,9 @@ while True:
         t0 = time.time()
         step_losses = None
         for micro_step in range(grad_accum_steps):
+            MANAGER.collect_backward_stats = (
+                MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
+            )
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
@@ -957,11 +963,12 @@ while True:
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
+            MANAGER.collect_backward_stats = False
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
 
         losses = average_step_losses(step_losses, grad_accum_steps)
 
-        if args.log_grad_stats and MANAGER.collect_load_balancing_stats:
+        if MANAGER.collect_load_balancing_stats:
             collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
         
         # step the optimizer

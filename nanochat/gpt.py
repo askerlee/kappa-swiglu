@@ -89,7 +89,7 @@ class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
-class ReuseMmWithScaledInputGrad(torch.autograd.Function):
+class ReuseMmWithScaledWeightGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, output, left, right, alpha):
         ctx.save_for_backward(left, right, alpha)
@@ -102,31 +102,78 @@ class ReuseMmWithScaledInputGrad(torch.autograd.Function):
         grad_output_for_output = None
 
         if ctx.needs_input_grad[1]:
-            # output = left @ right.T  => dleft = grad_output @ right
             right_for_grad_left = right
             if right_for_grad_left.dtype != grad_output.dtype:
                 right_for_grad_left = right_for_grad_left.to(dtype=grad_output.dtype)
             grad_left = torch.mm(grad_output, right_for_grad_left)
-            if alpha.dtype != grad_left.dtype:
-                alpha = alpha.to(dtype=grad_left.dtype)
-            grad_left = grad_left * alpha
             if grad_left.dtype != left.dtype:
                 grad_left = grad_left.to(dtype=left.dtype)
         else:
             grad_left = None
 
         if ctx.needs_input_grad[2]:
-            # output = left @ right.T  => dright = grad_output.T @ left
             left_for_grad_right = left
             if left_for_grad_right.dtype != grad_output.dtype:
                 left_for_grad_right = left_for_grad_right.to(dtype=grad_output.dtype)
             grad_right = torch.mm(grad_output.transpose(0, 1), left_for_grad_right)
+            alpha_for_grad_right = alpha
+            if alpha_for_grad_right.dtype != grad_right.dtype:
+                alpha_for_grad_right = alpha_for_grad_right.to(dtype=grad_right.dtype)
+            while alpha_for_grad_right.ndim < grad_right.ndim:
+                alpha_for_grad_right = alpha_for_grad_right.unsqueeze(-1)
+            grad_right = grad_right * alpha_for_grad_right
             if grad_right.dtype != right.dtype:
                 grad_right = grad_right.to(dtype=right.dtype)
         else:
             grad_right = None
 
         return grad_output_for_output, grad_left, grad_right, None
+
+class ReuseMmWithScaledInputAndWeightGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, output, left, right, input_alpha, weight_alpha):
+        ctx.save_for_backward(left, right, input_alpha, weight_alpha)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        left, right, input_alpha, weight_alpha = ctx.saved_tensors
+
+        grad_output_for_output = None
+
+        if ctx.needs_input_grad[1]:
+            right_for_grad_left = right
+            if right_for_grad_left.dtype != grad_output.dtype:
+                right_for_grad_left = right_for_grad_left.to(dtype=grad_output.dtype)
+            grad_left = torch.mm(grad_output, right_for_grad_left)
+            input_alpha_for_grad_left = input_alpha
+            if input_alpha_for_grad_left.dtype != grad_left.dtype:
+                input_alpha_for_grad_left = input_alpha_for_grad_left.to(dtype=grad_left.dtype)
+            while input_alpha_for_grad_left.ndim < grad_left.ndim:
+                input_alpha_for_grad_left = input_alpha_for_grad_left.unsqueeze(-1)
+            grad_left = grad_left * input_alpha_for_grad_left
+            if grad_left.dtype != left.dtype:
+                grad_left = grad_left.to(dtype=left.dtype)
+        else:
+            grad_left = None
+
+        if ctx.needs_input_grad[2]:
+            left_for_grad_right = left
+            if left_for_grad_right.dtype != grad_output.dtype:
+                left_for_grad_right = left_for_grad_right.to(dtype=grad_output.dtype)
+            grad_right = torch.mm(grad_output.transpose(0, 1), left_for_grad_right)
+            weight_alpha_for_grad_right = weight_alpha
+            if weight_alpha_for_grad_right.dtype != grad_right.dtype:
+                weight_alpha_for_grad_right = weight_alpha_for_grad_right.to(dtype=grad_right.dtype)
+            while weight_alpha_for_grad_right.ndim < grad_right.ndim:
+                weight_alpha_for_grad_right = weight_alpha_for_grad_right.unsqueeze(-1)
+            grad_right = grad_right * weight_alpha_for_grad_right
+            if grad_right.dtype != right.dtype:
+                grad_right = grad_right.to(dtype=right.dtype)
+        else:
+            grad_right = None
+
+        return grad_output_for_output, grad_left, grad_right, None, None
 
 class GradientScaler(nn.Module):
     def __init__(self, alpha=1., debug=False, *args, **kwargs):
@@ -289,23 +336,34 @@ class Router(nn.Module):
         self.expert_probs = None
         self.mean_expert_probs = None
         self.top_k_indices = None
-        self._router_wg_grad_hook = None
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
-        self._router_wg_grad_hook = self.w_g.weight.register_hook(self._scale_router_wg_grad)
-        self.use_router_wg_dyn_grad_scale = getattr(config, 'use_router_wg_dyn_grad_scale', False)
+        self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
 
     @torch._dynamo.disable
-    def _scale_router_wg_grad(self, grad):
-        if grad is None:
-            return grad
-        if not self.use_router_wg_dyn_grad_scale or self.mean_expert_probs is None:
-            return grad * self.router_wg_grad_scale
-        with torch.no_grad():
-            dyn_scales = 1 / torch.sqrt(self.mean_expert_probs.clamp_min(1e-4))
-            dyn_scales = dyn_scales * self.router_wg_grad_scale / dyn_scales.mean()
-            if MANAGER.collect_backward_stats:
-                MANAGER.add("router_wg_grad_dyn_scales", dyn_scales)
-            return grad * dyn_scales.unsqueeze(1)
+    def _compute_router_wg_grad_alpha(self, logits, num_tokens):
+        logits = logits.detach()
+        top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
+        router_probs = F.softmax(top_k_logits, dim=-1)
+        alpha = torch.as_tensor(self.router_wg_grad_scale, device=logits.device, dtype=logits.dtype)
+        self.mean_expert_probs = None
+        # Return fixed wg grad scales of self.router_wg_grad_scale.
+        if not self.use_router_wg_dyn_grad_scale:
+            return top_k_indices, alpha
+
+        if self.use_aux_loss:
+            all_probs = torch.zeros_like(logits)
+            all_probs.scatter_(-1, top_k_indices, router_probs.to(dtype=all_probs.dtype))
+            mean_expert_probs = all_probs.mean(dim=0)
+        else:
+            mean_expert_probs = router_probs.new_zeros(self.n_exp)
+            mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
+            mean_expert_probs.div_(num_tokens)
+
+        self.mean_expert_probs = mean_expert_probs.detach().clone()
+        dyn_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
+        dyn_scales = dyn_scales * alpha / dyn_scales.mean()
+        # Return dynamic wg grad scales derived from mean_expert_probs.
+        return top_k_indices, dyn_scales.to(dtype=logits.dtype)
         
     def forward(self, x):
         """
@@ -325,28 +383,44 @@ class Router(nn.Module):
 
             # 1. GET ROUTING LOGITS
             # ---------------------
-            logits = self.w_g(x_flat)  # [B*T, n_exp]
+            logits_wg = self.w_g(x_flat)  # [B*T, n_exp]
+            noise = None
 
             if self.training and self.use_noisy_top_k:
                 noise = F.softplus(self.w_noise(x_flat))
                 noise *= torch.randn_like(noise)
-                logits += noise
+            logits = logits_wg if noise is None else logits_wg + noise
 
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
             if self.training:
+                needs_router_wg_scaling = self.router_wg_grad_scale != 1.0 or self.use_router_wg_dyn_grad_scale
+                if needs_router_wg_scaling:
+                    top_k_indices, router_wg_grad_alpha = self._compute_router_wg_grad_alpha(logits, num_tokens)
+                    if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
+                        MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
+                else:
+                    _, top_k_indices = logits.topk(self.top_k, dim=-1)
+                    router_wg_grad_alpha = torch.as_tensor(1.0, device=logits.device, dtype=logits.dtype)
+
+                if needs_router_wg_scaling:
+                    logits_wg_for_router = ReuseMmWithScaledWeightGrad.apply(
+                        logits_wg, x_flat, self.w_g.weight, router_wg_grad_alpha
+                    )
+                    logits_for_router = logits_wg_for_router if noise is None else logits_wg_for_router + noise
+                else:
+                    logits_for_router = logits
+
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     if self.router_z_loss_input_grad_scale == 1:
-                        logits_for_z_loss = logits
+                        logits_for_z_loss = logits_for_router
                     else:
-                        alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
-                        # self.w_g(x_flat) => torch.mm(x_flat, self.w_g.weight.t())
-                        # So the left is x_flat, the right is self.w_g.weight.
-                        # In ReuseMmWithScaledInputGrad, we will scale the gradient 
-                        # to the left (input) but not the right (weights), since we want to stabilize the
-                        # input representations to the router.
-                        logits_for_z_loss = ReuseMmWithScaledInputGrad.apply(logits, x_flat, self.w_g.weight, alpha_t)
+                        input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
+                        logits_wg_for_z_loss = ReuseMmWithScaledInputAndWeightGrad.apply(
+                            logits_wg, x_flat, self.w_g.weight, input_alpha_t, router_wg_grad_alpha
+                        )
+                        logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
                     router_z_loss = compute_z_loss(logits_for_z_loss.view(B, T, -1), 
                                                    demean_logits=self.z_loss_demean_logits,
@@ -354,26 +428,20 @@ class Router(nn.Module):
                     MANAGER.add("router_z_loss", router_z_loss)
 
                 # Find top-k choices for each token
-                top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1) # [B*T, k]
+                top_k_logits = logits_for_router.gather(-1, top_k_indices) # [B*T, k]
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
                 
                 # The auxiliary loss encourages load balancing across experts
                 if self.use_aux_loss:
                     # To compute aux loss, we need the full probability distribution,
                     # not just for the top k. We can create this sparsely.
-                    all_probs = torch.zeros_like(logits)
+                    all_probs = torch.zeros_like(logits_for_router)
                     top_k_probs = router_probs.to(dtype=all_probs.dtype)
                     all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
-                    if self.use_router_wg_dyn_grad_scale:
-                        self.mean_expert_probs = all_probs.mean(dim=0).detach().clone()
                     self.expert_probs = all_probs.view(B, T, -1).detach().clone()
                     self.top_k_indices = top_k_indices.view(B, T, -1).clone()
-                elif self.use_router_wg_dyn_grad_scale:
-                    mean_expert_probs = router_probs.detach().new_zeros(self.n_exp)
-                    mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.detach().reshape(-1))
-                    self.mean_expert_probs = mean_expert_probs.div_(num_tokens)
             else:
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
