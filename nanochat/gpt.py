@@ -354,7 +354,7 @@ class Router(nn.Module):
 
         dyn_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
         dyn_scales = dyn_scales * alpha / dyn_scales.mean()
-        dyn_scales.clamp_max_(2).clamp_min_(0.5)
+        dyn_scales.clamp_(0.5, 2)
         # Return dynamic wg grad scales derived from mean_expert_probs.
         return top_k_indices, dyn_scales.to(dtype=logits.dtype)
         
