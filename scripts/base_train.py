@@ -196,12 +196,8 @@ parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weight
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
-
 args = parser.parse_args()
-router_z_loss_weight_explicit = arg_was_explicitly_set(sys.argv[1:], "--router-z-loss-weight")
-if args.use_router_wg_dyn_grad_scale and not router_z_loss_weight_explicit:
-    args.router_z_loss_weight = 1e-4
-    
+
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------

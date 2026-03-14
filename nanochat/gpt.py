@@ -334,7 +334,6 @@ class Router(nn.Module):
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
         self.expert_probs = None
-        self.mean_expert_probs = None
         self.top_k_indices = None
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
@@ -345,22 +344,15 @@ class Router(nn.Module):
         top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
         router_probs = F.softmax(top_k_logits, dim=-1)
         alpha = torch.as_tensor(self.router_wg_grad_scale, device=logits.device, dtype=logits.dtype)
-        self.mean_expert_probs = None
         # Return fixed wg grad scales of self.router_wg_grad_scale.
         if not self.use_router_wg_dyn_grad_scale:
             return top_k_indices, alpha
 
-        if self.use_aux_loss:
-            all_probs = torch.zeros_like(logits)
-            all_probs.scatter_(-1, top_k_indices, router_probs.to(dtype=all_probs.dtype))
-            mean_expert_probs = all_probs.mean(dim=0)
-        else:
-            mean_expert_probs = router_probs.new_zeros(self.n_exp)
-            mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
-            mean_expert_probs.div_(num_tokens)
+        mean_expert_probs = router_probs.new_zeros(self.n_exp)
+        mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
+        mean_expert_probs.div_(num_tokens)
 
-        self.mean_expert_probs = mean_expert_probs.detach().clone()
-        dyn_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
+        dyn_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4)).clamp_max(2)
         dyn_scales = dyn_scales * alpha / dyn_scales.mean()
         # Return dynamic wg grad scales derived from mean_expert_probs.
         return top_k_indices, dyn_scales.to(dtype=logits.dtype)
@@ -379,7 +371,6 @@ class Router(nn.Module):
             B, T, C = x.size()
             num_tokens = B * T
             x_flat = x.view(num_tokens, C)
-            self.mean_expert_probs = None
 
             # 1. GET ROUTING LOGITS
             # ---------------------
