@@ -20,6 +20,7 @@ import math
 import argparse
 import shlex
 import subprocess
+import sys
 from contextlib import nullcontext, contextmanager
 import re
 
@@ -49,6 +50,8 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def arg_was_explicitly_set(argv, option_name):
+    return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
 
 def parse_milestones_arg(milestones_arg):
     if not milestones_arg:
@@ -147,7 +150,7 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 # If --moe-top-k == 4, then each row of router wg weight receives gradients scaled down by 1/4
 # (the softmax weights) on average, so we suggest scaling wg grad by 
 # 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
-parser.add_argument("--router-wg-grad-scale", type=float, default=2.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
                     help="whether to use dynamic gradient scaling for router w_g weights")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
@@ -193,7 +196,12 @@ parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weight
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
+
 args = parser.parse_args()
+router_z_loss_weight_explicit = arg_was_explicitly_set(sys.argv[1:], "--router-z-loss-weight")
+if args.use_router_wg_dyn_grad_scale and not router_z_loss_weight_explicit:
+    args.router_z_loss_weight = 1e-4
+    
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
