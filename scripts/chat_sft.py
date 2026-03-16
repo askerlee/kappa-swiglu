@@ -11,6 +11,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-s
 
 import argparse
 import os
+import sys
 
 from tasks.arc import ARC
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -42,6 +43,9 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+def arg_was_explicitly_set(argv, option_name):
+    return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
 
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -83,6 +87,7 @@ parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', 
                     help="whether to use dynamic gradient scaling for router w_g weights (default: inherit from saved config of base model)")
 parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
                     help="whether to apply the derived router grad scaling to expert weights (default: inherit from saved config of base model)")
+parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
@@ -95,6 +100,7 @@ parser.add_argument("--log-interval", type=int, default=10, help="interval (in s
 
 args = parser.parse_args()
 user_config = vars(args).copy()
+router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
 
 
@@ -169,6 +175,15 @@ if args.use_experts_dyn_grad_scale is None:
     print0(f"Inherited use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
 else:
     print0(f"Specified use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
+if router_z_loss_weight_was_specified:
+    model.config.router_z_loss_weight = args.router_z_loss_weight
+    print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
+else:
+    args.router_z_loss_weight = model.config.router_z_loss_weight
+    print0(f"Inherited router_z_loss_weight: {args.router_z_loss_weight}")
+user_config["router_z_loss_weight"] = args.router_z_loss_weight
+if not use_dummy_wandb:
+    wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
 set_router_wg_grad_scale(model, args.router_wg_grad_scale, args.use_router_wg_dyn_grad_scale, args.use_experts_dyn_grad_scale)
     
 orig_model = model

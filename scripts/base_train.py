@@ -199,6 +199,10 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
+# When use_experts_dyn_grad_scale, the logits are often exploding. So we increase 
+# the router_z_loss_weight to penalize large logits more.
+if args.use_experts_dyn_grad_scale and not arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight'):
+    args.router_z_loss_weight = 4e-5
 
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
