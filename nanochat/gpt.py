@@ -89,6 +89,46 @@ class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
+class ReuseBmmWithScaledWeightGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, output, left, right, alpha):
+        ctx.save_for_backward(left, right, alpha)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        left, right, alpha = ctx.saved_tensors
+
+        grad_output_for_output = None
+
+        if ctx.needs_input_grad[1]:
+            right_t = right.transpose(1, 2)
+            if right_t.dtype != grad_output.dtype:
+                right_t = right_t.to(dtype=grad_output.dtype)
+            grad_left = torch.bmm(grad_output, right_t)
+            if grad_left.dtype != left.dtype:
+                grad_left = grad_left.to(dtype=left.dtype)
+        else:
+            grad_left = None
+
+        if ctx.needs_input_grad[2]:
+            left_t = left.transpose(1, 2)
+            if left_t.dtype != grad_output.dtype:
+                left_t = left_t.to(dtype=grad_output.dtype)
+            grad_right = torch.bmm(left_t, grad_output)
+            alpha_for_grad_right = alpha
+            if alpha_for_grad_right.dtype != grad_right.dtype:
+                alpha_for_grad_right = alpha_for_grad_right.to(dtype=grad_right.dtype)
+            while alpha_for_grad_right.ndim < grad_right.ndim:
+                alpha_for_grad_right = alpha_for_grad_right.unsqueeze(-1)
+            grad_right = grad_right * alpha_for_grad_right
+            if grad_right.dtype != right.dtype:
+                grad_right = grad_right.to(dtype=right.dtype)
+        else:
+            grad_right = None
+
+        return grad_output_for_output, grad_left, grad_right, None
+
 class ReuseMmWithScaledWeightGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, output, left, right, alpha):
@@ -337,6 +377,7 @@ class Router(nn.Module):
         self.top_k_indices = None
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
+        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
 
     @torch._dynamo.disable
     def _compute_router_wg_grad_alpha(self, logits, num_tokens):
@@ -391,9 +432,11 @@ class Router(nn.Module):
                     top_k_indices, router_wg_grad_alpha = self._compute_router_wg_grad_alpha(logits, num_tokens)
                     if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
                         MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
+                    expert_grad_alpha = router_wg_grad_alpha if (self.use_router_wg_dyn_grad_scale and self.use_experts_dyn_grad_scale) else None
                 else:
                     _, top_k_indices = logits.topk(self.top_k, dim=-1)
                     router_wg_grad_alpha = torch.as_tensor(1.0, device=logits.device, dtype=logits.dtype)
+                    expert_grad_alpha = None
 
                 if needs_router_wg_scaling:
                     logits_wg_for_router = ReuseMmWithScaledWeightGrad.apply(
@@ -435,9 +478,10 @@ class Router(nn.Module):
                     self.expert_probs = all_probs.view(B, T, -1).detach().clone()
                     self.top_k_indices = top_k_indices.view(B, T, -1).clone()
             else:
-                 # At inference, we just need the top-k
-                 top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
-                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
+                # At inference, we just need the top-k
+                top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
+                router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
+                expert_grad_alpha = None
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
@@ -499,7 +543,7 @@ class Router(nn.Module):
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
             # Their memory usage all scale linearly with (B * T).
-            return final_expert_mask, router_probs_masked, top_k_indices, final_rank 
+            return final_expert_mask, router_probs_masked, top_k_indices, final_rank, expert_grad_alpha 
     
     def compute_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor):
         """
@@ -584,6 +628,7 @@ class Block(nn.Module):
         x = x + self.mlp(norm(x))
         return x
 
+# NOTE: MLPExperts is not used in our default settings. Instead, we always use Qwen3MLPExperts.
 class MLPExperts(nn.Module):
     """
     implementation of multiple MLP-based experts that can process input
@@ -597,11 +642,19 @@ class MLPExperts(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
     
-    def forward(self, x):
-        x = torch.bmm(x, self.c_fc)
-        x = F.relu(x).square()
-        x = torch.bmm(x, self.c_proj)
-        return x
+    def forward(self, x, expert_grad_alpha=None):
+        fc_out = torch.bmm(x, self.c_fc)
+        if expert_grad_alpha is not None:
+            # expert_grad_alpha is 1D, and c_fc is 3D. In ReuseBmmWithScaledWeightGrad, 
+            # expert_grad_alpha will be unsqueezed twice to match the shape of c_fc.
+            fc_out = ReuseBmmWithScaledWeightGrad.apply(fc_out, x, self.c_fc, expert_grad_alpha)
+        x = F.relu(fc_out).square()
+        proj_out = torch.bmm(x, self.c_proj)
+        if expert_grad_alpha is not None:
+            # expert_grad_alpha is 1D, and c_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
+            # expert_grad_alpha will be unsqueezed twice to match the shape of c_proj.
+            proj_out = ReuseBmmWithScaledWeightGrad.apply(proj_out, x, self.c_proj, expert_grad_alpha)
+        return proj_out
 
 # Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
 class Qwen3MLP(nn.Module):
@@ -641,10 +694,15 @@ class Qwen3MLPExperts(nn.Module):
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
 
-    def forward(self, x):
+    def forward(self, x, expert_grad_alpha=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
+        # Don't apply grad scaling to gate_proj.
+        if False and expert_grad_alpha is not None:
+            # expert_grad_alpha is 1D, and gate_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
+            # expert_grad_alpha will be unsqueezed twice to match the shape of gate_proj.
+            gate_out = ReuseBmmWithScaledWeightGrad.apply(gate_out, x, self.gate_proj, expert_grad_alpha)
         # gate_out_acts_normed: [n_exp, capacity, intermediate_size]
         # silu can be viewed as two pieces of linear functions, of the positive and negative regions.
         # So we can normalize the output activations by the input norms.
@@ -657,6 +715,7 @@ class Qwen3MLPExperts(nn.Module):
             else:
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
                 gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, x, self.gate_proj, alpha_t)
+
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
             # so expert dimension should be the final logits dimension.
@@ -665,9 +724,17 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("experts_gate_output_loss", experts_gate_output_loss)
 
         fc_out = torch.bmm(x, self.c_fc)
+        if expert_grad_alpha is not None:
+            # expert_grad_alpha is 1D, and c_fc is 3D. In ReuseBmmWithScaledWeightGrad, 
+            # expert_grad_alpha will be unsqueezed twice to match the shape of c_fc.
+            fc_out = ReuseBmmWithScaledWeightGrad.apply(fc_out, x, self.c_fc, expert_grad_alpha)
         x = self.act_fn(gate_out) * fc_out
-        x = torch.bmm(x, self.c_proj)
-        return x
+        proj_out = torch.bmm(x, self.c_proj)
+        if expert_grad_alpha is not None:
+            # expert_grad_alpha is 1D, and c_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
+            # expert_grad_alpha will be unsqueezed twice to match the shape of c_proj.
+            proj_out = ReuseBmmWithScaledWeightGrad.apply(proj_out, x, self.c_proj, expert_grad_alpha)
+        return proj_out
     
 class MOELayer(nn.Module):
     def __init__(self, config):
@@ -726,7 +793,10 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
-        expert_mask, router_probs, top_k_indices, rank = self.router(x)
+        expert_mask, router_probs, top_k_indices, rank, router_expert_grad_alpha = self.router(x)
+        # Make expert_grad_alpha milder than router_expert_grad_alpha, to avoid 
+        # overshooting of unpopular experts or over-suppressing popular ones.
+        expert_grad_alpha = router_expert_grad_alpha.sqrt() if router_expert_grad_alpha is not None else None
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
@@ -762,7 +832,8 @@ class MOELayer(nn.Module):
         )
 
         # --- Run experts ---
-        expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
+        expert_outputs = self.experts(expert_inputs, expert_grad_alpha=expert_grad_alpha) # [n_exp, exp_capacity, C]
+        
         '''
         if self.training and self.use_aux_loss:
             num_valid_tokens_per_expert = self._count_valid_tokens_per_expert(

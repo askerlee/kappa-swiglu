@@ -81,6 +81,8 @@ parser.add_argument("--router-wg-grad-scale", type=float, default=-1,
                          "This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
                     help="whether to use dynamic gradient scaling for router w_g weights (default: inherit from saved config of base model)")
+parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
+                    help="whether to apply the derived router grad scaling to expert weights (default: inherit from saved config of base model)")
 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
@@ -96,20 +98,26 @@ user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
 
 
-def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad_scale=None):
+def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad_scale=None, use_experts_dyn_grad_scale=None):
     router_wg_grad_scale = float(router_wg_grad_scale)
     model.config.router_wg_grad_scale = router_wg_grad_scale
     if use_router_wg_dyn_grad_scale is None:
         use_router_wg_dyn_grad_scale = bool(getattr(model.config, "use_router_wg_dyn_grad_scale", False))
     else:
         use_router_wg_dyn_grad_scale = bool(use_router_wg_dyn_grad_scale)
+    if use_experts_dyn_grad_scale is None:
+        use_experts_dyn_grad_scale = bool(getattr(model.config, "use_experts_dyn_grad_scale", True))
+    else:
+        use_experts_dyn_grad_scale = bool(use_experts_dyn_grad_scale)
     model.config.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
+    model.config.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
     for layer in model.transformer.h:
         router = getattr(getattr(layer, "mlp", None), "router", None)
         if router is None:
             continue
         router.router_wg_grad_scale = router_wg_grad_scale
         router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
+        router.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
 
 
 # Compute init
@@ -156,7 +164,12 @@ if args.use_router_wg_dyn_grad_scale is None:
     print0(f"Inherited use_router_wg_dyn_grad_scale: {args.use_router_wg_dyn_grad_scale}")
 else:
     print0(f"Specified use_router_wg_dyn_grad_scale: {args.use_router_wg_dyn_grad_scale}")
-set_router_wg_grad_scale(model, args.router_wg_grad_scale, args.use_router_wg_dyn_grad_scale)
+if args.use_experts_dyn_grad_scale is None:
+    args.use_experts_dyn_grad_scale = getattr(model.config, "use_experts_dyn_grad_scale", True)
+    print0(f"Inherited use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
+else:
+    print0(f"Specified use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
+set_router_wg_grad_scale(model, args.router_wg_grad_scale, args.use_router_wg_dyn_grad_scale, args.use_experts_dyn_grad_scale)
     
 orig_model = model
 model = torch.compile(model, dynamic=False)
@@ -522,6 +535,7 @@ while True:
                     "moe_top_k": model.config.moe_top_k,
                     "router_wg_grad_scale": model.config.router_wg_grad_scale,
                     "use_router_wg_dyn_grad_scale": model.config.use_router_wg_dyn_grad_scale,
+                    "use_experts_dyn_grad_scale": model.config.use_experts_dyn_grad_scale,
                 },
                 "user_config": user_config, # inputs to the training script
             }

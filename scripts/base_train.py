@@ -153,6 +153,8 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
                     help="whether to use dynamic gradient scaling for router w_g weights")
+parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
+                    help="whether to apply the derived router grad scaling to expert weights")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -285,6 +287,7 @@ def build_model_meta(depth):
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         router_wg_grad_scale=args.router_wg_grad_scale,
         use_router_wg_dyn_grad_scale=args.use_router_wg_dyn_grad_scale,
+        use_experts_dyn_grad_scale=args.use_experts_dyn_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
