@@ -380,24 +380,26 @@ class Router(nn.Module):
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
 
     @torch._dynamo.disable
-    def _compute_router_wg_grad_alpha(self, logits, num_tokens):
+    def _compute_router_expert_grad_alphas(self, logits, num_tokens):
         logits = logits.detach()
         top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
         router_probs = F.softmax(top_k_logits, dim=-1)
         alpha = torch.as_tensor(self.router_wg_grad_scale, device=logits.device, dtype=logits.dtype)
         # Return fixed wg grad scales of self.router_wg_grad_scale.
         if not self.use_router_wg_dyn_grad_scale:
-            return top_k_indices, alpha
+            return top_k_indices, alpha, None
 
         mean_expert_probs = router_probs.new_zeros(self.n_exp)
         mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
         mean_expert_probs.div_(num_tokens)
 
-        dyn_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
-        dyn_scales = dyn_scales * alpha / dyn_scales.mean()
-        dyn_scales.clamp_(0.5, 2)
+        router_wg_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
+        router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
+        expert_grad_scales = router_wg_scales.sqrt()
+        router_wg_scales.clamp_(0.5, 1.5)
+        expert_grad_scales.clamp_(0.75, 1.25)
         # Return dynamic wg grad scales derived from mean_expert_probs.
-        return top_k_indices, dyn_scales.to(dtype=logits.dtype)
+        return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
         
     def forward(self, x):
         """
@@ -429,10 +431,9 @@ class Router(nn.Module):
             if self.training:
                 needs_router_wg_scaling = self.router_wg_grad_scale != 1.0 or self.use_router_wg_dyn_grad_scale
                 if needs_router_wg_scaling:
-                    top_k_indices, router_wg_grad_alpha = self._compute_router_wg_grad_alpha(logits, num_tokens)
+                    top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(logits, num_tokens)
                     if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
                         MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
-                    expert_grad_alpha = router_wg_grad_alpha if (self.use_router_wg_dyn_grad_scale and self.use_experts_dyn_grad_scale) else None
                 else:
                     _, top_k_indices = logits.topk(self.top_k, dim=-1)
                     router_wg_grad_alpha = torch.as_tensor(1.0, device=logits.device, dtype=logits.dtype)
