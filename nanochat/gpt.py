@@ -411,9 +411,11 @@ class Router(nn.Module):
 
         router_wg_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
-        expert_grad_scales = router_wg_scales.sqrt()
+        expert_grad_scales = router_wg_scales.clone()
         router_wg_scales.clamp_(0.5, 1.5)
-        expert_grad_scales.clamp_(0.75, 1.25)
+        expert_grad_scales.clamp_(0.5, 1.5)
+        # expert_grad_scales = expert_grad_scales.sqrt()
+        # expert_grad_scales.clamp_(0.75, 1.25)
         # Return dynamic wg grad scales derived from mean_expert_probs.
         return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
         
