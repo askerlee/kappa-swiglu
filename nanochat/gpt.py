@@ -169,81 +169,6 @@ class ReuseMmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
-class ReuseMmWithScaledInputAndWeightGrad(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, output, left, right, input_alpha, weight_alpha):
-        ctx.save_for_backward(left, right, input_alpha, weight_alpha)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):  # pragma: no cover
-        left, right, input_alpha, weight_alpha = ctx.saved_tensors
-
-        grad_output_for_output = None
-
-        if ctx.needs_input_grad[1]:
-            right_for_grad_left = right
-            if right_for_grad_left.dtype != grad_output.dtype:
-                right_for_grad_left = right_for_grad_left.to(dtype=grad_output.dtype)
-            grad_left = torch.mm(grad_output, right_for_grad_left)
-            input_alpha_for_grad_left = input_alpha
-            if input_alpha_for_grad_left.dtype != grad_left.dtype:
-                input_alpha_for_grad_left = input_alpha_for_grad_left.to(dtype=grad_left.dtype)
-            while input_alpha_for_grad_left.ndim < grad_left.ndim:
-                input_alpha_for_grad_left = input_alpha_for_grad_left.unsqueeze(-1)
-            grad_left = grad_left * input_alpha_for_grad_left
-            if grad_left.dtype != left.dtype:
-                grad_left = grad_left.to(dtype=left.dtype)
-        else:
-            grad_left = None
-
-        if ctx.needs_input_grad[2]:
-            left_for_grad_right = left
-            if left_for_grad_right.dtype != grad_output.dtype:
-                left_for_grad_right = left_for_grad_right.to(dtype=grad_output.dtype)
-            grad_right = torch.mm(grad_output.transpose(0, 1), left_for_grad_right)
-            weight_alpha_for_grad_right = weight_alpha
-            if weight_alpha_for_grad_right.dtype != grad_right.dtype:
-                weight_alpha_for_grad_right = weight_alpha_for_grad_right.to(dtype=grad_right.dtype)
-            while weight_alpha_for_grad_right.ndim < grad_right.ndim:
-                weight_alpha_for_grad_right = weight_alpha_for_grad_right.unsqueeze(-1)
-            grad_right = grad_right * weight_alpha_for_grad_right
-            if grad_right.dtype != right.dtype:
-                grad_right = grad_right.to(dtype=right.dtype)
-        else:
-            grad_right = None
-
-        return grad_output_for_output, grad_left, grad_right, None, None
-
-class GradientScaler(nn.Module):
-    def __init__(self, alpha=1., debug=False, *args, **kwargs):
-        """
-        A gradient scaling layer.
-        This layer has no parameters, and simply scales the gradient in the backward pass.
-        """
-        super().__init__(*args, **kwargs)
-
-        # Store as Python scalars to avoid meta tensor buffers during lazy/meta init.
-        self._alpha = float(alpha)
-        self._debug = bool(debug)
-
-    def forward(self, input_):
-        _debug = self._debug if hasattr(self, '_debug') else False
-        alpha_t = torch.as_tensor(self._alpha, device=input_.device, dtype=input_.dtype)
-        debug_t = torch.as_tensor(_debug, device=input_.device)
-        return ScaleGrad.apply(input_, alpha_t, debug_t)
-
-def gen_gradient_scaler(alpha, debug=False):
-    if alpha == 1:
-        return nn.Identity()
-    if alpha > 0:
-        return GradientScaler(alpha, debug=debug)
-    else:
-        assert alpha == 0
-        # Don't use lambda function here, otherwise the object can't be pickled.
-        return torch.detach
-
-
 def scale_param_update_delta(delta: torch.Tensor, alpha: torch.Tensor | None):
     if alpha is None:
         return delta
@@ -656,9 +581,12 @@ class MLPExperts(nn.Module):
         super().__init__()
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
+        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
         self._expert_update_scale = None
 
     def get_param_update_hooks(self):
+        if not self.use_experts_dyn_grad_scale:
+            return {}
         return {
             self.c_fc: self._apply_expert_update,
             self.c_proj: self._apply_expert_update,
@@ -668,7 +596,7 @@ class MLPExperts(nn.Module):
         param.add_(scale_param_update_delta(delta, self._expert_update_scale))
     
     def forward(self, x, expert_grad_alpha=None):
-        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
+        self._expert_update_scale = None if (expert_grad_alpha is None or not self.use_experts_dyn_grad_scale) else expert_grad_alpha.detach()
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -711,32 +639,34 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
+        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
+        self.apply_dyn_alpha_to_gate_proj = self.apply_dyn_alpha_to_gate_proj and \
+                                            bool(getattr(config, 'apply_dyn_alpha_to_gate_proj', False))
         self._expert_update_scale = None
+        self._gate_proj_update_scale = None
 
     def get_param_update_hooks(self):
-        return {
-            self.c_fc: self._apply_expert_update,
-            self.c_proj: self._apply_expert_update,
-        }
-
+        hooks = {}
+        if self.use_experts_dyn_grad_scale:
+            hooks[self.c_fc] = self._apply_expert_update
+            hooks[self.c_proj] = self._apply_expert_update
+        if self.apply_dyn_alpha_to_gate_proj:
+            hooks[self.gate_proj] = self._apply_gate_proj_update
+        return hooks
+    
     def _apply_expert_update(self, param, delta):
         param.add_(scale_param_update_delta(delta, self._expert_update_scale))
 
+    def _apply_gate_proj_update(self, param, delta):
+        param.add_(scale_param_update_delta(delta, self._gate_proj_update_scale))
+
     def forward(self, x, expert_grad_alpha=None):
-        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
+        alpha = None if expert_grad_alpha is None else expert_grad_alpha.detach()
+        self._expert_update_scale    = alpha if self.use_experts_dyn_grad_scale else None
+        self._gate_proj_update_scale = alpha if self.apply_dyn_alpha_to_gate_proj else None
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
-        # Don't apply grad scaling to gate_proj.
-        if False and expert_grad_alpha is not None:
-            # expert_grad_alpha is 1D, and gate_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
-            # expert_grad_alpha will be unsqueezed twice to match the shape of gate_proj.
-            gate_out = ReuseBmmWithScaledWeightGrad.apply(gate_out, x, self.gate_proj, expert_grad_alpha)
-        # gate_out_acts_normed: [n_exp, capacity, intermediate_size]
-        # silu can be viewed as two pieces of linear functions, of the positive and negative regions.
-        # So we can normalize the output activations by the input norms.
-        #denom = x.norm(dim=-1, keepdim=True) * self.gate_proj.norm(dim=1, keepdim=True)
-        #self.gate_out_acts_normed = self.act_fn(gate_out.detach()) / denom.clamp_min(1e-12)
 
         if self.training and self.use_experts_gate_output_loss:
             if self.experts_gate_output_loss_input_grad_scale == 1:

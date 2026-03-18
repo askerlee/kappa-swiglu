@@ -31,6 +31,7 @@ class GPTConfig:
         router_wg_grad_scale: float = 2.0,  # scale gradients for router w_g weights without affecting router inputs.
         use_router_wg_dyn_grad_scale: bool = False,  # whether to use dynamic gradient scaling for router w_g weights
         use_experts_dyn_grad_scale: bool = False,  # whether to apply the derived router grad scaling to expert weights
+        apply_dyn_alpha_to_gate_proj: bool = False,  # whether to apply the derived router grad scaling to gate_proj weights
         router_ortho_loss_weight: float = 0.0001,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 0.1,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
@@ -78,6 +79,7 @@ class GPTConfig:
         self.router_wg_grad_scale = router_wg_grad_scale
         self.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
         self.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
+        self.apply_dyn_alpha_to_gate_proj = apply_dyn_alpha_to_gate_proj
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
