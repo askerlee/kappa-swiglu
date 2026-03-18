@@ -551,6 +551,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
     """
     def __init__(self, param_groups: list[dict]):
         processed_groups, param_update_hooks = MuonAdamW._extract_param_update_hooks(param_groups)
+        print(f"{len(param_update_hooks)} hooks are specified")
         super().__init__(processed_groups, defaults={})
         self._param_update_hooks = param_update_hooks
         # 0-D CPU tensors to avoid torch.compile recompilation when values change
