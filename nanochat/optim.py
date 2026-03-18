@@ -421,9 +421,8 @@ class MuonAdamW(torch.optim.Optimizer):
         second_momentum_buffer = state["second_momentum_buffer"]
         red_dim = -1 if shape[-2] >= shape[-1] else -2
 
-        # Stack grads and params (NOTE: this assumes all params have the same shape)
+        # Stack grads once; hooked groups reuse this buffer as the Muon update buffer.
         stacked_grads = torch.stack([p.grad for p in params])
-        stacked_params = torch.stack(params)
         hooks = [self._get_param_update_hook(p) for p in params]
         has_hook = any(hook is not None for hook in hooks)
 
@@ -440,7 +439,6 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_wd_t.fill_(group["weight_decay"])
 
         if has_hook:
-            grad_update = torch.empty_like(stacked_grads)
             muon_grad_update_fused(
                 stacked_grads,
                 momentum_buffer,
@@ -449,17 +447,16 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._muon_beta2_t,
                 group["ns_steps"],
                 red_dim,
-                grad_update,
+                stacked_grads,
             )
-            lr = self._muon_lr_t.to(stacked_params.dtype)
-            wd = self._muon_wd_t.to(stacked_params.dtype)
-            mask = (grad_update * stacked_params) >= 0
-            wd_delta = -(lr * wd * stacked_params * mask)
-            grad_delta = -(lr * grad_update.to(stacked_params.dtype))
-            for p, wd_i, grad_i, hook in zip(params, wd_delta.unbind(0), grad_delta.unbind(0), hooks):
-                p.add_(wd_i)
-                self._apply_param_delta(p, grad_i, hook=hook)
+            lr = self._muon_lr_t.to(dtype=dtype)
+            wd = self._muon_wd_t.to(dtype=dtype)
+            for p, grad_update, hook in zip(params, stacked_grads.unbind(0), hooks):
+                mask = (grad_update * p) >= 0
+                p.add_(-(lr * wd * p * mask))
+                self._apply_param_delta(p, -(lr * grad_update.to(dtype=p.dtype)), hook=hook)
         else:
+            stacked_params = torch.stack(params)
             # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
             muon_step_fused(
                 stacked_grads,
@@ -707,7 +704,6 @@ class DistMuonAdamW(torch.optim.Optimizer):
 
         if num_owned > 0:
             owned_params = [params[start_idx + i] for i in range(num_owned)]
-            stacked_owned = torch.stack(owned_params)
             hooks = [self._get_param_update_hook(p) for p in owned_params]
             has_hook = any(hook is not None for hook in hooks)
 
@@ -723,7 +719,6 @@ class DistMuonAdamW(torch.optim.Optimizer):
             self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
             self._muon_wd_t.fill_(group["weight_decay"])
             if has_hook:
-                grad_update = torch.empty_like(grad_chunk[:num_owned])
                 muon_grad_update_fused(
                     grad_chunk[:num_owned],
                     state["momentum_buffer"][:num_owned],
@@ -732,18 +727,17 @@ class DistMuonAdamW(torch.optim.Optimizer):
                     self._muon_beta2_t,
                     group["ns_steps"],
                     red_dim,
-                    grad_update,
+                    grad_chunk[:num_owned],
                 )
-                lr = self._muon_lr_t.to(stacked_owned.dtype)
-                wd = self._muon_wd_t.to(stacked_owned.dtype)
-                mask = (grad_update * stacked_owned) >= 0
-                wd_delta = -(lr * wd * stacked_owned * mask)
-                grad_delta = -(lr * grad_update.to(stacked_owned.dtype))
-                for p, wd_i, grad_i, hook in zip(owned_params, wd_delta.unbind(0), grad_delta.unbind(0), hooks):
-                    p.add_(wd_i)
-                    self._apply_param_delta(p, grad_i, hook=hook)
-                updated_params[:num_owned].copy_(torch.stack(owned_params))
+                lr = self._muon_lr_t.to(dtype=dtype)
+                wd = self._muon_wd_t.to(dtype=dtype)
+                for idx, (p, grad_update, hook) in enumerate(zip(owned_params, grad_chunk[:num_owned].unbind(0), hooks)):
+                    mask = (grad_update * p) >= 0
+                    p.add_(-(lr * wd * p * mask))
+                    self._apply_param_delta(p, -(lr * grad_update.to(dtype=p.dtype)), hook=hook)
+                    updated_params[idx].copy_(p)
             else:
+                stacked_owned = torch.stack(owned_params)
                 muon_step_fused(
                     grad_chunk[:num_owned], stacked_owned,
                     state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],

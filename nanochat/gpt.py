@@ -1282,11 +1282,29 @@ class GPT(nn.Module):
         ddp, rank, local_rank, world_size = get_dist_info()
         param_update_hooks = self.get_param_update_hooks()
 
-        def maybe_add_update_hooks(group):
-            hooks = [param_update_hooks.get(p) for p in group['params']]
-            if any(hook is not None for hook in hooks):
-                group['param_update_hooks'] = hooks
-            return group
+        def split_group_by_update_hooks(group):
+            hooked_params = []
+            hooked_fns = []
+            plain_params = []
+            for param in group['params']:
+                hook = param_update_hooks.get(param)
+                if hook is None:
+                    plain_params.append(param)
+                else:
+                    hooked_params.append(param)
+                    hooked_fns.append(hook)
+
+            groups = []
+            if plain_params:
+                plain_group = dict(group)
+                plain_group['params'] = plain_params
+                groups.append(plain_group)
+            if hooked_params:
+                hooked_group = dict(group)
+                hooked_group['params'] = hooked_params
+                hooked_group['param_update_hooks'] = hooked_fns
+                groups.append(hooked_group)
+            return groups
 
         # Separate out all parameters into groups
         matrix_params = list(self.transformer.h.parameters())
@@ -1302,20 +1320,29 @@ class GPT(nn.Module):
         print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
 
         # Build param_groups with all required fields explicit
-        param_groups = [
+        param_groups = []
+        param_groups.extend(split_group_by_update_hooks(
             # AdamW groups (embeddings, lm_head, scalars)
-            maybe_add_update_hooks(dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
-            maybe_add_update_hooks(dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
-            maybe_add_update_hooks(dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
-            maybe_add_update_hooks(dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
-            maybe_add_update_hooks(dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)),  # higher beta1 for x0
-        ]
+            dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        ))
+        param_groups.extend(split_group_by_update_hooks(
+            dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        ))
+        param_groups.extend(split_group_by_update_hooks(
+            dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        ))
+        param_groups.extend(split_group_by_update_hooks(
+            dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        ))
+        param_groups.extend(split_group_by_update_hooks(
+            dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
+        ))  # higher beta1 for x0
         # Muon groups (matrix params, grouped by shape for stacking)
         muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"Muon LR scaling: {muon_lr_scaling}")
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.append(maybe_add_update_hooks(dict(
+            param_groups.extend(split_group_by_update_hooks(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
                 match_rms_adamw=muon_match_rms_adamw,
