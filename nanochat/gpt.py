@@ -129,7 +129,7 @@ class ReuseBmmWithScaledWeightGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
-class ReuseMmWithScaledWeightGrad(torch.autograd.Function):
+class ReuseMmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, output, left, right, alpha):
         ctx.save_for_backward(left, right, alpha)
@@ -146,6 +146,12 @@ class ReuseMmWithScaledWeightGrad(torch.autograd.Function):
             if right_for_grad_left.dtype != grad_output.dtype:
                 right_for_grad_left = right_for_grad_left.to(dtype=grad_output.dtype)
             grad_left = torch.mm(grad_output, right_for_grad_left)
+            alpha_for_grad_left = alpha
+            if alpha_for_grad_left.dtype != grad_left.dtype:
+                alpha_for_grad_left = alpha_for_grad_left.to(dtype=grad_left.dtype)
+            while alpha_for_grad_left.ndim < grad_left.ndim:
+                alpha_for_grad_left = alpha_for_grad_left.unsqueeze(-1)
+            grad_left = grad_left * alpha_for_grad_left
             if grad_left.dtype != left.dtype:
                 grad_left = grad_left.to(dtype=left.dtype)
         else:
@@ -156,12 +162,6 @@ class ReuseMmWithScaledWeightGrad(torch.autograd.Function):
             if left_for_grad_right.dtype != grad_output.dtype:
                 left_for_grad_right = left_for_grad_right.to(dtype=grad_output.dtype)
             grad_right = torch.mm(grad_output.transpose(0, 1), left_for_grad_right)
-            alpha_for_grad_right = alpha
-            if alpha_for_grad_right.dtype != grad_right.dtype:
-                alpha_for_grad_right = alpha_for_grad_right.to(dtype=grad_right.dtype)
-            while alpha_for_grad_right.ndim < grad_right.ndim:
-                alpha_for_grad_right = alpha_for_grad_right.unsqueeze(-1)
-            grad_right = grad_right * alpha_for_grad_right
             if grad_right.dtype != right.dtype:
                 grad_right = grad_right.to(dtype=right.dtype)
         else:
@@ -242,6 +242,15 @@ def gen_gradient_scaler(alpha, debug=False):
         assert alpha == 0
         # Don't use lambda function here, otherwise the object can't be pickled.
         return torch.detach
+
+
+def scale_param_update_delta(delta: torch.Tensor, alpha: torch.Tensor | None):
+    if alpha is None:
+        return delta
+    alpha = alpha.to(device=delta.device, dtype=delta.dtype)
+    while alpha.ndim < delta.ndim:
+        alpha = alpha.unsqueeze(-1)
+    return delta * alpha
 
 def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True, 
                    z_loss_penalize_mean_logits: bool = True):
@@ -378,6 +387,13 @@ class Router(nn.Module):
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
+        self._router_wg_update_scale = None
+
+    def get_param_update_hooks(self):
+        return {self.w_g.weight: self._apply_router_wg_update}
+
+    def _apply_router_wg_update(self, param, delta):
+        param.add_(scale_param_update_delta(delta, self._router_wg_update_scale))
 
     @torch._dynamo.disable
     def _compute_router_expert_grad_alphas(self, logits, num_tokens):
@@ -415,6 +431,7 @@ class Router(nn.Module):
             B, T, C = x.size()
             num_tokens = B * T
             x_flat = x.view(num_tokens, C)
+            self._router_wg_update_scale = None
 
             # 1. GET ROUTING LOGITS
             # ---------------------
@@ -432,6 +449,7 @@ class Router(nn.Module):
                 needs_router_wg_scaling = self.router_wg_grad_scale != 1.0 or self.use_router_wg_dyn_grad_scale
                 if needs_router_wg_scaling:
                     top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(logits, num_tokens)
+                    self._router_wg_update_scale = router_wg_grad_alpha.detach()
                     if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
                         MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
                 else:
@@ -439,13 +457,7 @@ class Router(nn.Module):
                     router_wg_grad_alpha = torch.as_tensor(1.0, device=logits.device, dtype=logits.dtype)
                     expert_grad_alpha = None
 
-                if needs_router_wg_scaling:
-                    logits_wg_for_router = ReuseMmWithScaledWeightGrad.apply(
-                        logits_wg, x_flat, self.w_g.weight, router_wg_grad_alpha
-                    )
-                    logits_for_router = logits_wg_for_router if noise is None else logits_wg_for_router + noise
-                else:
-                    logits_for_router = logits
+                logits_for_router = logits
 
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
@@ -453,8 +465,8 @@ class Router(nn.Module):
                         logits_for_z_loss = logits_for_router
                     else:
                         input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
-                        logits_wg_for_z_loss = ReuseMmWithScaledInputAndWeightGrad.apply(
-                            logits_wg, x_flat, self.w_g.weight, input_alpha_t, router_wg_grad_alpha
+                        logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
+                            logits_wg, x_flat, self.w_g.weight, input_alpha_t
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
@@ -642,19 +654,22 @@ class MLPExperts(nn.Module):
         super().__init__()
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
+        self._expert_update_scale = None
+
+    def get_param_update_hooks(self):
+        return {
+            self.c_fc: self._apply_expert_update,
+            self.c_proj: self._apply_expert_update,
+        }
+
+    def _apply_expert_update(self, param, delta):
+        param.add_(scale_param_update_delta(delta, self._expert_update_scale))
     
     def forward(self, x, expert_grad_alpha=None):
+        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
         fc_out = torch.bmm(x, self.c_fc)
-        if expert_grad_alpha is not None:
-            # expert_grad_alpha is 1D, and c_fc is 3D. In ReuseBmmWithScaledWeightGrad, 
-            # expert_grad_alpha will be unsqueezed twice to match the shape of c_fc.
-            fc_out = ReuseBmmWithScaledWeightGrad.apply(fc_out, x, self.c_fc, expert_grad_alpha)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
-        if expert_grad_alpha is not None:
-            # expert_grad_alpha is 1D, and c_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
-            # expert_grad_alpha will be unsqueezed twice to match the shape of c_proj.
-            proj_out = ReuseBmmWithScaledWeightGrad.apply(proj_out, x, self.c_proj, expert_grad_alpha)
         return proj_out
 
 # Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
@@ -694,8 +709,19 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
+        self._expert_update_scale = None
+
+    def get_param_update_hooks(self):
+        return {
+            self.c_fc: self._apply_expert_update,
+            self.c_proj: self._apply_expert_update,
+        }
+
+    def _apply_expert_update(self, param, delta):
+        param.add_(scale_param_update_delta(delta, self._expert_update_scale))
 
     def forward(self, x, expert_grad_alpha=None):
+        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
@@ -725,16 +751,8 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("experts_gate_output_loss", experts_gate_output_loss)
 
         fc_out = torch.bmm(x, self.c_fc)
-        if expert_grad_alpha is not None:
-            # expert_grad_alpha is 1D, and c_fc is 3D. In ReuseBmmWithScaledWeightGrad, 
-            # expert_grad_alpha will be unsqueezed twice to match the shape of c_fc.
-            fc_out = ReuseBmmWithScaledWeightGrad.apply(fc_out, x, self.c_fc, expert_grad_alpha)
         x = self.act_fn(gate_out) * fc_out
         proj_out = torch.bmm(x, self.c_proj)
-        if expert_grad_alpha is not None:
-            # expert_grad_alpha is 1D, and c_proj is 3D. In ReuseBmmWithScaledWeightGrad, 
-            # expert_grad_alpha will be unsqueezed twice to match the shape of c_proj.
-            proj_out = ReuseBmmWithScaledWeightGrad.apply(proj_out, x, self.c_proj, expert_grad_alpha)
         return proj_out
     
 class MOELayer(nn.Module):
@@ -758,6 +776,11 @@ class MOELayer(nn.Module):
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
+
+    def get_param_update_hooks(self):
+        hooks = self.router.get_param_update_hooks()
+        hooks.update(self.experts.get_param_update_hooks())
+        return hooks
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -1244,10 +1267,26 @@ class GPT(nn.Module):
             'total': total,
         }
 
+    # hooks: a dict of param p -> the update hook function for p.
+    def get_param_update_hooks(self):
+        hooks = {}
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                hooks.update(mlp.get_param_update_hooks())
+        return hooks
+
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, 
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
+        param_update_hooks = self.get_param_update_hooks()
+
+        def maybe_add_update_hooks(group):
+            hooks = [param_update_hooks.get(p) for p in group['params']]
+            if any(hook is not None for hook in hooks):
+                group['param_update_hooks'] = hooks
+            return group
 
         # Separate out all parameters into groups
         matrix_params = list(self.transformer.h.parameters())
@@ -1265,22 +1304,22 @@ class GPT(nn.Module):
         # Build param_groups with all required fields explicit
         param_groups = [
             # AdamW groups (embeddings, lm_head, scalars)
-            dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),  # higher beta1 for x0
+            maybe_add_update_hooks(dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
+            maybe_add_update_hooks(dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
+            maybe_add_update_hooks(dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
+            maybe_add_update_hooks(dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)),
+            maybe_add_update_hooks(dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)),  # higher beta1 for x0
         ]
         # Muon groups (matrix params, grouped by shape for stacking)
         muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"Muon LR scaling: {muon_lr_scaling}")
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.append(dict(
+            param_groups.append(maybe_add_update_hooks(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
                 match_rms_adamw=muon_match_rms_adamw,
-            ))
+            )))
 
         Factory = DistMuonAdamW if ddp else MuonAdamW
         optimizer = Factory(param_groups)

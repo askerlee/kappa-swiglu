@@ -7,6 +7,8 @@ Addapted from: https://github.com/KellerJordan/modded-nanogpt
 Further contributions from @karpathy and @chrisjmccormick.
 """
 
+import inspect
+
 import torch
 import torch.distributed as dist
 from torch import Tensor
@@ -47,6 +49,29 @@ def adamw_step_fused(
     denom = (exp_avg_sq / bias2).sqrt() + eps_t
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
+
+
+@torch.compile(dynamic=False, fullgraph=True)
+def adamw_grad_delta_fused(
+    grad: Tensor,
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    step_t: Tensor,
+    lr_t: Tensor,
+    beta1_t: Tensor,
+    beta2_t: Tensor,
+    eps_t: Tensor,
+    grad_delta: Tensor,
+) -> None:
+    """Update AdamW moments and write the gradient-driven parameter delta into grad_delta."""
+    exp_avg.lerp_(grad, 1 - beta1_t)
+    exp_avg_sq.lerp_(grad.square(), 1 - beta2_t)
+    bias1 = 1 - beta1_t ** step_t
+    bias2 = 1 - beta2_t ** step_t
+    denom = (exp_avg_sq / bias2).sqrt() + eps_t
+    step_size = lr_t / bias1
+    grad_delta.copy_(exp_avg / denom)
+    grad_delta.mul_(-step_size)
 
 # -----------------------------------------------------------------------------
 """
@@ -166,6 +191,50 @@ def muon_step_fused(
     mask = (g * stacked_params) >= 0
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
 
+
+@torch.compile(dynamic=True, fullgraph=True)
+def muon_grad_update_fused(
+    stacked_grads: Tensor,
+    momentum_buffer: Tensor,
+    second_momentum_buffer: Tensor,
+    momentum_t: Tensor,
+    beta2_t: Tensor,
+    ns_steps: int,
+    red_dim: int,
+    grad_update: Tensor,
+) -> None:
+    """Update Muon state and write the gradient-driven update direction into grad_update."""
+
+    momentum = momentum_t.to(stacked_grads.dtype)
+    momentum_buffer.lerp_(stacked_grads, 1 - momentum)
+    g = stacked_grads.lerp_(momentum_buffer, momentum)
+
+    X = g.bfloat16()
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+    if g.size(-2) > g.size(-1):
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X.mT @ X
+            B = b * A + c * (A @ A)
+            X = a * X + X @ B
+    else:
+        for a, b, c in polar_express_coeffs[:ns_steps]:
+            A = X @ X.mT
+            B = b * A + c * (A @ A)
+            X = a * X + B @ X
+    g = X
+
+    beta2 = beta2_t.to(g.dtype)
+    v_mean = g.float().square().mean(dim=red_dim, keepdim=True)
+    red_dim_size = g.size(red_dim)
+    v_norm_sq = v_mean.sum(dim=(-2, -1), keepdim=True) * red_dim_size
+    v_norm = v_norm_sq.sqrt()
+    second_momentum_buffer.lerp_(v_mean.to(dtype=second_momentum_buffer.dtype), 1 - beta2)
+    step_size = second_momentum_buffer.clamp_min(1e-10).rsqrt()
+    scaled_sq_sum = (v_mean * red_dim_size) * step_size.float().square()
+    v_norm_new = scaled_sq_sum.sum(dim=(-2, -1), keepdim=True).sqrt()
+    final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
+    grad_update.copy_(g * final_scale.to(g.dtype))
+
 # -----------------------------------------------------------------------------
 # Single GPU version of the MuonAdamW optimizer.
 # Used mostly for reference, debugging and testing.
@@ -199,7 +268,9 @@ class MuonAdamW(torch.optim.Optimizer):
                             Optional: 'muon_lr_scale_max' (float, cap for LR shape scaling)
     """
     def __init__(self, param_groups: list[dict]):
-        super().__init__(param_groups, defaults={})
+        processed_groups, param_update_hooks = self._extract_param_update_hooks(param_groups)
+        super().__init__(processed_groups, defaults={})
+        self._param_update_hooks = param_update_hooks
         # 0-D CPU tensors to avoid torch.compile recompilation when values change
         # AdamW tensors
         self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
@@ -214,6 +285,60 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
 
+    @staticmethod
+    def _extract_param_update_hooks(param_groups: list[dict]) -> tuple[list[dict], dict]:
+        processed_groups: list[dict] = []
+        param_update_hooks: dict = {}
+        for group in param_groups:
+            processed_group = dict(group)
+            params = list(processed_group['params'])
+            processed_group['params'] = params
+            hooks = processed_group.pop('param_update_hooks', None)
+            if hooks is None:
+                hooks = processed_group.pop('update_hooks', None)
+            if hooks is None:
+                hooks = [None] * len(params)
+            else:
+                hooks = list(hooks)
+                if len(hooks) != len(params):
+                    raise ValueError("param_update_hooks must match the number of params in the group")
+            for p, hook in zip(params, hooks):
+                if hook is not None:
+                    param_update_hooks[p] = hook
+            processed_groups.append(processed_group)
+        return processed_groups, param_update_hooks
+
+    def _get_param_update_hook(self, p: Tensor):
+        return self._param_update_hooks.get(p, getattr(p, 'param_update_hook', None))
+
+    @staticmethod
+    def _hook_accepts_param(hook) -> bool:
+        try:
+            signature = inspect.signature(hook)
+        except (TypeError, ValueError):
+            return True
+
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+                return True
+
+        positional_params = [
+            parameter for parameter in signature.parameters.values()
+            if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        return len(positional_params) >= 2
+
+    def _apply_param_delta(self, p: Tensor, delta: Tensor, hook=None) -> None:
+        if hook is None:
+            hook = self._get_param_update_hook(p)
+        if hook is None:
+            p.add_(delta)
+            return
+        if self._hook_accepts_param(hook):
+            hook(p, delta)
+        else:
+            hook(delta)
+
     def _step_adamw(self, group: dict) -> None:
         """
         AdamW update for each param in the group individually.
@@ -224,6 +349,7 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad
             state = self.state[p]
+            hook = self._get_param_update_hook(p)
 
             # State init
             if not state:
@@ -248,11 +374,21 @@ class MuonAdamW(torch.optim.Optimizer):
             grad_flat = grad.view(-1)
             exp_avg_flat = exp_avg.view(-1)
             exp_avg_sq_flat = exp_avg_sq.view(-1)
-            adamw_step_fused(
-                p_flat, grad_flat, exp_avg_flat, exp_avg_sq_flat,
-                self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
-                self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
-            )
+            if hook is None:
+                adamw_step_fused(
+                    p_flat, grad_flat, exp_avg_flat, exp_avg_sq_flat,
+                    self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
+                    self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
+                )
+            else:
+                p.mul_(1 - self._adamw_lr_t * self._adamw_wd_t)
+                grad_delta = torch.empty_like(p_flat)
+                adamw_grad_delta_fused(
+                    grad_flat, exp_avg_flat, exp_avg_sq_flat,
+                    self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
+                    self._adamw_beta2_t, self._adamw_eps_t, grad_delta,
+                )
+                self._apply_param_delta(p, grad_delta.view_as(p), hook=hook)
 
     def _step_muon(self, group: dict) -> None:
         """
@@ -287,6 +423,8 @@ class MuonAdamW(torch.optim.Optimizer):
         # Stack grads and params (NOTE: this assumes all params have the same shape)
         stacked_grads = torch.stack([p.grad for p in params])
         stacked_params = torch.stack(params)
+        hooks = [self._get_param_update_hook(p) for p in params]
+        has_hook = any(hook is not None for hook in hooks)
 
         # Fill all the 0-D tensors with current values
         self._muon_momentum_t.fill_(group["momentum"])
@@ -300,22 +438,42 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
         self._muon_wd_t.fill_(group["weight_decay"])
 
-        # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
-        muon_step_fused(
-            stacked_grads,
-            stacked_params,
-            momentum_buffer,
-            second_momentum_buffer,
-            self._muon_momentum_t,
-            self._muon_lr_t,
-            self._muon_wd_t,
-            self._muon_beta2_t,
-            group["ns_steps"],
-            red_dim,
-        )
-
-        # Copy back to original params
-        torch._foreach_copy_(params, list(stacked_params.unbind(0)))
+        if has_hook:
+            grad_update = torch.empty_like(stacked_grads)
+            muon_grad_update_fused(
+                stacked_grads,
+                momentum_buffer,
+                second_momentum_buffer,
+                self._muon_momentum_t,
+                self._muon_beta2_t,
+                group["ns_steps"],
+                red_dim,
+                grad_update,
+            )
+            lr = self._muon_lr_t.to(stacked_params.dtype)
+            wd = self._muon_wd_t.to(stacked_params.dtype)
+            mask = (grad_update * stacked_params) >= 0
+            wd_delta = -(lr * wd * stacked_params * mask)
+            grad_delta = -(lr * grad_update.to(stacked_params.dtype))
+            for p, wd_i, grad_i, hook in zip(params, wd_delta.unbind(0), grad_delta.unbind(0), hooks):
+                p.add_(wd_i)
+                self._apply_param_delta(p, grad_i, hook=hook)
+        else:
+            # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
+            muon_step_fused(
+                stacked_grads,
+                stacked_params,
+                momentum_buffer,
+                second_momentum_buffer,
+                self._muon_momentum_t,
+                self._muon_lr_t,
+                self._muon_wd_t,
+                self._muon_beta2_t,
+                group["ns_steps"],
+                red_dim,
+            )
+            # Copy back to original params
+            torch._foreach_copy_(params, list(stacked_params.unbind(0)))
 
     @torch.inference_mode()
     def step(self):
@@ -392,7 +550,9 @@ class DistMuonAdamW(torch.optim.Optimizer):
                             Optional: 'muon_lr_scale_max' (float, cap for LR shape scaling)
     """
     def __init__(self, param_groups: list[dict]):
-        super().__init__(param_groups, defaults={})
+        processed_groups, param_update_hooks = MuonAdamW._extract_param_update_hooks(param_groups)
+        super().__init__(processed_groups, defaults={})
+        self._param_update_hooks = param_update_hooks
         # 0-D CPU tensors to avoid torch.compile recompilation when values change
         self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
@@ -404,6 +564,20 @@ class DistMuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+
+    def _get_param_update_hook(self, p: Tensor):
+        return self._param_update_hooks.get(p, getattr(p, 'param_update_hook', None))
+
+    def _apply_param_delta(self, p: Tensor, delta: Tensor, hook=None) -> None:
+        if hook is None:
+            hook = self._get_param_update_hook(p)
+        if hook is None:
+            p.add_(delta)
+            return
+        if MuonAdamW._hook_accepts_param(hook):
+            hook(p, delta)
+        else:
+            hook(delta)
 
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         """Launch async reduce ops for AdamW group. Returns info dict with per-param infos."""
@@ -457,6 +631,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
             pinfo['future'].wait()
             grad_slice = pinfo['grad_slice']
             state = self.state[p]
+            hook = self._get_param_update_hook(p)
 
             # For small params, operate on full param; for large, operate on slice
             if pinfo['is_small']:
@@ -479,11 +654,21 @@ class DistMuonAdamW(torch.optim.Optimizer):
             self._adamw_beta2_t.fill_(group['betas'][1])
             self._adamw_eps_t.fill_(group['eps'])
             self._adamw_wd_t.fill_(group['weight_decay'])
-            adamw_step_fused(
-                p_slice, grad_slice, state['exp_avg'], state['exp_avg_sq'],
-                self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
-                self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
-            )
+            if hook is None:
+                adamw_step_fused(
+                    p_slice, grad_slice, state['exp_avg'], state['exp_avg_sq'],
+                    self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
+                    self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
+                )
+            else:
+                p_slice.mul_(1 - self._adamw_lr_t * self._adamw_wd_t)
+                grad_delta = torch.empty_like(p_slice)
+                adamw_grad_delta_fused(
+                    grad_slice, state['exp_avg'], state['exp_avg_sq'],
+                    self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
+                    self._adamw_beta2_t, self._adamw_eps_t, grad_delta,
+                )
+                self._apply_param_delta(p_slice, grad_delta, hook=hook)
 
             # Large params need all_gather
             if not pinfo['is_small']:
@@ -521,10 +706,12 @@ class DistMuonAdamW(torch.optim.Optimizer):
         if num_owned > 0:
             owned_params = [params[start_idx + i] for i in range(num_owned)]
             stacked_owned = torch.stack(owned_params)
+            hooks = [self._get_param_update_hook(p) for p in owned_params]
+            has_hook = any(hook is not None for hook in hooks)
 
             # Fill 0-D tensors and run fused kernel
             self._muon_momentum_t.fill_(group["momentum"])
-            self._muon_beta2_t.fill_(group["beta2"])
+            self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
             adjust_lr_fn = group.get("adjust_lr_fn")
             if adjust_lr_fn is None:
                 adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
@@ -533,13 +720,35 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 muon_lr_scale_max = 1.0
             self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
             self._muon_wd_t.fill_(group["weight_decay"])
-            muon_step_fused(
-                grad_chunk[:num_owned], stacked_owned,
-                state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
-                self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
-                group["ns_steps"], red_dim,
-            )
-            updated_params[:num_owned].copy_(stacked_owned)
+            if has_hook:
+                grad_update = torch.empty_like(grad_chunk[:num_owned])
+                muon_grad_update_fused(
+                    grad_chunk[:num_owned],
+                    state["momentum_buffer"][:num_owned],
+                    state["second_momentum_buffer"][:num_owned],
+                    self._muon_momentum_t,
+                    self._muon_beta2_t,
+                    group["ns_steps"],
+                    red_dim,
+                    grad_update,
+                )
+                lr = self._muon_lr_t.to(stacked_owned.dtype)
+                wd = self._muon_wd_t.to(stacked_owned.dtype)
+                mask = (grad_update * stacked_owned) >= 0
+                wd_delta = -(lr * wd * stacked_owned * mask)
+                grad_delta = -(lr * grad_update.to(stacked_owned.dtype))
+                for p, wd_i, grad_i, hook in zip(owned_params, wd_delta.unbind(0), grad_delta.unbind(0), hooks):
+                    p.add_(wd_i)
+                    self._apply_param_delta(p, grad_i, hook=hook)
+                updated_params[:num_owned].copy_(torch.stack(owned_params))
+            else:
+                muon_step_fused(
+                    grad_chunk[:num_owned], stacked_owned,
+                    state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
+                    self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
+                    group["ns_steps"], red_dim,
+                )
+                updated_params[:num_owned].copy_(stacked_owned)
 
         if num_owned < chunk_size:
             updated_params[num_owned:].zero_()
