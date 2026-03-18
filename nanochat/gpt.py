@@ -330,18 +330,26 @@ class Router(nn.Module):
         if not self.use_router_wg_dyn_grad_scale:
             return top_k_indices, alpha, None
 
+        # Compute the mean fraction of tokens are allocated to each expert 
+        # (weighted by the routing probabilities).
         mean_expert_probs = router_probs.new_zeros(self.n_exp)
         mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
         mean_expert_probs.div_(num_tokens)
 
-        router_wg_scales = torch.rsqrt(mean_expert_probs.clamp_min(1e-4))
+        expert_util_counts = torch.bincount(top_k_indices.flatten(), minlength=self.n_exp).float()
+        expert_utilities = expert_util_counts / expert_util_counts.sum()
+
+        combined_utilities = (mean_expert_probs * expert_utilities).sqrt()
+
+        router_wg_scales = torch.rsqrt(combined_utilities.clamp_min(1e-4))
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
         expert_grad_scales = router_wg_scales.sqrt()
+        # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
+        # since the different gate rows compete with each other for tokens.
         router_wg_scales.clamp_(0.5, 1.5)
+        # NOTE: expert_grad_scales are at least 1, because different experts 
+        # don't compete for tokens once the router decides how to route.
         expert_grad_scales.clamp_(1, 1.5)
-        # expert_grad_scales = expert_grad_scales.sqrt()
-        # expert_grad_scales.clamp_(0.75, 1.25)
-        # Return dynamic wg grad scales derived from mean_expert_probs.
         return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
         
     def forward(self, x):
