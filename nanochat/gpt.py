@@ -640,7 +640,7 @@ class Qwen3MLPExperts(nn.Module):
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
-        self.apply_dyn_alpha_to_gate_proj = self.apply_dyn_alpha_to_gate_proj and \
+        self.apply_dyn_alpha_to_gate_proj = self.use_experts_dyn_grad_scale and \
                                             bool(getattr(config, 'apply_dyn_alpha_to_gate_proj', False))
         self._expert_update_scale = None
         self._gate_proj_update_scale = None
