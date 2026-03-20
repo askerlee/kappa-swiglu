@@ -445,6 +445,7 @@ class Router(nn.Module):
             # Create a one-hot mask of the chosen experts for each token. Shape: [B*T, k, n_exp]
             expert_mask_one_hot = F.one_hot(top_k_indices, num_classes=self.n_exp)
 
+            # ANCHOR[id=routing_ranks]
             # This is the critical step to ensure load balancing prioritizes top-1 experts.
             # We flatten the k dimension first, so cumsum processes all top-1 choices, then all top-2, etc.
             # This is the memory-efficient equivalent of the original logic.
@@ -837,6 +838,15 @@ class MOELayer(nn.Module):
     def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
         if MANAGER.collect_load_balancing_stats:
             slot_served = (rank < exp_capacity)                     # [B*T, k]
+            # Since k=2, drop_rate_per_k = [drop_rate_0_step, drop_rate_1_step].
+            # Entry 0 means: fraction of tokens whose top-1 expert assignment overflowed capacity.
+            # Entry 1 means: fraction of tokens whose top-2 expert assignment overflowed capacity.
+            #LINK #routing_ranks
+            # for top_k = 2:
+            # if top-1 and top-2 both fit, the token is sent to both experts
+            # if top-1 fits and top-2 overflows, only top-1 contributes
+            # if top-1 overflows and top-2 fits, only top-2 contributes
+            # if both overflow, the token gets no MoE contribution from that layer            
             drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
             MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
             # Derive expert utilities: fraction of buffers used per expert.
