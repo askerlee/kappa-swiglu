@@ -342,12 +342,19 @@ class Router(nn.Module):
         combined_utilities = (mean_expert_probs * expert_utilities).sqrt()
 
         router_wg_scales = torch.rsqrt(combined_utilities.clamp_min(1e-4))
+        # Before normalization, least utilized expert rows have scales rsqrt(1e-4) = 100.
+        # After normalization, router_wg_scales is still dominated by large scales: 100 -> 5,
+        # while popular expert rows have scales around 0.75.
+        # Thus after clamping, we do **normalization again** to avoid suppressing popular expert rows 
+        # with overly small scales.
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
-        expert_grad_scales = router_wg_scales.sqrt()
+        router_wg_scales.clamp_(0.5, 1.5)
+        # NOTE: Second normalization
+        router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
+        expert_grad_scales = router_wg_scales #.sqrt()
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
         # since the different gate rows compete with each other for tokens.
-        router_wg_scales.clamp_(0.5, 1.5)
-        # NOTE: expert_grad_scales are at least 1, because different experts 
+        #       expert_grad_scales are at least 1, because different experts 
         # don't compete for tokens once the router decides how to route.
         expert_grad_scales.clamp_(1, 1.5)
         return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
