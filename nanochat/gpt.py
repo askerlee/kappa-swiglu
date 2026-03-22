@@ -351,7 +351,7 @@ class Router(nn.Module):
         router_wg_scales.clamp_(0.5, 1.5)
         # NOTE: Second normalization
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
-        expert_grad_scales = router_wg_scales #.sqrt()
+        expert_grad_scales = router_wg_scales.sqrt()
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
         # since the different gate rows compete with each other for tokens.
         #       expert_grad_scales are at least 1, because different experts 
