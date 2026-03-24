@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import delete_old_checkpoints, load_optimizer_state_dict, reshard_optimizer_state_dict, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, validate_checkpoint_file_sizes
 
 
 def make_optimizer(param_groups):
@@ -184,6 +184,32 @@ def test_load_optimizer_state_dict_reshards_when_world_size_shrinks(tmp_path):
     assert loaded_state["exp_avg_sq"].shape == (32, 32)
     assert torch.equal(loaded_state["exp_avg"], make_row_tensor(32, 32, 32))
     assert torch.equal(loaded_state["exp_avg_sq"], make_row_tensor(2032, 32, 32))
+
+
+def test_inspect_optimizer_shards_reports_missing_expected_ranks(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    shard_info = inspect_optimizer_shards(str(checkpoint_dir), 53334, saved_world_size=2)
+
+    assert shard_info["saved_world_size"] == 2
+    assert shard_info["expected_ranks"] == [0, 1]
+    assert shard_info["available_ranks"] == []
+    assert shard_info["missing_ranks"] == [0, 1]
+
+
+def test_inspect_optimizer_shards_infers_world_size_from_available_files(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    torch.save({"state": {}, "param_groups": []}, checkpoint_dir / "optim_000012_rank0.pt")
+
+    shard_info = inspect_optimizer_shards(str(checkpoint_dir), 12)
+
+    assert shard_info["saved_world_size"] == 1
+    assert shard_info["expected_ranks"] == [0]
+    assert shard_info["available_ranks"] == [0]
+    assert shard_info["missing_ranks"] == []
 
 
 def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):

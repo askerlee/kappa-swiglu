@@ -31,7 +31,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, find_optimizer_shard_ranks, load_optimizer_state_dict, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FA3
@@ -316,7 +316,6 @@ load_optimizer_state = False
 saved_optimizer_world_size = 0
 if resuming:
     print0(f"Resuming optimization from {checkpoint_dir} step {args.resume_from_step}")
-    optimizer_shard_ranks = find_optimizer_shard_ranks(checkpoint_dir, args.resume_from_step)
     skip_optimizer_reason = None
     model_data, _, meta_data = load_checkpoint(
         checkpoint_dir,
@@ -324,10 +323,21 @@ if resuming:
         device,
         load_optimizer=False,
     )
-    saved_optimizer_world_size = meta_data.get("optimizer_world_size", len(optimizer_shard_ranks))
-    load_optimizer_state = saved_optimizer_world_size > 0
-    if not load_optimizer_state:
+    optimizer_shard_info = inspect_optimizer_shards(
+        checkpoint_dir,
+        args.resume_from_step,
+        saved_world_size=meta_data.get("optimizer_world_size"),
+    )
+    saved_optimizer_world_size = optimizer_shard_info["saved_world_size"]
+    load_optimizer_state = saved_optimizer_world_size > 0 and not optimizer_shard_info["missing_ranks"]
+    if saved_optimizer_world_size <= 0:
         skip_optimizer_reason = "No optimizer checkpoint shard found; resuming with fresh optimizer state."
+    elif not load_optimizer_state:
+        skip_optimizer_reason = (
+            "Optimizer checkpoint shards are incomplete for the resume step; "
+            f"expected ranks {optimizer_shard_info['expected_ranks']}, found {optimizer_shard_info['available_ranks']}. "
+            "Resuming with fresh optimizer state."
+        )
     elif saved_optimizer_world_size != ddp_world_size:
         print0(
             "Resharding optimizer state from checkpoint world size "

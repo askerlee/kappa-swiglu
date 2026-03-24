@@ -114,6 +114,24 @@ def find_optimizer_shard_ranks(checkpoint_dir, step):
     return sorted(ranks)
 
 
+def inspect_optimizer_shards(checkpoint_dir, step, saved_world_size=None):
+    available_ranks = find_optimizer_shard_ranks(checkpoint_dir, step)
+    detected_world_size = len(available_ranks)
+    if saved_world_size is None:
+        saved_world_size = detected_world_size
+
+    expected_ranks = list(range(saved_world_size)) if saved_world_size > 0 else []
+    missing_ranks = [saved_rank for saved_rank in expected_ranks if saved_rank not in available_ranks]
+
+    return {
+        "available_ranks": available_ranks,
+        "detected_world_size": detected_world_size,
+        "saved_world_size": saved_world_size,
+        "expected_ranks": expected_ranks,
+        "missing_ranks": missing_ranks,
+    }
+
+
 def _clone_optimizer_state_value(value):
     if torch.is_tensor(value):
         return value.clone()
@@ -251,15 +269,14 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
 
 
 def load_optimizer_state_dict(checkpoint_dir, step, optimizer, device, rank=0, current_world_size=1, saved_world_size=None):
-    available_ranks = find_optimizer_shard_ranks(checkpoint_dir, step)
-    detected_world_size = len(available_ranks)
-    if saved_world_size is None:
-        saved_world_size = detected_world_size
+    shard_info = inspect_optimizer_shards(checkpoint_dir, step, saved_world_size=saved_world_size)
+    available_ranks = shard_info["available_ranks"]
+    saved_world_size = shard_info["saved_world_size"]
     if saved_world_size <= 0:
         raise FileNotFoundError(f"No optimizer checkpoint shards found for step {step} in {checkpoint_dir}")
 
-    expected_ranks = list(range(saved_world_size))
-    missing_ranks = [saved_rank for saved_rank in expected_ranks if saved_rank not in available_ranks]
+    expected_ranks = shard_info["expected_ranks"]
+    missing_ranks = shard_info["missing_ranks"]
     if missing_ranks:
         raise FileNotFoundError(
             f"Missing optimizer checkpoint shards for step {step}: expected ranks {expected_ranks}, "
