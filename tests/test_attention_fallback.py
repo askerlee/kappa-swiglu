@@ -33,6 +33,15 @@ def set_impl(impl):
     fa_module._override_impl = impl
 
 
+@pytest.fixture(autouse=True)
+def reset_flash_override():
+    previous = fa_module._override_impl
+    try:
+        yield
+    finally:
+        fa_module._override_impl = previous
+
+
 def run_both_impls(fn):
     """Run a function with both Flash Attention and SDPA, return both outputs."""
     set_impl('flash')
@@ -363,6 +372,65 @@ class TestOverrideMechanism:
     def test_override_auto(self):
         set_impl(None)
         assert fa_module._use_flash_attention() == HAS_FLASH_ATTN
+
+
+class TestBackendOutputNormalization:
+    def test_flash_backend_tuple_output_is_unwrapped(self, monkeypatch):
+        out = torch.randn(2, 4, 3, 8)
+        lse = torch.randn(2, 3, 4)
+
+        backend = fa_module._make_backend(
+            name='fa4',
+            flash_attn_func=lambda *args, **kwargs: (out, lse),
+        )
+
+        monkeypatch.setattr(fa_module, '_backend', backend)
+        monkeypatch.setattr(fa_module, 'HAS_FLASH_ATTN', True)
+        monkeypatch.setattr(fa_module, 'FLASH_ATTN_BACKEND', 'fa4')
+        monkeypatch.setattr(fa_module, 'HAS_FA3', False)
+        monkeypatch.setattr(fa_module, 'HAS_FA4', True)
+        monkeypatch.setattr(fa_module, 'HAS_FLASH_ATTN_KVCACHE', False)
+        set_impl('flash')
+
+        q = torch.randn(2, 4, 3, 8)
+        y = fa_module.flash_attn_func(q, q, q, causal=True, window_size=(4, 0))
+
+        assert y is out
+
+    def test_kvcache_backend_tuple_output_is_unwrapped(self, monkeypatch):
+        out = torch.randn(2, 1, 3, 8)
+        lse = torch.randn(2, 3, 1)
+
+        backend = fa_module._make_backend(
+            name='fa4',
+            flash_attn_func=lambda *args, **kwargs: out,
+            flash_attn_with_kvcache=lambda *args, **kwargs: (out, lse),
+        )
+
+        monkeypatch.setattr(fa_module, '_backend', backend)
+        monkeypatch.setattr(fa_module, 'HAS_FLASH_ATTN', True)
+        monkeypatch.setattr(fa_module, 'FLASH_ATTN_BACKEND', 'fa4')
+        monkeypatch.setattr(fa_module, 'HAS_FA3', False)
+        monkeypatch.setattr(fa_module, 'HAS_FA4', True)
+        monkeypatch.setattr(fa_module, 'HAS_FLASH_ATTN_KVCACHE', True)
+        set_impl('flash')
+
+        q = torch.randn(2, 1, 3, 8)
+        k_cache = torch.randn(2, 4, 3, 8)
+        v_cache = torch.randn(2, 4, 3, 8)
+        cache_seqlens = torch.zeros(2, dtype=torch.int32)
+        y = fa_module.flash_attn_with_kvcache(
+            q,
+            k_cache,
+            v_cache,
+            k=q,
+            v=q,
+            cache_seqlens=cache_seqlens,
+            causal=True,
+            window_size=(4, 0),
+        )
+
+        assert y is out
 
 
 if __name__ == "__main__":

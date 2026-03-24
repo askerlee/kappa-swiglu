@@ -34,6 +34,15 @@ def _make_backend(name, flash_attn_func, flash_attn_with_kvcache=None):
     )
 
 
+def _unwrap_backend_output(result):
+    """Normalize backend outputs to the tensor that callers expect."""
+    if isinstance(result, tuple):
+        if not result:
+            raise RuntimeError("Flash Attention backend returned an empty tuple")
+        return result[0]
+    return result
+
+
 def _load_flash_attention_4():
     """Try to load Flash Attention 4 (optimized for Hopper / Blackwell)."""
     try:
@@ -193,7 +202,8 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
         Output tensor of shape (B, T, H, D)
     """
     if _use_flash_attention():
-        return _backend.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+        y = _backend.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+        return _unwrap_backend_output(y)
 
     # SDPA fallback: transpose (B, T, H, D) -> (B, H, T, D)
     q = q.transpose(1, 2)
@@ -223,10 +233,11 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
         Output tensor of shape (B, T_new, H, D)
     """
     if _use_flash_attention(require_kvcache=True):
-        return _backend.flash_attn_with_kvcache(
+        y = _backend.flash_attn_with_kvcache(
             q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
             causal=causal, window_size=window_size
         )
+        return _unwrap_backend_output(y)
 
     # SDPA fallback: manually manage KV cache
     B, T_new, H, D = q.shape
