@@ -34,7 +34,7 @@ from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
-from nanochat.flash_attention import HAS_FA3
+from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND
 from scripts.base_eval import evaluate_core
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.manager import MANAGER
@@ -245,12 +245,16 @@ if not use_dummy_wandb:
     wandb.define_metric("val/*", step_metric="tokens_seen")
 
 # Flash Attention status
-if HAS_FA3:
-    print0("✓ Using Flash Attention 3 (Hopper GPU detected), efficient, new and awesome.")
+if HAS_FLASH_ATTN:
+    backend_label = {
+        "fa3": "Flash Attention 3",
+        "fa4": "Flash Attention 4",
+    }.get(FLASH_ATTN_BACKEND, "Flash Attention")
+    print0(f"✓ Using {backend_label} backend.")
 else:
     print0("!" * 80)
-    print0("WARNING: Flash Attention 3 not available, using PyTorch SDPA fallback")
-    print0("WARNING: Training will be less efficient without FA3")
+    print0("WARNING: No Flash Attention backend available, using PyTorch SDPA fallback")
+    print0("WARNING: Training will be less efficient without Flash Attention")
     if args.window_pattern != "L":
         print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
         print0("WARNING: Recommend using --window-pattern L for full context attention without alternating sliding window patterns.")
