@@ -72,7 +72,6 @@ parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
-parser.add_argument("--init-lr-frac", type=float, default=1.0, help="initial LR as fraction of base LR")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
 # If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
@@ -226,7 +225,7 @@ num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
 assert args.total_batch_size % world_tokens_per_fwdbwd == 0
-grad_accum_steps = args.total_batch_size // world_tokens_per_fwdbwd
+grad_accum_steps = args.total_batch_size // world_tokens_per_fwdbwd # default: 8 on 1 GPU.
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
 print0(f"Total batch size {args.total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
@@ -248,7 +247,6 @@ optimizer = model.setup_optimizer(
 )
 # Override the initial learning rate as a fraction of the base learning rate
 for group in optimizer.param_groups:
-    group["lr"] = group["lr"] * args.init_lr_frac
     group["initial_lr"] = group["lr"]
 
 # SFT data mixture and DataLoader
@@ -284,7 +282,8 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
     Each row in the batch starts with BOS (beginning of a conversation).
     Conversations are packed using best-fit algorithm. When no conversation fits,
     the row is padded (instead of cropping) to ensure no tokens are ever discarded.
-    Padding positions have targets masked with -1 (ignore_index for cross-entropy).
+    Targets are supervised only on assistant tokens. Padding positions are masked
+    with -1 (ignore_index for cross-entropy).
     """
     global last_step, approx_progress, current_epoch
     assert split in {"train", "val"}, "split must be 'train' or 'val'"
@@ -294,7 +293,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
     row_capacity = args.max_seq_len + 1  # +1 for target at last position
     bos_token = tokenizer.get_bos_token_id()
 
-    # Conversation buffer: list of token lists
+    # Conversation buffer: list of (token_ids, supervision_mask) tuples
     conv_buffer = []
     cursor = ddp_rank  # Each rank processes different conversations (for fetching)
     consumed = ddp_rank  # Track actual consumption separately from buffering
@@ -305,8 +304,8 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         nonlocal cursor, epoch
         while len(conv_buffer) < buffer_size:
             conversation = dataset[cursor]
-            ids, _ = tokenizer.render_conversation(conversation)
-            conv_buffer.append(ids)
+            ids, mask = tokenizer.render_conversation(conversation)
+            conv_buffer.append((ids, mask))
             cursor += ddp_world_size
             if cursor >= dataset_size:
                 cursor = cursor % dataset_size
@@ -315,10 +314,10 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 
     while True:
         rows = []
-        row_lengths = []  # Track actual content length (excluding padding) for each row
+        row_masks = []
         for _ in range(args.device_batch_size):
             row = []
-            padded = False
+            row_mask = []
             while len(row) < row_capacity:
                 # Ensure buffer has conversations
                 while len(conv_buffer) < buffer_size:
@@ -329,7 +328,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                 # Find largest conversation that fits entirely
                 best_idx = -1
                 best_len = 0
-                for i, conv in enumerate(conv_buffer):
+                for i, (conv, _) in enumerate(conv_buffer):
                     conv_len = len(conv)
                     if conv_len <= remaining and conv_len > best_len:
                         best_idx = i
@@ -337,23 +336,19 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 
                 if best_idx >= 0:
                     # Found a conversation that fits - use it entirely
-                    conv = conv_buffer.pop(best_idx)
+                    conv, conv_mask = conv_buffer.pop(best_idx)
                     row.extend(conv)
+                    row_mask.extend(conv_mask)
                     consumed += ddp_world_size  # Track actual consumption
                 else:
                     # No conversation fits - pad the remainder instead of cropping
                     # This ensures we never discard any tokens
-                    content_len = len(row)
                     row.extend([bos_token] * remaining)  # Pad with BOS tokens
-                    padded = True
+                    row_mask.extend([0] * remaining)
                     break  # Row is now full (with padding)
 
-            # Track content length: full row if no padding, otherwise the length before padding
-            if padded:
-                row_lengths.append(content_len)
-            else:
-                row_lengths.append(row_capacity)
             rows.append(row[:row_capacity])
+            row_masks.append(row_mask[:row_capacity])
 
         # Stopping condition to respect num_iterations, if given
         it += 1
@@ -374,14 +369,13 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         # Build tensors
         use_cuda = device_type == "cuda"
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
+        mask_tensor = torch.tensor(row_masks, dtype=torch.bool, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
+        target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
 
-        # Mask out padding positions in targets (set to -1 = ignore_index)
-        # For each row, positions >= (content_length - 1) in targets should be masked
-        for i, content_len in enumerate(row_lengths):
-            if content_len < row_capacity:
-                targets[i, content_len-1:] = -1
+        # Supervise only assistant tokens; user, BOS, and padding tokens are ignored.
+        targets[~target_mask] = -1
 
         yield inputs, targets
 
