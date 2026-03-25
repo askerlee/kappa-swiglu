@@ -31,7 +31,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND
@@ -195,6 +195,7 @@ parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="e
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
+parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
 parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
@@ -800,6 +801,24 @@ while True:
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
+        expected_optimizer_ranks = range(ddp_world_size)
+        delete_old_ckpts_failed = False
+        delete_old_ckpts_error = ""
+        comparison_step = None
+        reference_file_sizes = None
+        if args.delete_old_ckpts and args.delete_old_ckpts_before_save and master_process:
+            try:
+                comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
+                    checkpoint_dir,
+                    step,
+                    expected_optimizer_ranks=expected_optimizer_ranks,
+                )
+                if comparison_step is not None:
+                    delete_old_checkpoints(checkpoint_dir, step)
+            except ValueError as exc:
+                delete_old_ckpts_failed = True
+                delete_old_ckpts_error = str(exc)
+                print0(delete_old_ckpts_error)
         save_checkpoint(
             checkpoint_dir,
             step,
@@ -824,22 +843,35 @@ while True:
         )
         if ddp:
             torch.distributed.barrier()
-        delete_old_ckpts_failed = False
-        delete_old_ckpts_error = ""
-        if args.delete_old_ckpts and master_process:
+        if args.delete_old_ckpts and master_process and not delete_old_ckpts_failed:
             try:
-                comparison_step = validate_checkpoint_file_sizes(
-                    checkpoint_dir,
-                    step,
-                    expected_optimizer_ranks=range(ddp_world_size),
-                )
-                if comparison_step is None:
-                    print0(
-                        f"Skipping old checkpoint deletion at step {step}: "
-                        "no prior checkpoint with matching file layout was found for file-size validation."
-                    )
+                if args.delete_old_ckpts_before_save:
+                    if comparison_step is None:
+                        print0(
+                            f"Skipping old checkpoint deletion at step {step}: "
+                            "no prior checkpoint with matching file layout was found for file-size validation."
+                        )
+                    else:
+                        validate_checkpoint_file_sizes(
+                            checkpoint_dir,
+                            step,
+                            expected_optimizer_ranks=expected_optimizer_ranks,
+                            comparison_step=comparison_step,
+                            reference_file_sizes=reference_file_sizes,
+                        )
                 else:
-                    delete_old_checkpoints(checkpoint_dir, step)
+                    comparison_step = validate_checkpoint_file_sizes(
+                        checkpoint_dir,
+                        step,
+                        expected_optimizer_ranks=expected_optimizer_ranks,
+                    )
+                    if comparison_step is None:
+                        print0(
+                            f"Skipping old checkpoint deletion at step {step}: "
+                            "no prior checkpoint with matching file layout was found for file-size validation."
+                        )
+                    else:
+                        delete_old_checkpoints(checkpoint_dir, step)
             except ValueError as exc:
                 delete_old_ckpts_failed = True
                 delete_old_ckpts_error = str(exc)

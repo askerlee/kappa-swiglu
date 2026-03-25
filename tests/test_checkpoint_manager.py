@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 
 
 def make_optimizer(param_groups):
@@ -335,6 +335,38 @@ def test_validate_checkpoint_file_sizes_returns_none_without_matching_layout(tmp
     )
 
     assert comparison_step is None
+
+
+def test_validate_checkpoint_file_sizes_with_snapshot_after_predelete(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+    write_sized_file(checkpoint_dir / "optim_000010_rank1.pt", 180)
+
+    comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0, 1],
+    )
+    delete_old_checkpoints(str(checkpoint_dir), 20)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 132)
+    write_sized_file(checkpoint_dir / "optim_000020_rank0.pt", 192)
+    write_sized_file(checkpoint_dir / "optim_000020_rank1.pt", 180)
+
+    validated_step = validate_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0, 1],
+        comparison_step=comparison_step,
+        reference_file_sizes=reference_file_sizes,
+    )
+
+    assert validated_step == 10
 
 
 def test_validate_checkpoint_file_sizes_raises_on_large_size_mismatch(tmp_path):
