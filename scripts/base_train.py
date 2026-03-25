@@ -157,7 +157,7 @@ parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', co
                     help="whether to apply the derived router grad scaling to expert weights")
 parser.add_argument("--apply-dyn-alpha-to-gate-proj", type=str2bool, nargs='?', const=True, default=False,
                     help="whether to apply the derived router grad scaling to gate_proj weights")
-parser.add_argument("--router-dyn-grad-scale-ema-beta", type=float, default=0.9,
+parser.add_argument("--router-dyn-grad-scale-ema-beta", type=float, default=0.0,
                     help="EMA decay for smoothing dynamic router/expert grad scales (0 disables smoothing)")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
