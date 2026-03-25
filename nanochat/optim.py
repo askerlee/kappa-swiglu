@@ -230,6 +230,17 @@ def muon_grad_update_fused(
     final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
     return g * final_scale.to(g.dtype)
 
+
+def _get_muon_chunk_size(group: dict, num_params: int) -> int:
+    """Return the bounded Muon stack size used for a single fused update."""
+    configured = group.get("chunk_size")
+    if configured is None:
+        return num_params
+    chunk_size = int(configured)
+    if chunk_size <= 0:
+        raise ValueError("Muon chunk_size must be a positive integer")
+    return min(chunk_size, num_params)
+
 # -----------------------------------------------------------------------------
 # Single GPU version of the MuonAdamW optimizer.
 # Used mostly for reference, debugging and testing.
@@ -394,76 +405,77 @@ class MuonAdamW(torch.optim.Optimizer):
             return
 
         # Get or create group-level buffers (stored in first param's state for convenience)
-        p = params[0]
-        state = self.state[p]
+        group_hooks = [self._get_param_update_hook(param) for param in params]
         num_params = len(params)
-        shape, device, dtype = p.shape, p.device, p.dtype
-
-        # Momentum for every individual parameter
-        if "momentum_buffer" not in state:
-            state["momentum_buffer"] = torch.zeros(num_params, *shape, dtype=dtype, device=device)
-        momentum_buffer = state["momentum_buffer"]
-
-        # Second momentum buffer is factored, either per-row or per-column
-        if "second_momentum_buffer" not in state:
-            if shape[-2] >= shape[-1]:
-                state_shape = (num_params, *shape[:-2], shape[-2], 1)
-            else:
-                state_shape = (num_params, *shape[:-2], 1, shape[-1])
-            state["second_momentum_buffer"] = torch.zeros(state_shape, dtype=dtype, device=device)
-        second_momentum_buffer = state["second_momentum_buffer"]
-        red_dim = -1 if shape[-2] >= shape[-1] else -2
-
-        # Stack grads once; hooked groups reuse this buffer as the Muon update buffer.
-        stacked_grads = torch.stack([p.grad for p in params])
-        hooks = [self._get_param_update_hook(p) for p in params]
-        has_hook = any(hook is not None for hook in hooks)
+        chunk_size = _get_muon_chunk_size(group, num_params)
 
         # Fill all the 0-D tensors with current values
         self._muon_momentum_t.fill_(group["momentum"])
         self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
-        adjust_lr_fn = group.get("adjust_lr_fn")
-        if adjust_lr_fn is None:
-            adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
-        muon_lr_scale_max = group.get("muon_lr_scale_max")
-        if muon_lr_scale_max is None and adjust_lr_fn == "match_rms_adamw":
-            muon_lr_scale_max = 1.0
-        self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
         self._muon_wd_t.fill_(group["weight_decay"])
 
-        if has_hook:
-            grad_update = muon_grad_update_fused(
-                stacked_grads,
-                momentum_buffer,
-                second_momentum_buffer,
-                self._muon_momentum_t,
-                self._muon_beta2_t,
-                group["ns_steps"],
-                red_dim,
-            )
-            lr = self._muon_lr_t.to(dtype=dtype)
-            wd = self._muon_wd_t.to(dtype=dtype)
-            for p, grad_update_i, hook in zip(params, grad_update.unbind(0), hooks):
-                mask = (grad_update_i * p) >= 0
-                p.add_(-(lr * wd * p * mask))
-                self._apply_param_delta(p, -(lr * grad_update_i.to(dtype=p.dtype)), hook=hook)
-        else:
-            stacked_params = torch.stack(params)
-            # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
-            muon_step_fused(
-                stacked_grads,
-                stacked_params,
-                momentum_buffer,
-                second_momentum_buffer,
-                self._muon_momentum_t,
-                self._muon_lr_t,
-                self._muon_wd_t,
-                self._muon_beta2_t,
-                group["ns_steps"],
-                red_dim,
-            )
-            # Copy back to original params
-            torch._foreach_copy_(params, list(stacked_params.unbind(0)))
+        for chunk_start in range(0, num_params, chunk_size):
+            chunk_params = params[chunk_start:chunk_start + chunk_size]
+            p = chunk_params[0]
+            state = self.state[p]
+            shape, device, dtype = p.shape, p.device, p.dtype
+
+            if "momentum_buffer" not in state:
+                state["momentum_buffer"] = torch.zeros(len(chunk_params), *shape, dtype=dtype, device=device)
+            momentum_buffer = state["momentum_buffer"]
+
+            if "second_momentum_buffer" not in state:
+                if shape[-2] >= shape[-1]:
+                    state_shape = (len(chunk_params), *shape[:-2], shape[-2], 1)
+                else:
+                    state_shape = (len(chunk_params), *shape[:-2], 1, shape[-1])
+                state["second_momentum_buffer"] = torch.zeros(state_shape, dtype=dtype, device=device)
+            second_momentum_buffer = state["second_momentum_buffer"]
+            red_dim = -1 if shape[-2] >= shape[-1] else -2
+
+            adjust_lr_fn = group.get("adjust_lr_fn")
+            if adjust_lr_fn is None:
+                adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
+            muon_lr_scale_max = group.get("muon_lr_scale_max")
+            if muon_lr_scale_max is None and adjust_lr_fn == "match_rms_adamw":
+                muon_lr_scale_max = 1.0
+            self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
+
+            stacked_grads = torch.stack([param.grad for param in chunk_params])
+            hooks = group_hooks[chunk_start:chunk_start + len(chunk_params)]
+            has_hook = any(hook is not None for hook in hooks)
+
+            if has_hook:
+                grad_update = muon_grad_update_fused(
+                    stacked_grads,
+                    momentum_buffer,
+                    second_momentum_buffer,
+                    self._muon_momentum_t,
+                    self._muon_beta2_t,
+                    group["ns_steps"],
+                    red_dim,
+                )
+                lr = self._muon_lr_t.to(dtype=dtype)
+                wd = self._muon_wd_t.to(dtype=dtype)
+                for param, grad_update_i, hook in zip(chunk_params, grad_update.unbind(0), hooks):
+                    mask = (grad_update_i * param) >= 0
+                    param.add_(-(lr * wd * param * mask))
+                    self._apply_param_delta(param, -(lr * grad_update_i.to(dtype=param.dtype)), hook=hook)
+            else:
+                stacked_params = torch.stack(chunk_params)
+                muon_step_fused(
+                    stacked_grads,
+                    stacked_params,
+                    momentum_buffer,
+                    second_momentum_buffer,
+                    self._muon_momentum_t,
+                    self._muon_lr_t,
+                    self._muon_wd_t,
+                    self._muon_beta2_t,
+                    group["ns_steps"],
+                    red_dim,
+                )
+                torch._foreach_copy_(chunk_params, list(stacked_params.unbind(0)))
 
     @torch.inference_mode()
     def step(self):
