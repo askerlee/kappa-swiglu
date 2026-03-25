@@ -312,13 +312,35 @@ class Router(nn.Module):
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
+        self.router_dyn_grad_scale_ema_beta = float(getattr(config, 'router_dyn_grad_scale_ema_beta', 0.0))
         self._router_wg_update_scale = None
+        self._router_wg_scales_ema = None
+        self._expert_grad_scales_ema = None
 
     def get_param_update_hooks(self):
         return {self.w_g.weight: self._apply_router_wg_update}
 
     def _apply_router_wg_update(self, param, delta):
         param.add_(scale_param_update_delta(delta, self._router_wg_update_scale))
+
+    def reset_dyn_grad_scale_ema(self):
+        self._router_wg_scales_ema = None
+        self._expert_grad_scales_ema = None
+
+    def _normalize_router_wg_scales(self, router_wg_scales, alpha):
+        router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
+        router_wg_scales.clamp_(0.5, 1.5)
+        return router_wg_scales * alpha / router_wg_scales.mean()
+
+    def _smooth_dyn_grad_scales(self, scales, ema_attr_name):
+        beta = self.router_dyn_grad_scale_ema_beta
+        if beta <= 0:
+            return scales
+
+        prev_scales = getattr(self, ema_attr_name)
+        smoothed_scales = scales if prev_scales is None else prev_scales.lerp(scales, 1 - beta)
+        setattr(self, ema_attr_name, smoothed_scales.detach().clone())
+        return smoothed_scales
 
     @torch._dynamo.disable
     def _compute_router_expert_grad_alphas(self, logits, num_tokens):
@@ -347,16 +369,15 @@ class Router(nn.Module):
         # while popular expert rows have scales around 0.75.
         # Thus after clamping, we do **normalization again** to avoid suppressing popular expert rows 
         # with overly small scales.
-        router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
-        router_wg_scales.clamp_(0.5, 1.5)
-        # NOTE: Second normalization
-        router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
+        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, alpha)
+        router_wg_scales = self._smooth_dyn_grad_scales(router_wg_scales, '_router_wg_scales_ema')
         expert_grad_scales = router_wg_scales.sqrt()
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
         # since the different gate rows compete with each other for tokens.
         #       expert_grad_scales are at least 1, because different experts 
         # don't compete for tokens once the router decides how to route.
         expert_grad_scales.clamp_(1, 1.5)
+        expert_grad_scales = self._smooth_dyn_grad_scales(expert_grad_scales, '_expert_grad_scales_ema')
         return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
         
     def forward(self, x):

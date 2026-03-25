@@ -157,6 +157,8 @@ parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', co
                     help="whether to apply the derived router grad scaling to expert weights")
 parser.add_argument("--apply-dyn-alpha-to-gate-proj", type=str2bool, nargs='?', const=True, default=False,
                     help="whether to apply the derived router grad scaling to gate_proj weights")
+parser.add_argument("--router-dyn-grad-scale-ema-beta", type=float, default=0.9,
+                    help="EMA decay for smoothing dynamic router/expert grad scales (0 disables smoothing)")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -294,6 +296,7 @@ def build_model_meta(depth):
         use_router_wg_dyn_grad_scale=args.use_router_wg_dyn_grad_scale,
         use_experts_dyn_grad_scale=args.use_experts_dyn_grad_scale,
         apply_dyn_alpha_to_gate_proj=args.apply_dyn_alpha_to_gate_proj,
+        router_dyn_grad_scale_ema_beta=args.router_dyn_grad_scale_ema_beta,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
