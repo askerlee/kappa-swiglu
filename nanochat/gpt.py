@@ -323,13 +323,9 @@ class Router(nn.Module):
     def _apply_router_wg_update(self, param, delta):
         param.add_(scale_param_update_delta(delta, self._router_wg_update_scale))
 
-    def reset_dyn_grad_scale_ema(self):
-        self._router_wg_scales_ema = None
-        self._expert_grad_scales_ema = None
-
-    def _normalize_router_wg_scales(self, router_wg_scales, alpha):
+    def _normalize_router_wg_scales(self, router_wg_scales, alpha, max_scale):
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
-        router_wg_scales.clamp_(0.5, 1.5)
+        router_wg_scales.clamp_(0.5, max_scale)
         return router_wg_scales * alpha / router_wg_scales.mean()
 
     def _smooth_dyn_grad_scales(self, scales, ema_attr_name):
@@ -369,7 +365,7 @@ class Router(nn.Module):
         # while popular expert rows have scales around 0.75.
         # Thus after clamping, we do **normalization again** to avoid suppressing popular expert rows 
         # with overly small scales.
-        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, alpha)
+        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, alpha, max_scale=3)
         router_wg_scales = self._smooth_dyn_grad_scales(router_wg_scales, '_router_wg_scales_ema')
         expert_grad_scales = router_wg_scales.sqrt()
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
