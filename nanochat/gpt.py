@@ -899,10 +899,10 @@ class MOELayer(nn.Module):
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses_signed.square()
-            # Change mean to sum, otherwise the loss is too small to have effect.
-            # sum() is n_exp * intermediate_size times larger than mean()
-            # n_exp = 128, intermediate_size = 2048, so the loss is 262144 times larger!!
-            ortho_loss = (ortho_losses * ortho_losses_weights).sum()
+            # Change mean to sum over the hidden channel, otherwise the loss is too small to have effect.
+            # sum(dim=1).mean() is intermediate_size times larger than mean().
+            # intermediate_size = 2048, so the loss is 2048 times larger.
+            ortho_loss = (ortho_losses * ortho_losses_weights).sum(dim=1).mean()
             ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
             return ortho_loss, ortho_losses_by_exp
 

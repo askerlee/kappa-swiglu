@@ -138,7 +138,7 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
-parser.add_argument("--router-ortho-loss-weight", type=float, default=0.0001, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=0.1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
