@@ -369,6 +369,33 @@ def test_validate_checkpoint_file_sizes_with_snapshot_after_predelete(tmp_path):
     assert validated_step == 10
 
 
+def test_delete_old_checkpoints_can_run_without_validation_snapshot(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+    write_sized_file(checkpoint_dir / "optim_000010_rank0.pt", 180)
+
+    comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=[0, 1],
+    )
+
+    assert comparison_step is None
+    assert reference_file_sizes is None
+
+    deleted_paths = delete_old_checkpoints(str(checkpoint_dir), 20)
+
+    assert {Path(path).name for path in deleted_paths} == {
+        "model_000010.pt",
+        "meta_000010.json",
+        "optim_000010_rank0.pt",
+    }
+    assert not (checkpoint_dir / "model_000010.pt").exists()
+
+
 def test_validate_checkpoint_file_sizes_raises_on_large_size_mismatch(tmp_path):
     checkpoint_dir = tmp_path / "ckpt"
     checkpoint_dir.mkdir()

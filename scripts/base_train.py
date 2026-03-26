@@ -813,8 +813,7 @@ while True:
                     step,
                     expected_optimizer_ranks=expected_optimizer_ranks,
                 )
-                if comparison_step is not None:
-                    delete_old_checkpoints(checkpoint_dir, step)
+                delete_old_checkpoints(checkpoint_dir, step)
             except ValueError as exc:
                 delete_old_ckpts_failed = True
                 delete_old_ckpts_error = str(exc)
@@ -848,7 +847,7 @@ while True:
                 if args.delete_old_ckpts_before_save:
                     if comparison_step is None:
                         print0(
-                            f"Skipping old checkpoint deletion at step {step}: "
+                            f"Skipped checkpoint file size validation at step {step}: "
                             "no prior checkpoint with matching file layout was found for file-size validation."
                         )
                     else:
