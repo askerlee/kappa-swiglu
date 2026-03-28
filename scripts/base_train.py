@@ -140,6 +140,7 @@ parser.add_argument("--n-exp", type=int, default=64, help="number of experts per
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
+parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0.01, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
@@ -612,11 +613,12 @@ def get_muon_momentum(it):
 def get_weight_decay(it, weight_decay_scaled, num_iterations):
     return weight_decay_scaled * (1 - it / num_iterations)
 
-def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations):
-    if it > num_anneal_iterations:
-        return 0
-    # Anneal router_ortho_loss_weight from base_weight to zero over the course of training
-    return base_weight * (1 - it / num_anneal_iterations)
+def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations, floor_frac=0.01):
+    if num_anneal_iterations <= 0:
+        return base_weight
+    progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
+    # Anneal router_ortho_loss_weight from base_weight to a small floor over the anneal horizon.
+    return base_weight * (floor_frac + (1.0 - floor_frac) * (1.0 - progress))
 
 
 def get_router_wg_grad_scale(base_scale, it, num_anneal_iterations):
@@ -802,6 +804,18 @@ while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
+    router_ortho_num_anneal_iterations = num_iterations
+    if args.router_ortho_loss_anneal_iterations > 0:
+        router_ortho_num_anneal_iterations = min(
+            router_ortho_num_anneal_iterations,
+            args.router_ortho_loss_anneal_iterations,
+        )
+    router_ortho_loss_weight = get_router_ortho_loss_weight(
+        args.router_ortho_loss_weight,
+        step,
+        router_ortho_num_anneal_iterations,
+        floor_frac=args.router_ortho_loss_floor_frac,
+    )
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
         step,
@@ -1048,10 +1062,7 @@ while True:
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
             router_ortho_loss = micro_losses['router_ortho_loss'] 
-            num_anneal_iterations = num_iterations
-            if args.router_ortho_loss_anneal_iterations > 0:
-                num_anneal_iterations = min(num_anneal_iterations, args.router_ortho_loss_anneal_iterations)
-            loss = loss + get_router_ortho_loss_weight(args.router_ortho_loss_weight, step, num_anneal_iterations) * router_ortho_loss
+            loss = loss + router_ortho_loss_weight * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1115,6 +1126,7 @@ while True:
             "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
+            "train/router_ortho_loss_weight": router_ortho_loss_weight,
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
