@@ -140,7 +140,7 @@ parser.add_argument("--n-exp", type=int, default=64, help="number of experts per
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
-parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0.01, help="fraction of the base router ortho loss weight to keep after annealing completes")
+parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0.1, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
