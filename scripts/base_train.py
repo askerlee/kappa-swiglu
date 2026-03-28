@@ -139,7 +139,8 @@ parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer 
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=0.1, help="weight for negative correlations in router-ortho loss.")
+parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
+parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
@@ -151,6 +152,7 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 # (the softmax weights) on average, so we suggest scaling wg grad by 
 # 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
 parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
+parser.add_argument("--router-wg-grad-scale-anneal-iterations", type=int, default=-1, help="anneal router w_g grad scale to 1.0 over this many iterations when --router-wg-grad-scale > 1 (-1 disables)")
 parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
                     help="whether to use dynamic gradient scaling for router w_g weights")
 parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
@@ -307,6 +309,16 @@ def build_model_meta(depth):
         model_meta = GPT(config)
     return model_meta
 
+
+def set_router_wg_grad_scale(model, router_wg_grad_scale):
+    router_wg_grad_scale = float(router_wg_grad_scale)
+    model.config.router_wg_grad_scale = router_wg_grad_scale
+    for layer in model.transformer.h:
+        mlp = getattr(layer, "mlp", None)
+        router = getattr(mlp, "router", None)
+        if router is not None:
+            router.router_wg_grad_scale = router_wg_grad_scale
+
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
@@ -314,6 +326,7 @@ model_config_kwargs = vars(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
 model.to_empty(device=device) # 2) All tensors get storage on target device but with uninitialized (garbage) data
 model.init_weights() # 3) All tensors get initialized
+set_router_wg_grad_scale(model, args.router_wg_grad_scale)
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
 base_dir = get_base_dir()
@@ -354,6 +367,7 @@ if resuming:
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
     model.load_state_dict(model_data, strict=True, assign=True)
+    set_router_wg_grad_scale(model, args.router_wg_grad_scale)
     del model_data # free up this memory after the copy
 
 # -----------------------------------------------------------------------------
@@ -595,9 +609,18 @@ def get_muon_momentum(it):
 def get_weight_decay(it, weight_decay_scaled, num_iterations):
     return weight_decay_scaled * (1 - it / num_iterations)
 
-def get_router_ortho_loss_weight(it, base_weight, num_iterations):
-    # Linear to zero over the course of training
-    return base_weight * (1 - it / num_iterations)
+def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations):
+    if it > num_anneal_iterations:
+        return 0
+    # Anneal router_ortho_loss_weight from base_weight to zero over the course of training
+    return base_weight * (1 - it / num_anneal_iterations)
+
+
+def get_router_wg_grad_scale(base_scale, it, num_anneal_iterations):
+    if base_scale <= 1.0 or num_anneal_iterations <= 0:
+        return base_scale
+    anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
+    return 1.0 + (base_scale - 1.0) * (1.0 - anneal_progress)
 
 def accumulate_step_losses(step_losses, micro_losses):
     """Accumulate detached per-microstep losses for step-level logging."""
@@ -776,6 +799,12 @@ while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
+    router_wg_grad_scale = get_router_wg_grad_scale(
+        args.router_wg_grad_scale,
+        step,
+        args.router_wg_grad_scale_anneal_iterations,
+    )
+    set_router_wg_grad_scale(orig_model, router_wg_grad_scale)
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
@@ -1016,7 +1045,10 @@ while True:
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
             router_ortho_loss = micro_losses['router_ortho_loss'] 
-            loss = loss + get_router_ortho_loss_weight(step, args.router_ortho_loss_weight, num_iterations) * router_ortho_loss
+            num_anneal_iterations = num_iterations
+            if args.router_ortho_loss_anneal_iterations > 0:
+                num_anneal_iterations = min(num_anneal_iterations, args.router_ortho_loss_anneal_iterations)
+            loss = loss + get_router_ortho_loss_weight(args.router_ortho_loss_weight, step, num_anneal_iterations) * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1084,6 +1116,7 @@ while True:
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
             "lrm": lrm,
+            "router_wg_grad_scale": router_wg_grad_scale,
             "dt": dt,
             "tok_per_sec": tok_per_sec,
             "mfu": mfu,
