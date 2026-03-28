@@ -137,7 +137,10 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         if router is None:
             experts = None
         else:
-            router.router_wg_grad_scale = router_wg_grad_scale
+            if hasattr(router, "set_router_wg_grad_scale"):
+                router.set_router_wg_grad_scale(router_wg_grad_scale)
+            else:
+                router.router_wg_grad_scale = router_wg_grad_scale
             router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
             router.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
             router.router_dyn_grad_scale_ema_beta = router_dyn_grad_scale_ema_beta

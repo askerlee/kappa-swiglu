@@ -317,7 +317,10 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale):
         mlp = getattr(layer, "mlp", None)
         router = getattr(mlp, "router", None)
         if router is not None:
-            router.router_wg_grad_scale = router_wg_grad_scale
+            if hasattr(router, "set_router_wg_grad_scale"):
+                router.set_router_wg_grad_scale(router_wg_grad_scale)
+            else:
+                router.router_wg_grad_scale = router_wg_grad_scale
 
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)

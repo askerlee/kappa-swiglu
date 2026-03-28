@@ -310,6 +310,12 @@ class Router(nn.Module):
         self.expert_probs = None
         self.top_k_indices = None
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
+        # persistent=False means this buffer is part of the module at runtime, but it is not included in the module’s state_dict.
+        self.register_buffer(
+            '_router_wg_grad_scale_tensor',
+            torch.tensor(self.router_wg_grad_scale, dtype=torch.float32),
+            persistent=False,
+        )
         self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
         self.router_dyn_grad_scale_ema_beta = float(getattr(config, 'router_dyn_grad_scale_ema_beta', 0.0))
@@ -322,6 +328,11 @@ class Router(nn.Module):
 
     def _apply_router_wg_update(self, param, delta):
         param.add_(scale_param_update_delta(delta, self._router_wg_update_scale))
+
+    def set_router_wg_grad_scale(self, router_wg_grad_scale):
+        router_wg_grad_scale = float(router_wg_grad_scale)
+        self.router_wg_grad_scale = router_wg_grad_scale
+        self._router_wg_grad_scale_tensor.fill_(router_wg_grad_scale)
 
     def _normalize_router_wg_scales(self, router_wg_scales, alpha, max_scale):
         router_wg_scales = router_wg_scales * alpha / router_wg_scales.mean()
@@ -342,11 +353,11 @@ class Router(nn.Module):
     def _compute_router_expert_grad_alphas(self, logits, num_tokens):
         logits = logits.detach()
         top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
-        router_probs = F.softmax(top_k_logits, dim=-1)
-        alpha = torch.as_tensor(self.router_wg_grad_scale, device=logits.device, dtype=logits.dtype)
+        alpha = self._router_wg_grad_scale_tensor.to(device=logits.device, dtype=logits.dtype)
         # Return fixed wg grad scales of self.router_wg_grad_scale.
         if not self.use_router_wg_dyn_grad_scale:
             return top_k_indices, alpha, None
+        router_probs = F.softmax(top_k_logits, dim=-1)
 
         # Compute the mean fraction of tokens are allocated to each expert 
         # (weighted by the routing probabilities).
@@ -405,16 +416,10 @@ class Router(nn.Module):
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
             if self.training:
-                needs_router_wg_scaling = self.router_wg_grad_scale != 1.0 or self.use_router_wg_dyn_grad_scale
-                if needs_router_wg_scaling:
-                    top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(logits, num_tokens)
-                    self._router_wg_update_scale = router_wg_grad_alpha.detach()
-                    if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
-                        MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
-                else:
-                    _, top_k_indices = logits.topk(self.top_k, dim=-1)
-                    router_wg_grad_alpha = torch.as_tensor(1.0, device=logits.device, dtype=logits.dtype)
-                    expert_grad_alpha = None
+                top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(logits, num_tokens)
+                self._router_wg_update_scale = router_wg_grad_alpha.detach()
+                if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
+                    MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
 
                 logits_for_router = logits
 
