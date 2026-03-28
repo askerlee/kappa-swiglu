@@ -88,8 +88,8 @@ parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', co
                     help="whether to apply the derived router grad scaling to expert weights (default: inherit from saved config of base model)")
 parser.add_argument("--apply-dyn-alpha-to-gate-proj", type=str2bool, nargs='?', const=True, default=None,
                     help="whether to apply the derived router grad scaling to gate_proj weights (default: inherit from saved config of base model)")
-parser.add_argument("--router-dyn-grad-scale-ema-beta", type=float, default=-1,
-                    help="EMA decay for smoothing dynamic router/expert grad scales (-1 = inherit from saved config of base model, 0 disables smoothing)")
+parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
+                    help="whether to use cumulative smoothing for dynamic router/expert grad scales (default: inherit from saved config of base model)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 
 # Evaluation
@@ -108,7 +108,7 @@ router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--rou
 
 
 def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad_scale=None, use_experts_dyn_grad_scale=None,
-                             apply_dyn_alpha_to_gate_proj=None, router_dyn_grad_scale_ema_beta=None):
+                             apply_dyn_alpha_to_gate_proj=None, use_cumulative_dyn_grad_scale=None):
     router_wg_grad_scale = float(router_wg_grad_scale)
     model.config.router_wg_grad_scale = router_wg_grad_scale
     if use_router_wg_dyn_grad_scale is None:
@@ -123,14 +123,20 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         apply_dyn_alpha_to_gate_proj = bool(getattr(model.config, "apply_dyn_alpha_to_gate_proj", False))
     else:
         apply_dyn_alpha_to_gate_proj = bool(apply_dyn_alpha_to_gate_proj)
-    if router_dyn_grad_scale_ema_beta is None:
-        router_dyn_grad_scale_ema_beta = float(getattr(model.config, "router_dyn_grad_scale_ema_beta", 0.0))
+    if use_cumulative_dyn_grad_scale is None:
+        use_cumulative_dyn_grad_scale = bool(
+            getattr(
+                model.config,
+                "use_cumulative_dyn_grad_scale",
+                False,
+            )
+        )
     else:
-        router_dyn_grad_scale_ema_beta = float(router_dyn_grad_scale_ema_beta)
+        use_cumulative_dyn_grad_scale = bool(use_cumulative_dyn_grad_scale)
     model.config.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
     model.config.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
     model.config.apply_dyn_alpha_to_gate_proj = apply_dyn_alpha_to_gate_proj
-    model.config.router_dyn_grad_scale_ema_beta = router_dyn_grad_scale_ema_beta
+    model.config.use_cumulative_dyn_grad_scale = use_cumulative_dyn_grad_scale
     for layer in model.transformer.h:
         mlp = getattr(layer, "mlp", None)
         router = getattr(mlp, "router", None)
@@ -143,9 +149,9 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
                 router.router_wg_grad_scale = router_wg_grad_scale
             router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
             router.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
-            router.router_dyn_grad_scale_ema_beta = router_dyn_grad_scale_ema_beta
-            if hasattr(router, "reset_dyn_grad_scale_ema"):
-                router.reset_dyn_grad_scale_ema()
+            router.use_cumulative_dyn_grad_scale = use_cumulative_dyn_grad_scale
+            if hasattr(router, "reset_cumulative_dyn_grad_scale"):
+                router.reset_cumulative_dyn_grad_scale()
         experts = getattr(mlp, "experts", None)
         if experts is not None and hasattr(experts, "use_experts_dyn_grad_scale"):
             experts.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
@@ -207,11 +213,17 @@ if args.apply_dyn_alpha_to_gate_proj is None:
     print0(f"Inherited apply_dyn_alpha_to_gate_proj: {args.apply_dyn_alpha_to_gate_proj}")
 else:
     print0(f"Specified apply_dyn_alpha_to_gate_proj: {args.apply_dyn_alpha_to_gate_proj}")
-if args.router_dyn_grad_scale_ema_beta == -1:
-    args.router_dyn_grad_scale_ema_beta = getattr(model.config, "router_dyn_grad_scale_ema_beta", 0.0)
-    print0(f"Inherited router_dyn_grad_scale_ema_beta: {args.router_dyn_grad_scale_ema_beta}")
+if args.use_cumulative_dyn_grad_scale is None:
+    args.use_cumulative_dyn_grad_scale = bool(
+        getattr(
+            model.config,
+            "use_cumulative_dyn_grad_scale",
+            False,
+        )
+    )
+    print0(f"Inherited use_cumulative_dyn_grad_scale: {args.use_cumulative_dyn_grad_scale}")
 else:
-    print0(f"Specified router_dyn_grad_scale_ema_beta: {args.router_dyn_grad_scale_ema_beta}")
+    print0(f"Specified use_cumulative_dyn_grad_scale: {args.use_cumulative_dyn_grad_scale}")
 if router_z_loss_weight_was_specified:
     model.config.router_z_loss_weight = args.router_z_loss_weight
     print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
@@ -227,7 +239,7 @@ set_router_wg_grad_scale(
     args.use_router_wg_dyn_grad_scale,
     args.use_experts_dyn_grad_scale,
     args.apply_dyn_alpha_to_gate_proj,
-    args.router_dyn_grad_scale_ema_beta,
+    args.use_cumulative_dyn_grad_scale,
 )
     
 orig_model = model
