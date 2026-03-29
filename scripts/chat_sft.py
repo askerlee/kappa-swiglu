@@ -86,10 +86,10 @@ parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', 
                     help="whether to use dynamic gradient scaling for router w_g weights (default: inherit from saved config of base model)")
 parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
                     help="whether to apply the derived router grad scaling to expert weights (default: inherit from saved config of base model)")
-parser.add_argument("--apply-dyn-alpha-to-gate-proj", type=str2bool, nargs='?', const=True, default=None,
-                    help="whether to apply the derived router grad scaling to gate_proj weights (default: inherit from saved config of base model)")
 parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=None,
-                    help="whether to use cumulative smoothing for dynamic router/expert grad scales (default: inherit from saved config of base model)")
+                    help="whether to use moving-average smoothing for dynamic router/expert grad scales (default: inherit from saved config of base model)")
+parser.add_argument("--dyn-grad-scale-ma-window-size", type=int, default=-1,
+                    help="number of recent steps used by moving-average smoothing for dynamic router/expert grad scales (-1 = inherit from saved config of base model)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 
 # Evaluation
@@ -108,7 +108,8 @@ router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--rou
 
 
 def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad_scale=None, use_experts_dyn_grad_scale=None,
-                             apply_dyn_alpha_to_gate_proj=None, use_cumulative_dyn_grad_scale=None):
+                             use_cumulative_dyn_grad_scale=None,
+                             dyn_grad_scale_ma_window_size=None):
     router_wg_grad_scale = float(router_wg_grad_scale)
     model.config.router_wg_grad_scale = router_wg_grad_scale
     if use_router_wg_dyn_grad_scale is None:
@@ -119,10 +120,6 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         use_experts_dyn_grad_scale = bool(getattr(model.config, "use_experts_dyn_grad_scale", True))
     else:
         use_experts_dyn_grad_scale = bool(use_experts_dyn_grad_scale)
-    if apply_dyn_alpha_to_gate_proj is None:
-        apply_dyn_alpha_to_gate_proj = bool(getattr(model.config, "apply_dyn_alpha_to_gate_proj", False))
-    else:
-        apply_dyn_alpha_to_gate_proj = bool(apply_dyn_alpha_to_gate_proj)
     if use_cumulative_dyn_grad_scale is None:
         use_cumulative_dyn_grad_scale = bool(
             getattr(
@@ -133,10 +130,14 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         )
     else:
         use_cumulative_dyn_grad_scale = bool(use_cumulative_dyn_grad_scale)
+    if dyn_grad_scale_ma_window_size is None:
+        dyn_grad_scale_ma_window_size = int(getattr(model.config, "dyn_grad_scale_ma_window_size", 128))
+    else:
+        dyn_grad_scale_ma_window_size = max(1, int(dyn_grad_scale_ma_window_size))
     model.config.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
     model.config.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
-    model.config.apply_dyn_alpha_to_gate_proj = apply_dyn_alpha_to_gate_proj
     model.config.use_cumulative_dyn_grad_scale = use_cumulative_dyn_grad_scale
+    model.config.dyn_grad_scale_ma_window_size = dyn_grad_scale_ma_window_size
     for layer in model.transformer.h:
         mlp = getattr(layer, "mlp", None)
         router = getattr(mlp, "router", None)
@@ -150,13 +151,12 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
             router.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
             router.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
             router.use_cumulative_dyn_grad_scale = use_cumulative_dyn_grad_scale
+            router.dyn_grad_scale_ma_window_size = dyn_grad_scale_ma_window_size
             if hasattr(router, "reset_cumulative_dyn_grad_scale"):
                 router.reset_cumulative_dyn_grad_scale()
         experts = getattr(mlp, "experts", None)
         if experts is not None and hasattr(experts, "use_experts_dyn_grad_scale"):
             experts.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
-        if experts is not None and hasattr(experts, "apply_dyn_alpha_to_gate_proj"):
-            experts.apply_dyn_alpha_to_gate_proj = apply_dyn_alpha_to_gate_proj
 
 
 # Compute init
@@ -208,11 +208,6 @@ if args.use_experts_dyn_grad_scale is None:
     print0(f"Inherited use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
 else:
     print0(f"Specified use_experts_dyn_grad_scale: {args.use_experts_dyn_grad_scale}")
-if args.apply_dyn_alpha_to_gate_proj is None:
-    args.apply_dyn_alpha_to_gate_proj = getattr(model.config, "apply_dyn_alpha_to_gate_proj", False)
-    print0(f"Inherited apply_dyn_alpha_to_gate_proj: {args.apply_dyn_alpha_to_gate_proj}")
-else:
-    print0(f"Specified apply_dyn_alpha_to_gate_proj: {args.apply_dyn_alpha_to_gate_proj}")
 if args.use_cumulative_dyn_grad_scale is None:
     args.use_cumulative_dyn_grad_scale = bool(
         getattr(
@@ -224,6 +219,12 @@ if args.use_cumulative_dyn_grad_scale is None:
     print0(f"Inherited use_cumulative_dyn_grad_scale: {args.use_cumulative_dyn_grad_scale}")
 else:
     print0(f"Specified use_cumulative_dyn_grad_scale: {args.use_cumulative_dyn_grad_scale}")
+if args.dyn_grad_scale_ma_window_size == -1:
+    args.dyn_grad_scale_ma_window_size = int(getattr(model.config, "dyn_grad_scale_ma_window_size", 128))
+    print0(f"Inherited dyn_grad_scale_ma_window_size: {args.dyn_grad_scale_ma_window_size}")
+else:
+    args.dyn_grad_scale_ma_window_size = max(1, int(args.dyn_grad_scale_ma_window_size))
+    print0(f"Specified dyn_grad_scale_ma_window_size: {args.dyn_grad_scale_ma_window_size}")
 if router_z_loss_weight_was_specified:
     model.config.router_z_loss_weight = args.router_z_loss_weight
     print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
@@ -233,13 +234,17 @@ else:
 user_config["router_z_loss_weight"] = args.router_z_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
+
+# set_router_wg_grad_scale() should be called only 
+# before setup_optimizer(), since it affects get_param_update_hooks()
+# in MoE layers which are called in setup_optimizer().
 set_router_wg_grad_scale(
     model,
     args.router_wg_grad_scale,
     args.use_router_wg_dyn_grad_scale,
     args.use_experts_dyn_grad_scale,
-    args.apply_dyn_alpha_to_gate_proj,
     args.use_cumulative_dyn_grad_scale,
+    args.dyn_grad_scale_ma_window_size,
 )
     
 orig_model = model
@@ -269,6 +274,7 @@ if depth != 12:
     print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
 
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
+# After setup_optimizer(), one shouldn't change grad scale settings.
 optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr,
     embedding_lr=args.embedding_lr,

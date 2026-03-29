@@ -159,10 +159,10 @@ parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', 
                     help="whether to use dynamic gradient scaling for router w_g weights")
 parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
                     help="whether to apply the derived router grad scaling to expert weights")
-parser.add_argument("--apply-dyn-alpha-to-gate-proj", type=str2bool, nargs='?', const=True, default=False,
-                    help="whether to apply the derived router grad scaling to gate_proj weights")
 parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
-                    help="whether to use cumulative smoothing for dynamic router/expert grad scales")
+                    help="whether to use moving-average smoothing for dynamic router/expert grad scales")
+parser.add_argument("--dyn-grad-scale-ma-window-size", type=int, default=128,
+                    help="number of recent steps used by moving-average smoothing for dynamic router/expert grad scales")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -300,8 +300,8 @@ def build_model_meta(depth):
         router_wg_grad_scale=args.router_wg_grad_scale,
         use_router_wg_dyn_grad_scale=args.use_router_wg_dyn_grad_scale,
         use_experts_dyn_grad_scale=args.use_experts_dyn_grad_scale,
-        apply_dyn_alpha_to_gate_proj=args.apply_dyn_alpha_to_gate_proj,
         use_cumulative_dyn_grad_scale=args.use_cumulative_dyn_grad_scale,
+        dyn_grad_scale_ma_window_size=args.dyn_grad_scale_ma_window_size,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
@@ -555,6 +555,7 @@ if args.depth != 12:
 
 # -----------------------------------------------------------------------------
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
+# After setup_optimizer(), one shouldn't change grad scale settings.
 adam_betas = (args.adam_beta1, args.adam_beta2)
 optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr * batch_lr_scale,

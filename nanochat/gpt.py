@@ -13,6 +13,7 @@ Notable features:
 """
 
 import math
+from collections import deque
 from contextlib import nullcontext
 
 import torch
@@ -325,9 +326,13 @@ class Router(nn.Module):
                 False,
             )
         )
+        self.dyn_grad_scale_ma_window_size = max(
+            1,
+            int(getattr(config, 'dyn_grad_scale_ma_window_size', 128)),
+        )
         self._router_wg_update_scale = None
-        self._expert_utility_profile = None
-        self._expert_utility_sum_mean = None
+        self._expert_utility_window = None
+        self._expert_utility_window_sum = None
 
     def get_param_update_hooks(self):
         return {self.w_g.weight: self._apply_router_wg_update}
@@ -341,8 +346,8 @@ class Router(nn.Module):
         self._router_wg_grad_scale_tensor.fill_(router_wg_grad_scale)
 
     def reset_cumulative_dyn_grad_scale(self):
-        self._expert_utility_profile = None
-        self._expert_utility_sum_mean = None
+        self._expert_utility_window = None
+        self._expert_utility_window_sum = None
 
     def _normalize_router_wg_scales(self, router_wg_scales, max_scale):
         router_wg_scales = router_wg_scales / router_wg_scales.mean()
@@ -353,18 +358,23 @@ class Router(nn.Module):
         if not self.use_cumulative_dyn_grad_scale:
             return values
 
-        sum_mean_attr_name = profile_attr_name.replace("_profile", "_sum_mean")
-        prev_profile = getattr(self, profile_attr_name)
-        prev_sum_mean = getattr(self, sum_mean_attr_name)
-        if prev_profile is None or prev_sum_mean is None:
-            running_sum = values.detach().clone()
+        window_sum_attr_name = profile_attr_name.replace("_window", "_window_sum")
+        window = getattr(self, profile_attr_name)
+        running_sum = getattr(self, window_sum_attr_name)
+        detached_values = values.detach().clone()
+        if window is None or running_sum is None:
+            window = deque(maxlen=self.dyn_grad_scale_ma_window_size)
+            running_sum = detached_values
         else:
-            running_sum = prev_profile * prev_sum_mean + values
+            if len(window) == window.maxlen:
+                running_sum = running_sum - window[0]
+            running_sum = running_sum + detached_values
+        window.append(detached_values)
 
         running_sum_mean = running_sum.mean().clamp_min(1e-12)
         normalized_profile = running_sum / running_sum_mean
-        setattr(self, profile_attr_name, normalized_profile.detach().clone())
-        setattr(self, sum_mean_attr_name, running_sum_mean.detach().clone())
+        setattr(self, profile_attr_name, window)
+        setattr(self, window_sum_attr_name, running_sum.detach().clone())
         return normalized_profile * values.mean()
 
     @torch._dynamo.disable
@@ -373,7 +383,7 @@ class Router(nn.Module):
         top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
         alpha = self._router_wg_grad_scale_tensor.to(device=logits.device, dtype=logits.dtype)
         # Return fixed wg grad scales of self.router_wg_grad_scale.
-        if not self.use_router_wg_dyn_grad_scale:
+        if not (self.use_router_wg_dyn_grad_scale or self.use_experts_dyn_grad_scale):
             return top_k_indices, alpha, None
         router_probs = F.softmax(top_k_logits, dim=-1)
 
@@ -387,7 +397,7 @@ class Router(nn.Module):
         expert_utilities = expert_util_counts / expert_util_counts.sum()
         expert_utilities = self._get_cumulative_profile(
             expert_utilities,
-            '_expert_utility_profile',
+            '_expert_utility_window',
         )
 
         combined_utilities = (mean_expert_probs * expert_utilities).sqrt()
@@ -400,13 +410,23 @@ class Router(nn.Module):
         # with overly small scales.
         router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, max_scale=1.5)
         expert_grad_scales = router_wg_scales.sqrt()
-        router_wg_scales = router_wg_scales * alpha
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
         # since the different gate rows compete with each other for tokens.
         #       expert_grad_scales are at least 1, because different experts 
         # don't compete for tokens once the router decides how to route.
         expert_grad_scales.clamp_(1, 1.5)
-        return top_k_indices, router_wg_scales.to(dtype=logits.dtype), expert_grad_scales.to(dtype=logits.dtype)
+
+        if self.use_router_wg_dyn_grad_scale:
+            router_wg_scales = router_wg_scales * alpha
+        else:
+            router_wg_scales = alpha
+        router_wg_scales = router_wg_scales.to(dtype=logits.dtype)
+        
+        if self.use_experts_dyn_grad_scale:
+            expert_grad_scales = expert_grad_scales.to(dtype=logits.dtype)
+        else:
+            expert_grad_scales = None
+        return top_k_indices, router_wg_scales, expert_grad_scales
         
     def forward(self, x):
         """
@@ -655,7 +675,7 @@ class MLPExperts(nn.Module):
         param.add_(scale_param_update_delta(delta, self._expert_update_scale))
     
     def forward(self, x, expert_grad_alpha=None):
-        self._expert_update_scale = None if (expert_grad_alpha is None or not self.use_experts_dyn_grad_scale) else expert_grad_alpha.detach()
+        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -699,30 +719,21 @@ class Qwen3MLPExperts(nn.Module):
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
-        self.apply_dyn_alpha_to_gate_proj = self.use_experts_dyn_grad_scale and \
-                                            bool(getattr(config, 'apply_dyn_alpha_to_gate_proj', False))
         self._expert_update_scale = None
-        self._gate_proj_update_scale = None
 
     def get_param_update_hooks(self):
         hooks = {}
         if self.use_experts_dyn_grad_scale:
-            hooks[self.c_fc] = self._apply_expert_update
-            hooks[self.c_proj] = self._apply_expert_update
-        if self.apply_dyn_alpha_to_gate_proj:
-            hooks[self.gate_proj] = self._apply_gate_proj_update
+            hooks[self.c_fc]        = self._apply_expert_update
+            hooks[self.c_proj]      = self._apply_expert_update
+            hooks[self.gate_proj]   = self._apply_expert_update
         return hooks
     
     def _apply_expert_update(self, param, delta):
         param.add_(scale_param_update_delta(delta, self._expert_update_scale))
 
-    def _apply_gate_proj_update(self, param, delta):
-        param.add_(scale_param_update_delta(delta, self._gate_proj_update_scale))
-
     def forward(self, x, expert_grad_alpha=None):
-        alpha = None if expert_grad_alpha is None else expert_grad_alpha.detach()
-        self._expert_update_scale    = alpha if self.use_experts_dyn_grad_scale else None
-        self._gate_proj_update_scale = alpha if self.apply_dyn_alpha_to_gate_proj else None
+        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)

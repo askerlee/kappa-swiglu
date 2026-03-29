@@ -30,6 +30,8 @@ def _patch_missing_config_keys(model_config_kwargs):
         log0(f"Patching missing window_pattern in model config to 'L'")
     if "use_cumulative_dyn_grad_scale" not in model_config_kwargs:
         model_config_kwargs["use_cumulative_dyn_grad_scale"] = False
+    if "dyn_grad_scale_ma_window_size" not in model_config_kwargs:
+        model_config_kwargs["dyn_grad_scale_ma_window_size"] = 128
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""

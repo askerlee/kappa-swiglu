@@ -31,8 +31,8 @@ class GPTConfig:
         router_wg_grad_scale: float = 2.0,  # scale gradients for router w_g weights without affecting router inputs.
         use_router_wg_dyn_grad_scale: bool = False,  # whether to use dynamic gradient scaling for router w_g weights
         use_experts_dyn_grad_scale: bool = False,  # whether to apply the derived router grad scaling to expert weights
-        apply_dyn_alpha_to_gate_proj: bool = False,  # whether to apply the derived router grad scaling to gate_proj weights
-        use_cumulative_dyn_grad_scale: bool = False,  # Enables cumulative smoothing for per-expert dynamic grad scales
+        use_cumulative_dyn_grad_scale: bool = False,  # Enables moving-average smoothing for per-expert dynamic grad scales
+        dyn_grad_scale_ma_window_size: int = 128,  # Number of recent routing steps used in moving-average smoothing
         router_ortho_loss_weight: float = 0.001,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 0.1,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
@@ -80,8 +80,8 @@ class GPTConfig:
         self.router_wg_grad_scale = router_wg_grad_scale
         self.use_router_wg_dyn_grad_scale = use_router_wg_dyn_grad_scale
         self.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
-        self.apply_dyn_alpha_to_gate_proj = apply_dyn_alpha_to_gate_proj
         self.use_cumulative_dyn_grad_scale = use_cumulative_dyn_grad_scale
+        self.dyn_grad_scale_ma_window_size = dyn_grad_scale_ma_window_size
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
