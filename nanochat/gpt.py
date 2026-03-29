@@ -349,9 +349,10 @@ class Router(nn.Module):
         self._expert_utility_window = None
         self._expert_utility_window_sum = None
 
-    def _normalize_router_wg_scales(self, router_wg_scales, max_scale):
+    def _normalize_router_wg_scales(self, router_wg_scales, min_scale=0.5, max_scale=1.5):
         router_wg_scales = router_wg_scales / router_wg_scales.mean()
-        router_wg_scales.clamp_(0.5, max_scale)
+        router_wg_scales.clamp_(min_scale, max_scale)
+        # Normalize again to make sure router_wg_scales have a mean of 1. 
         return router_wg_scales / router_wg_scales.mean()
 
     def _get_cumulative_profile(self, values, profile_attr_name):
@@ -369,6 +370,8 @@ class Router(nn.Module):
             if len(window) == window.maxlen:
                 running_sum = running_sum - window[0]
             running_sum = running_sum + detached_values
+        # NOTE: window is a deque, so the earliest element automatically pops out
+        # when the length exceeds maxlen.
         window.append(detached_values)
 
         running_sum_mean = running_sum.mean().clamp_min(1e-12)
@@ -408,11 +411,11 @@ class Router(nn.Module):
         # while popular expert rows have scales around 0.75.
         # Thus after clamping, we do **normalization again** to avoid suppressing popular expert rows 
         # with overly small scales.
-        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, max_scale=1.5)
+        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, min_scale=0.5, max_scale=1.5)
         expert_grad_scales = router_wg_scales.sqrt()
         # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
         # since the different gate rows compete with each other for tokens.
-        #       expert_grad_scales are at least 1, because different experts 
+        #   but expert_grad_scales are at least 1, because different experts 
         # don't compete for tokens once the router decides how to route.
         expert_grad_scales.clamp_(1, 1.5)
 
