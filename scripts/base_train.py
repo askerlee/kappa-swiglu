@@ -154,7 +154,9 @@ parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1,
 # 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
 parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--router-wg-grad-scale-anneal-iterations", type=int, default=-1, 
-                    help="anneal router w_g grad scale to 1.0 over this many iterations when --router-wg-grad-scale > 1 (-1 disables)")
+                    help="anneal router w_g grad scale over this many iterations (-1 disables)")
+parser.add_argument("--router-wg-grad-scale-anneal-target", type=float, default=1.0,
+                    help="final router w_g grad scale reached after annealing completes")
 parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
                     help="whether to use dynamic gradient scaling for router w_g weights")
 parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
@@ -622,12 +624,11 @@ def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations, floor_f
     # Anneal router_ortho_loss_weight from base_weight to a small floor over the anneal horizon.
     return base_weight * (floor_frac + (1.0 - floor_frac) * (1.0 - progress))
 
-
-def get_router_wg_grad_scale(base_scale, it, num_anneal_iterations):
-    if base_scale <= 1.0 or num_anneal_iterations <= 0:
+def get_router_wg_grad_scale(base_scale, target_scale, it, num_anneal_iterations):
+    if num_anneal_iterations <= 0 or base_scale == target_scale:
         return base_scale
     anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
-    return 1.0 + (base_scale - 1.0) * (1.0 - anneal_progress)
+    return target_scale + (base_scale - target_scale) * (1.0 - anneal_progress)
 
 def accumulate_step_losses(step_losses, micro_losses):
     """Accumulate detached per-microstep losses for step-level logging."""
@@ -820,6 +821,7 @@ while True:
     )
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
+        args.router_wg_grad_scale_anneal_target,
         step,
         args.router_wg_grad_scale_anneal_iterations,
     )
