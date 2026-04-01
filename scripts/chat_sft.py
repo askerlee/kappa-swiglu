@@ -91,6 +91,7 @@ parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?',
 parser.add_argument("--dyn-grad-scale-ma-window-size", type=int, default=-1,
                     help="number of recent steps used by moving-average smoothing for dynamic router/expert grad scales (-1 = inherit from saved config of base model)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
+parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=None, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities (default: inherit from saved config of base model)")
 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
@@ -190,6 +191,29 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # Load the model and tokenizer
 # We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+if args.use_full_router_probs_for_aux_loss is None:
+    args.use_full_router_probs_for_aux_loss = bool(
+        getattr(model.config, "use_full_router_probs_for_aux_loss", False)
+    )
+    print0(
+        "Inherited use_full_router_probs_for_aux_loss: "
+        f"{args.use_full_router_probs_for_aux_loss}"
+    )
+else:
+    print0(
+        "Specified use_full_router_probs_for_aux_loss: "
+        f"{args.use_full_router_probs_for_aux_loss}"
+    )
+if model.config.moe_top_k == 1 and not args.use_full_router_probs_for_aux_loss:
+    print0("Forcing use_full_router_probs_for_aux_loss=True because the loaded model has moe_top_k=1.")
+    args.use_full_router_probs_for_aux_loss = True
+model.config.use_full_router_probs_for_aux_loss = args.use_full_router_probs_for_aux_loss
+user_config["use_full_router_probs_for_aux_loss"] = args.use_full_router_probs_for_aux_loss
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {"use_full_router_probs_for_aux_loss": args.use_full_router_probs_for_aux_loss},
+        allow_val_change=True,
+    )
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and args.device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device-batch-size to this script?")

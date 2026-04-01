@@ -211,6 +211,9 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
+if args.moe_top_k == 1 and not args.use_full_router_probs_for_aux_loss:
+    print("Forcing --use-full-router-probs-for-aux-loss=True because --moe-top-k=1.")
+    args.use_full_router_probs_for_aux_loss = True
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
