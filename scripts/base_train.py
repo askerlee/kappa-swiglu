@@ -138,6 +138,7 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
+parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
@@ -211,7 +212,9 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
-if args.moe_top_k == 1 and not args.use_full_router_probs_for_aux_loss:
+if args.use_aux_free_load_balancing:
+    print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
+if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
     print("Forcing --use-full-router-probs-for-aux-loss=True because --moe-top-k=1.")
     args.use_full_router_probs_for_aux_loss = True
 user_config = vars(args).copy()  # for logging
@@ -296,6 +299,8 @@ def build_model_meta(depth):
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, moe_start_layer=args.moe_start_layer,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
+        use_aux_loss=not args.use_aux_free_load_balancing,
+        use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         use_full_router_probs_for_aux_loss=args.use_full_router_probs_for_aux_loss,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
@@ -1094,6 +1099,7 @@ while True:
             if group['kind'] == 'muon':
                 group["momentum"] = muon_momentum
                 group["weight_decay"] = muon_weight_decay
+        orig_model.update_aux_free_load_balancing()
         optimizer.step()
         model.zero_grad(set_to_none=True)
         train_loss_f = losses['ntp_loss'].item() # .item() is a CPU-GPU sync point

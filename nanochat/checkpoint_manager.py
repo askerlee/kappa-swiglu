@@ -32,6 +32,10 @@ def _patch_missing_config_keys(model_config_kwargs):
         model_config_kwargs["use_cumulative_dyn_grad_scale"] = False
     if "dyn_grad_scale_ma_window_size" not in model_config_kwargs:
         model_config_kwargs["dyn_grad_scale_ma_window_size"] = 128
+    if "use_aux_free_load_balancing" not in model_config_kwargs:
+        model_config_kwargs["use_aux_free_load_balancing"] = False
+    if "aux_free_load_balancing_bias_update_speed" not in model_config_kwargs:
+        model_config_kwargs["aux_free_load_balancing_bias_update_speed"] = 1e-3
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
@@ -44,6 +48,15 @@ def _patch_missing_keys(model_data, model_config):
     if "x0_lambdas" not in model_data:
         model_data["x0_lambdas"] = torch.zeros(n_layer)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
+    if model_config.n_exp > 1:
+        for layer_idx in range(model_config.n_layer):
+            use_moe = (layer_idx >= model_config.moe_start_layer) and ((layer_idx + 1) % model_config.stride == 0)
+            if not use_moe:
+                continue
+            expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
+            if expert_bias_key not in model_data:
+                model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)
+                log0(f"Patching missing {expert_bias_key} in model data to zeros")
 
 
 def _optimizer_shard_path(checkpoint_dir, step, rank):

@@ -91,6 +91,7 @@ parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?',
 parser.add_argument("--dyn-grad-scale-ma-window-size", type=int, default=-1,
                     help="number of recent steps used by moving-average smoothing for dynamic router/expert grad scales (-1 = inherit from saved config of base model)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
+parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=None, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities (default: inherit from saved config of base model)")
 
 # Evaluation
@@ -191,6 +192,26 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # Load the model and tokenizer
 # We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+if args.use_aux_free_load_balancing is None:
+    args.use_aux_free_load_balancing = bool(
+        getattr(model.config, "use_aux_free_load_balancing", False)
+    )
+    print0(
+        "Inherited use_aux_free_load_balancing: "
+        f"{args.use_aux_free_load_balancing}"
+    )
+else:
+    print0(
+        "Specified use_aux_free_load_balancing: "
+        f"{args.use_aux_free_load_balancing}"
+    )
+model.set_aux_free_load_balancing(args.use_aux_free_load_balancing)
+user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {"use_aux_free_load_balancing": args.use_aux_free_load_balancing},
+        allow_val_change=True,
+    )
 if args.use_full_router_probs_for_aux_loss is None:
     args.use_full_router_probs_for_aux_loss = bool(
         getattr(model.config, "use_full_router_probs_for_aux_loss", False)
@@ -204,7 +225,7 @@ else:
         "Specified use_full_router_probs_for_aux_loss: "
         f"{args.use_full_router_probs_for_aux_loss}"
     )
-if model.config.moe_top_k == 1 and not args.use_full_router_probs_for_aux_loss:
+if model.config.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
     print0("Forcing use_full_router_probs_for_aux_loss=True because the loaded model has moe_top_k=1.")
     args.use_full_router_probs_for_aux_loss = True
 model.config.use_full_router_probs_for_aux_loss = args.use_full_router_probs_for_aux_loss
@@ -629,6 +650,10 @@ while True:
                     "window_pattern": model.config.window_pattern,
                     "n_exp": model.config.n_exp,
                     "moe_top_k": model.config.moe_top_k,
+                    "use_aux_loss": model.config.use_aux_loss,
+                    "use_aux_free_load_balancing": model.config.use_aux_free_load_balancing,
+                    "aux_free_load_balancing_bias_update_speed": model.config.aux_free_load_balancing_bias_update_speed,
+                    "use_full_router_probs_for_aux_loss": model.config.use_full_router_probs_for_aux_loss,
                     "router_wg_grad_scale": model.config.router_wg_grad_scale,
                     "use_router_wg_dyn_grad_scale": model.config.use_router_wg_dyn_grad_scale,
                     "use_experts_dyn_grad_scale": model.config.use_experts_dyn_grad_scale,
@@ -673,6 +698,7 @@ while True:
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
+    orig_model.update_aux_free_load_balancing()
     optimizer.step()
     model.zero_grad(set_to_none=True)
     synchronize()

@@ -18,6 +18,8 @@ class GPTConfig:
         n_exp: int = 64,  # if n_exp = 1 we just use regular MLP layers
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
         use_aux_loss: bool = True,  # apply auxiliary loss (from Switch Transformer) in router
+        use_aux_free_load_balancing: bool = False,  # use DeepSeekV3 auxiliary-loss-free load balancing via expert-selection bias updates
+        aux_free_load_balancing_bias_update_speed: float = 1e-3,  # DeepSeekV3 expert-bias update coefficient
         use_full_router_probs_for_aux_loss: bool = True,  # compute aux loss from a full softmax over experts instead of sparse top-k probabilities
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
@@ -68,6 +70,8 @@ class GPTConfig:
         self.n_exp = n_exp
         self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
         self.use_aux_loss = use_aux_loss
+        self.use_aux_free_load_balancing = use_aux_free_load_balancing
+        self.aux_free_load_balancing_bias_update_speed = aux_free_load_balancing_bias_update_speed
         self.use_full_router_probs_for_aux_loss = use_full_router_probs_for_aux_loss
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits

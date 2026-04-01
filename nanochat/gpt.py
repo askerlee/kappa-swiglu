@@ -18,6 +18,7 @@ from contextlib import nullcontext
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -300,6 +301,12 @@ class Router(nn.Module):
 
         # auxiliary / load balancing loss settings
         self.use_aux_loss           = config.use_aux_loss
+        self.use_aux_free_load_balancing = bool(
+            getattr(config, 'use_aux_free_load_balancing', False)
+        )
+        self.aux_free_load_balancing_bias_update_speed = float(
+            getattr(config, 'aux_free_load_balancing_bias_update_speed', 1e-3)
+        )
         self.use_full_router_probs_for_aux_loss = bool(
             getattr(config, 'use_full_router_probs_for_aux_loss', False)
         )
@@ -313,6 +320,15 @@ class Router(nn.Module):
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
         self.expert_probs = None
         self.top_k_indices = None
+        self.register_buffer(
+            'expert_bias',
+            torch.zeros(self.n_exp, dtype=torch.float32),
+        )
+        self.register_buffer(
+            'tokens_per_expert_counter',
+            torch.zeros(self.n_exp, dtype=torch.float32),
+            persistent=False,
+        )
         self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
         # persistent=False means this buffer is part of the module at runtime, but it is not included in the module’s state_dict.
         self.register_buffer(
@@ -336,6 +352,8 @@ class Router(nn.Module):
         self._router_wg_update_scale = None
         self._expert_utility_window = None
         self._expert_utility_window_sum = None
+        if self.use_aux_loss and self.use_aux_free_load_balancing:
+            raise ValueError("use_aux_loss and use_aux_free_load_balancing are mutually exclusive")
 
     def get_param_update_hooks(self):
         return {self.w_g.weight: self._apply_router_wg_update}
@@ -351,6 +369,47 @@ class Router(nn.Module):
     def reset_cumulative_dyn_grad_scale(self):
         self._expert_utility_window = None
         self._expert_utility_window_sum = None
+
+    def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
+        self.use_aux_free_load_balancing = bool(enabled)
+        self.use_aux_loss = not self.use_aux_free_load_balancing
+        if bias_update_speed is not None:
+            self.aux_free_load_balancing_bias_update_speed = float(bias_update_speed)
+        self.tokens_per_expert_counter.zero_()
+
+    def _get_selection_scores(self, logits):
+        if not self.use_aux_free_load_balancing:
+            return logits
+        expert_bias = self.expert_bias.to(device=logits.device, dtype=logits.dtype)
+        return logits + expert_bias
+
+    @torch.no_grad()
+    def _accumulate_aux_free_load_balancing_counts(self, top_k_indices):
+        if not self.use_aux_free_load_balancing:
+            return
+        token_counts = torch.bincount(top_k_indices.reshape(-1), minlength=self.n_exp)
+        token_counts = token_counts.to(
+            device=self.tokens_per_expert_counter.device,
+            dtype=self.tokens_per_expert_counter.dtype,
+        )
+        self.tokens_per_expert_counter.add_(token_counts)
+
+    @torch.no_grad()
+    def update_aux_free_load_balancing(self):
+        if not self.use_aux_free_load_balancing:
+            return
+        counts = self.tokens_per_expert_counter
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(counts)
+        if bool((counts.sum() == 0).item()):
+            counts.zero_()
+            return
+        mean_count = counts.mean()
+        self.expert_bias.add_(
+            self.aux_free_load_balancing_bias_update_speed * torch.sign(mean_count - counts)
+        )
+        self.expert_bias.sub_(self.expert_bias.mean())
+        counts.zero_()
 
     def _normalize_router_wg_scales(self, router_wg_scales, min_scale=0.5, max_scale=1.5):
         router_wg_scales = router_wg_scales / router_wg_scales.mean()
@@ -384,9 +443,14 @@ class Router(nn.Module):
         return normalized_profile * values.mean()
 
     @torch._dynamo.disable
-    def _compute_router_expert_grad_alphas(self, logits, num_tokens):
+    def _compute_router_expert_grad_alphas(self, logits, num_tokens, selection_scores=None):
         logits = logits.detach()
-        top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
+        if selection_scores is None:
+            selection_scores = logits
+        else:
+            selection_scores = selection_scores.detach()
+        _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
+        top_k_logits = logits.gather(-1, top_k_indices)
         alpha = self._router_wg_grad_scale_tensor.to(device=logits.device, dtype=logits.dtype)
         # Return fixed wg grad scales of self.router_wg_grad_scale.
         if not (self.use_router_wg_dyn_grad_scale or self.use_experts_dyn_grad_scale):
@@ -463,7 +527,13 @@ class Router(nn.Module):
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
             if self.training:
-                top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(logits, num_tokens)
+                selection_scores = self._get_selection_scores(logits)
+                top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(
+                    logits,
+                    num_tokens,
+                    selection_scores=selection_scores,
+                )
+                self._accumulate_aux_free_load_balancing_counts(top_k_indices)
                 self._router_wg_update_scale = router_wg_grad_alpha.detach()
                 if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
                     MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
@@ -506,7 +576,9 @@ class Router(nn.Module):
                     self.top_k_indices = top_k_indices.view(B, T, -1).clone()
             else:
                 # At inference, we just need the top-k
-                top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
+                selection_scores = self._get_selection_scores(logits)
+                _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
+                top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
                 expert_grad_alpha = None
 
@@ -792,6 +864,9 @@ class MOELayer(nn.Module):
         hooks = self.router.get_param_update_hooks()
         hooks.update(self.experts.get_param_update_hooks())
         return hooks
+
+    def update_aux_free_load_balancing(self):
+        self.router.update_aux_free_load_balancing()
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -1295,6 +1370,26 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 hooks.update(mlp.get_param_update_hooks())
         return hooks
+
+    def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
+        enabled = bool(enabled)
+        self.config.use_aux_free_load_balancing = enabled
+        self.config.use_aux_loss = not enabled
+        if bias_update_speed is not None:
+            self.config.aux_free_load_balancing_bias_update_speed = float(bias_update_speed)
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.router.set_aux_free_load_balancing(
+                    enabled,
+                    bias_update_speed=bias_update_speed,
+                )
+
+    def update_aux_free_load_balancing(self):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.update_aux_free_load_balancing()
 
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, 
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
