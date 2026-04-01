@@ -18,6 +18,9 @@ Examples:
 
     # Quick/approximate evaluation using a single GPU
     python -m scripts.base_eval --model-tag d24 --device-batch-size=16 --max-per-task=100 --split-tokens=524288
+
+    # Override MoE expert eval capacity at inference time
+    python -m scripts.base_eval --model-tag d24 --eval-capacity=2.0
 """
 import os
 import csv
@@ -188,6 +191,7 @@ def main():
     parser.add_argument('--max-per-task', type=int, default=-1, help='Max examples per CORE task (-1 = all)')
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
+    parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     args = parser.parse_args()
 
@@ -211,12 +215,25 @@ def main():
         token_bytes = get_hf_token_bytes(tokenizer, device=device)
         model_name = args.hf_path
         model_slug = args.hf_path.replace("/", "-")
+        if args.eval_capacity is not None:
+            print0("Ignoring --eval-capacity for HuggingFace models")
     else:
-        model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
+        model, tokenizer, meta = load_model(
+            args.source,
+            device,
+            phase="eval",
+            model_tag=args.model_tag,
+            step=args.step,
+            eval_capacity=args.eval_capacity,
+        )
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
         model_name = f"base_model (step {meta['step']})"
         model_slug = f"{args.model_tag}_base_{meta['step']:06d}"
+        if args.eval_capacity is not None:
+            model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
+            model_slug = f"{model_slug}_ecap{args.eval_capacity:g}"
+            print0(f"Overriding eval_capacity to {args.eval_capacity:g}")
 
     print0(f"Evaluating model: {model_name}")
     print0(f"Eval modes: {', '.join(sorted(eval_modes))}")
