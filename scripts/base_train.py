@@ -138,6 +138,7 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
+parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=False, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0.1, help="fraction of the base router ortho loss weight to keep after annealing completes")
@@ -292,6 +293,7 @@ def build_model_meta(depth):
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, moe_start_layer=args.moe_start_layer,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
+        use_full_router_probs_for_aux_loss=args.use_full_router_probs_for_aux_loss,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.

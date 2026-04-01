@@ -300,6 +300,9 @@ class Router(nn.Module):
 
         # auxiliary / load balancing loss settings
         self.use_aux_loss           = config.use_aux_loss
+        self.use_full_router_probs_for_aux_loss = bool(
+            getattr(config, 'use_full_router_probs_for_aux_loss', False)
+        )
         self.use_router_z_loss      = config.use_router_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
@@ -489,11 +492,14 @@ class Router(nn.Module):
                 
                 # The auxiliary loss encourages load balancing across experts
                 if self.use_aux_loss:
-                    # To compute aux loss, we need the full probability distribution,
-                    # not just for the top k. We can create this sparsely.
-                    all_probs = torch.zeros_like(logits_for_router)
-                    top_k_probs = router_probs.to(dtype=all_probs.dtype)
-                    all_probs.scatter_(-1, top_k_indices, top_k_probs)
+                    if self.use_full_router_probs_for_aux_loss:
+                        # Use the full router distribution here so the balancing loss keeps
+                        # a meaningful gradient signal even when top_k = 1.
+                        all_probs = F.softmax(logits_for_router, dim=-1)
+                    else:
+                        all_probs = torch.zeros_like(logits_for_router)
+                        top_k_probs = router_probs.to(dtype=all_probs.dtype)
+                        all_probs.scatter_(-1, top_k_indices, top_k_probs)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
                     MANAGER.add("aux_loss", aux_loss)
                     self.expert_probs = all_probs.view(B, T, -1).detach().clone()
