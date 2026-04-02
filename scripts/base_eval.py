@@ -112,7 +112,7 @@ def place_eval_bundle(file_path):
 def evaluate_core(model, tokenizer, device, max_per_task=-1):
     """
     Evaluate a base model on the CORE benchmark.
-    Returns dict with results, centered_results, and core_metric.
+    Returns dict with results, centered_results, core_metric, and core_metric_no_boolq.
     """
     base_dir = get_base_dir()
     eval_bundle_dir = os.path.join(base_dir, "eval_bundle")
@@ -170,10 +170,18 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
         print0(f"accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {elapsed:.2f}s")
 
     core_metric = sum(centered_results.values()) / len(centered_results)
+    centered_results_no_boolq = {
+        label: value for label, value in centered_results.items() if label.lower() != "boolq"
+    }
+    if centered_results_no_boolq:
+        core_metric_no_boolq = sum(centered_results_no_boolq.values()) / len(centered_results_no_boolq)
+    else:
+        core_metric_no_boolq = core_metric
     out = {
         "results": results,
         "centered_results": centered_results,
-        "core_metric": core_metric
+        "core_metric": core_metric,
+        "core_metric_no_boolq": core_metric_no_boolq,
     }
     return out
 
@@ -321,8 +329,10 @@ def main():
                     centered = core_results["centered_results"][label]
                     f.write(f"{label:<35}, {acc:<10.6f}, {centered:<10.6f}\n")
                 f.write(f"{'CORE':<35}, {'':<10}, {core_results['core_metric']:<10.6f}\n")
+                f.write(f"{'CORE (no boolq)':<35}, {'':<10}, {core_results['core_metric_no_boolq']:<10.6f}\n")
             print0(f"\nResults written to: {output_csv_path}")
             print0(f"CORE metric: {core_results['core_metric']:.4f}")
+            print0(f"CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
 
     # --- Log to report ---
     from nanochat.report import get_report
@@ -330,6 +340,7 @@ def main():
 
     if core_results:
         report_data[0]["CORE metric"] = core_results["core_metric"]
+        report_data[0]["CORE metric (no boolq)"] = core_results["core_metric_no_boolq"]
         report_data.append(core_results["centered_results"])
 
     if bpb_results:

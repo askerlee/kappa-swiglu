@@ -128,7 +128,7 @@ def build_self_command_with_milestones(remaining_milestones, resume_from_step):
 parser = argparse.ArgumentParser(description="Pretrain base model")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
-parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
+parser.add_argument("--seed", type=int, default=26, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
 # FP8 training
 parser.add_argument("--fp8", type=str2bool, nargs='?', const=True, default=False, help="enable FP8 training (requires H100+ GPU and torchao)")
@@ -989,11 +989,13 @@ while True:
             max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
             core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
         print0(f"Step {step:05d} | CORE metric: {core_results['core_metric']:.4f}")
+        print0(f"Step {step:05d} | CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
         wandb_run.log({
             "step": step,
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "core_metric": core_results["core_metric"],
+            "core_metric_no_boolq": core_results["core_metric_no_boolq"],
             "centered_results": core_results["centered_results"],
         }, step=step)
         model.train()
@@ -1010,8 +1012,10 @@ while True:
                     centered = core_results["centered_results"][label]
                     f.write(f"{label:<35}, {acc:<10.6f}, {centered:<10.6f}\n")
                 f.write(f"{'CORE':<35}, {'':<10}, {core_results['core_metric']:<10.6f}\n")
+                f.write(f"{'CORE (no boolq)':<35}, {'':<10}, {core_results['core_metric_no_boolq']:<10.6f}\n")
             print0(f"\nResults written to: {output_csv_path}")
             print0(f"CORE metric: {core_results['core_metric']:.4f}")
+            print0(f"CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
 
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
@@ -1221,6 +1225,7 @@ get_report().log(section="Base model training", data=[
         "Minimum validation bpb": min_val_bpb if val_bpb is not None else None,
         "Final validation bpb": val_bpb,
         "CORE metric estimate": core_results.get("core_metric", None),
+        "CORE metric estimate (no boolq)": core_results.get("core_metric_no_boolq", None),
         "MFU %": f"{mfu:.2f}%",
         "Total training flops": f"{flops_so_far:e}",
         "Total training time": f"{total_training_time/60:.2f}m",
