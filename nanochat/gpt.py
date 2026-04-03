@@ -308,7 +308,7 @@ class Router(nn.Module):
             getattr(config, 'aux_free_load_balancing_bias_update_speed', 1e-3)
         )
         self.use_full_router_probs_for_aux_loss = bool(
-            getattr(config, 'use_full_router_probs_for_aux_loss', False)
+            getattr(config, 'use_full_router_probs_for_aux_loss', True)
         )
         self.use_router_z_loss      = config.use_router_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits

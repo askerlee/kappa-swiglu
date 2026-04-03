@@ -214,7 +214,7 @@ if not use_dummy_wandb:
     )
 if args.use_full_router_probs_for_aux_loss is None:
     args.use_full_router_probs_for_aux_loss = bool(
-        getattr(model.config, "use_full_router_probs_for_aux_loss", False)
+        getattr(model.config, "use_full_router_probs_for_aux_loss", True)
     )
     print0(
         "Inherited use_full_router_probs_for_aux_loss: "
@@ -228,6 +228,7 @@ else:
 if model.config.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
     print0("Forcing use_full_router_probs_for_aux_loss=True because the loaded model has moe_top_k=1.")
     args.use_full_router_probs_for_aux_loss = True
+    
 model.config.use_full_router_probs_for_aux_loss = args.use_full_router_probs_for_aux_loss
 user_config["use_full_router_probs_for_aux_loss"] = args.use_full_router_probs_for_aux_loss
 if not use_dummy_wandb:
