@@ -190,7 +190,8 @@ wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
 
 # Load the model and tokenizer
-# We don't have to update router_ortho_loss_weight here, since it's used outside the model.
+# NOTE: the optim state of the base model is not loaded here.
+# NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
@@ -228,7 +229,7 @@ else:
 if model.config.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
     print0("Forcing use_full_router_probs_for_aux_loss=True because the loaded model has moe_top_k=1.")
     args.use_full_router_probs_for_aux_loss = True
-    
+
 model.config.use_full_router_probs_for_aux_loss = args.use_full_router_probs_for_aux_loss
 user_config["use_full_router_probs_for_aux_loss"] = args.use_full_router_probs_for_aux_loss
 if not use_dummy_wandb:
