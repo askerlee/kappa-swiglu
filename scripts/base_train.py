@@ -1164,7 +1164,13 @@ while True:
                 log_data["inspect/drop_rate_0_step"] = drop_rates[0]
             if len(drop_rates) >= 2:
                 log_data["inspect/drop_rate_1_step"] = drop_rates[1]
+        expert_utilities = losses['expert_utilities']
         for i in range(args.moe_start_layer, args.depth):
+            if expert_utilities is not None:
+                layer_expert_utilities = expert_utilities[i - args.moe_start_layer]
+                log_data.update({f"inspect/expert_utility_min_{i}": layer_expert_utilities.min().item()})
+                log_data.update({f"inspect/expert_utility_max_{i}": layer_expert_utilities.max().item()})
+                log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})
             if f'router_grad_norm_top_{i}' in losses:
                 log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
             if f'router_grad_norm_bottom_{i}' in losses:
