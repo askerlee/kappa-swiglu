@@ -269,6 +269,7 @@ class RustBPETokenizer:
         Returns:
         - ids: list[int] is a list of token ids of this rendered conversation
         - mask: list[int] of same length, mask = 1 for tokens that the Assistant is expected to train on.
+        If max_tokens is None, the full rendered conversation is returned without truncation.
         """
         # ids, masks that we will return and a helper function to help build them up.
         ids, mask = [], []
@@ -345,8 +346,9 @@ class RustBPETokenizer:
                 add_tokens(assistant_end, 1)
 
         # truncate to max_tokens tokens MAX (helps prevent OOMs)
-        ids = ids[:max_tokens]
-        mask = mask[:max_tokens]
+        if max_tokens is not None:
+            ids = ids[:max_tokens]
+            mask = mask[:max_tokens]
         return ids, mask
 
     def visualize_tokenization(self, ids, mask, with_token_id=False):
