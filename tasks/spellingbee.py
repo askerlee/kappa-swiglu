@@ -114,11 +114,13 @@ USER_MSG_TEMPLATES = [
 
 class SpellingBee(Task):
 
-    def __init__(self, size=1000, split="train", **kwargs):
+    def __init__(self, size=1000, split="train", response_style="tool", **kwargs):
         super().__init__(**kwargs)
         assert split in ["train", "test"], "SpellingBee split must be train|test"
+        assert response_style in ["tool", "direct", "mixed"], "response_style must be tool|direct|mixed"
         self.size = size
         self.split = split
+        self.response_style = response_style
         filename = WORD_LIST_URL.split("/")[-1]
         word_list_path = download_file_with_lock(WORD_LIST_URL, filename)
         with open(word_list_path, 'r', encoding='utf-8') as f:
@@ -157,6 +159,20 @@ class SpellingBee(Task):
         user_msg = template.format(letter=letter_wrapped, word=word_wrapped)
         if rng.random() < 0.5: # 50% of people don't even use question marks
             user_msg += "?"
+
+        response_style = self.response_style
+        if response_style == "mixed":
+            response_style = "direct" if rng.random() < 0.7 else "tool"
+
+        if response_style == "direct":
+            messages = [
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": f"The letter '{letter}' appears {count} time(s) in '{word}'.\n\n#### {count}"},
+            ]
+            conversation = {
+                "messages": messages,
+            }
+            return conversation
 
         # Now create the ideal assistant response - build as parts (text + tool calls)
         assistant_parts = []

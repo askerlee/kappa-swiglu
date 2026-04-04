@@ -62,6 +62,7 @@ parser.add_argument("--model-save-tag", type=str, default=None, help="extra mode
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
+parser.add_argument("--train-mixture-repeats", type=int, default=1, help="repeat the full train task mixture N times before shuffling (default: 1)")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")
@@ -105,6 +106,8 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
+if args.train_mixture_repeats < 1:
+    raise ValueError("--train-mixture-repeats must be >= 1")
 user_config = vars(args).copy()
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -338,8 +341,8 @@ for group in optimizer.param_groups:
 base_dir = get_base_dir()
 identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
 # TaskMixture shuffles the datasets at initialization.
-train_dataset = TaskMixture([
-    SmolTalk(split="train"), # 460K rows of general conversations
+train_tasks = [
+    SmolTalk(split="train", stop=50000), # cap long-form chat so it does not dominate the supervised token budget
     MMLU(subset="auxiliary_train", split="train"), # 100K rows of multiple choice problems drawn from ARC, MC_TEST, OBQA, RACE
     ARC(subset="ARC-Easy", split="train"),
     ARC(subset="ARC-Challenge", split="train"),
@@ -348,8 +351,10 @@ train_dataset = TaskMixture([
     CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
     CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
     SimpleSpelling(size=200000, split="train"), # 200K rows of Simple Spelling (e.g. spell the word 'apple')
-    SpellingBee(size=80000, split="train"), # 80K rows of Spelling Bee (e.g. how many 'r' are in 'strawberry'?)
-]) # total: 460K + 100K + 16K + 200K + 80K = 856K rows
+    SpellingBee(size=80000, split="train", response_style="mixed"), # mix direct answers with tool-verified ones
+    SpellingBee(size=80000, split="train", response_style="direct"), # extra direct-answer supervision for spelling/counting
+]
+train_dataset = TaskMixture(train_tasks * args.train_mixture_repeats) # repeat the whole mixture to preserve task ratios while extending the epoch
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
