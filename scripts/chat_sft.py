@@ -62,7 +62,7 @@ parser.add_argument("--model-save-tag", type=str, default=None, help="extra mode
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
-parser.add_argument("--train-mixture-repeats", type=int, default=1, help="repeat the full train task mixture N times before shuffling (default: 1)")
+parser.add_argument("--train-mixture-repeats", type=int, default=1, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 1)")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")
@@ -340,9 +340,13 @@ for group in optimizer.param_groups:
 # SFT data mixture and DataLoader
 base_dir = get_base_dir()
 identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
+smoltalk_rows_per_repeat = 50000
+simple_spelling_rows_per_repeat = 200000
+spellingbee_rows_per_repeat = 80000
+
 # TaskMixture shuffles the datasets at initialization.
 train_tasks = [
-    SmolTalk(split="train", stop=50000), # cap long-form chat so it does not dominate the supervised token budget
+    SmolTalk(split="train", stop=smoltalk_rows_per_repeat * args.train_mixture_repeats), # grow the capped SmolTalk slice instead of replaying the same subset
     MMLU(subset="auxiliary_train", split="train"), # 100K rows of multiple choice problems drawn from ARC, MC_TEST, OBQA, RACE
     ARC(subset="ARC-Easy", split="train"),
     ARC(subset="ARC-Challenge", split="train"),
@@ -350,11 +354,33 @@ train_tasks = [
     GSM8K(subset="main", split="train"), # 2 epochs of GSM8K
     CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
     CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
-    SimpleSpelling(size=200000, split="train"), # 200K rows of Simple Spelling (e.g. spell the word 'apple')
-    SpellingBee(size=80000, split="train", response_style="mixed"), # mix direct answers with tool-verified ones
-    SpellingBee(size=80000, split="train", response_style="direct"), # extra direct-answer supervision for spelling/counting
 ]
-train_dataset = TaskMixture(train_tasks * args.train_mixture_repeats) # repeat the whole mixture to preserve task ratios while extending the epoch
+for repeat_idx in range(args.train_mixture_repeats):
+    simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
+    spellingbee_start = repeat_idx * spellingbee_rows_per_repeat
+    train_tasks.extend([
+        SimpleSpelling(
+            size=simple_spelling_start + simple_spelling_rows_per_repeat,
+            split="train",
+            start=simple_spelling_start,
+            stop=simple_spelling_start + simple_spelling_rows_per_repeat,
+        ), # use a fresh procedural slice each repeat instead of duplicating the same examples
+        SpellingBee(
+            size=spellingbee_start + spellingbee_rows_per_repeat,
+            split="train",
+            response_style="mixed",
+            start=spellingbee_start,
+            stop=spellingbee_start + spellingbee_rows_per_repeat,
+        ), # mix direct answers with tool-verified ones over fresh seeds each repeat
+        SpellingBee(
+            size=spellingbee_start + spellingbee_rows_per_repeat,
+            split="train",
+            response_style="direct",
+            start=spellingbee_start,
+            stop=spellingbee_start + spellingbee_rows_per_repeat,
+        ), # extra direct-answer supervision for spelling/counting over fresh seeds each repeat
+    ])
+train_dataset = TaskMixture(train_tasks)
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
