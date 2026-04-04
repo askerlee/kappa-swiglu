@@ -62,7 +62,7 @@ parser.add_argument("--model-save-tag", type=str, default=None, help="extra mode
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
-parser.add_argument("--train-mixture-repeats", type=int, default=1, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 1)")
+parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 1)")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")
