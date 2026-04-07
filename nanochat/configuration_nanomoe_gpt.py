@@ -28,21 +28,24 @@ class GPTConfig:
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
-        aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
+        aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
+        # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
         router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
-        router_wg_grad_scale: float = 2.0,  # scale gradients for router w_g weights without affecting router inputs.
+        router_wg_grad_scale: float = 1.0,  # scale gradients for router w_g weights without affecting router inputs.
         use_router_wg_dyn_grad_scale: bool = False,  # whether to use dynamic gradient scaling for router w_g weights
         use_experts_dyn_grad_scale: bool = False,  # whether to apply the derived router grad scaling to expert weights
         use_cumulative_dyn_grad_scale: bool = False,  # Enables moving-average smoothing for per-expert dynamic grad scales
         dyn_grad_scale_ma_window_size: int = 128,  # Number of recent routing steps used in moving-average smoothing
-        router_ortho_loss_weight: float = 0.001,  # default weight for orthogonality loss
-        router_ortho_neg_corr_weight: float = 0.1,  # weight for negative correlations in router-ortho loss
+        router_ortho_loss_weight: float = 0.0001,  # default weight for orthogonality loss
+        router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
         experts_gate_output_loss_weight: float = 0.00001,  # default weight for gate output regularization loss
-        projs_diversity_loss_weight: float = 0.01,  # default weight for gate diversity loss
+        # projs diversity loss is very small (<0.01) due to squared cosine similarities.
+        # So its weight is set higher to have a meaningful effect.
+        projs_diversity_loss_weight: float = 0.01,  # default weight for expert gate projs diversity loss
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert

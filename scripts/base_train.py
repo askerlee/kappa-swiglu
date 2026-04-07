@@ -794,6 +794,9 @@ if not resuming:
     min_val_bpb = float("inf")
     smooth_train_loss = 0 # EMA of training loss
     total_training_time = 0 # total wall-clock time of training
+    best_core_metric = float("-inf")
+    best_core_step = None
+    regular_checkpoint_step = None
 else:
     step = meta_data["step"]
     loop_state = meta_data["loop_state"]
@@ -801,6 +804,18 @@ else:
     min_val_bpb = loop_state["min_val_bpb"]
     smooth_train_loss = loop_state["smooth_train_loss"]
     total_training_time = loop_state["total_training_time"]
+    best_core_metric = loop_state.get("best_core_metric", float("-inf"))
+    best_core_step = loop_state.get("best_core_step")
+    if best_core_step is not None:
+        best_core_step = int(best_core_step)
+    # Backward compatibility: older checkpoints use base_checkpoint_step.
+    regular_checkpoint_step = loop_state.get("regular_checkpoint_step")
+    if regular_checkpoint_step is None:
+        regular_checkpoint_step = loop_state.get("base_checkpoint_step")
+    if regular_checkpoint_step is not None:
+        regular_checkpoint_step = int(regular_checkpoint_step)
+    elif args.resume_from_step >= 0:
+        regular_checkpoint_step = int(args.resume_from_step)
 
 pending_milestones = [m for m in milestones if m > step]
 if milestones:
@@ -863,11 +878,14 @@ while True:
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
+        if regular_checkpoint_step is None:
+            regular_checkpoint_step = step
         expected_optimizer_ranks = range(ddp_world_size)
         delete_old_ckpts_failed = False
         delete_old_ckpts_error = ""
         comparison_step = None
         reference_file_sizes = None
+        keep_checkpoint_steps = [regular_checkpoint_step, best_core_step]
         if args.delete_old_ckpts and args.delete_old_ckpts_before_save and master_process:
             try:
                 comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
@@ -875,7 +893,7 @@ while True:
                     step,
                     expected_optimizer_ranks=expected_optimizer_ranks,
                 )
-                delete_old_checkpoints(checkpoint_dir, step)
+                delete_old_checkpoints(checkpoint_dir, step, keep_steps=keep_checkpoint_steps)
             except ValueError as exc:
                 delete_old_ckpts_failed = True
                 delete_old_ckpts_error = str(exc)
@@ -898,6 +916,9 @@ while True:
                     "min_val_bpb": min_val_bpb,
                     "smooth_train_loss": smooth_train_loss,
                     "total_training_time": total_training_time,
+                    "best_core_metric": best_core_metric if best_core_step is not None else None,
+                    "best_core_step": best_core_step,
+                    "regular_checkpoint_step": regular_checkpoint_step,
                 },
             },
             rank=ddp_rank,
@@ -932,7 +953,7 @@ while True:
                             "no prior checkpoint with matching file layout was found for file-size validation."
                         )
                     else:
-                        delete_old_checkpoints(checkpoint_dir, step)
+                        delete_old_checkpoints(checkpoint_dir, step, keep_steps=keep_checkpoint_steps)
             except ValueError as exc:
                 delete_old_ckpts_failed = True
                 delete_old_ckpts_error = str(exc)
@@ -990,16 +1011,54 @@ while True:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
             max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
             core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {core_results['core_metric']:.4f}")
+        core_metric = core_results["core_metric"]
+        print0(f"Step {step:05d} | CORE metric: {core_metric:.4f}")
         print0(f"Step {step:05d} | CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
         wandb_run.log({
             "step": step,
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
-            "core_metric": core_results["core_metric"],
+            "core_metric": core_metric,
             "core_metric_no_boolq": core_results["core_metric_no_boolq"],
             "centered_results": core_results["centered_results"],
         }, step=step)
+        is_new_best_core = (best_core_step is None) or (core_metric > best_core_metric)
+        if is_new_best_core:
+            prev_best_msg = "none" if best_core_step is None else f"step {best_core_step:06d} ({best_core_metric:.6f})"
+            best_core_metric = core_metric
+            best_core_step = step
+            if regular_checkpoint_step is None:
+                regular_checkpoint_step = step
+            print0(
+                f"New best CORE checkpoint at step {step:06d}: {core_metric:.6f} (previous best: {prev_best_msg})."
+            )
+            save_checkpoint(
+                checkpoint_dir,
+                step,
+                orig_model.state_dict(),
+                optimizer.state_dict(),
+                {
+                    "step": step,
+                    "val_bpb": val_bpb,
+                    "model_config": model_config_kwargs,
+                    "user_config": user_config,
+                    "device_batch_size": args.device_batch_size,
+                    "max_seq_len": args.max_seq_len,
+                    "optimizer_world_size": ddp_world_size,
+                    "dataloader_state_dict": dataloader_state_dict,
+                    "loop_state": {
+                        "min_val_bpb": min_val_bpb,
+                        "smooth_train_loss": smooth_train_loss,
+                        "total_training_time": total_training_time,
+                        "best_core_metric": best_core_metric,
+                        "best_core_step": best_core_step,
+                        "regular_checkpoint_step": regular_checkpoint_step,
+                    },
+                },
+                rank=ddp_rank,
+            )
+            if ddp:
+                torch.distributed.barrier()
         model.train()
 
         # For the final evaluation at the end of training, write CSV output

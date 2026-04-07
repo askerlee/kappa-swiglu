@@ -444,9 +444,16 @@ def validate_checkpoint_file_sizes(
     return comparison_step
 
 
-def delete_old_checkpoints(checkpoint_dir, step):
+def delete_old_checkpoints(checkpoint_dir, step, keep_steps=None):
     if not os.path.isdir(checkpoint_dir):
         return []
+
+    keep_steps_set = set()
+    if keep_steps is not None:
+        for keep_step in keep_steps:
+            if keep_step is None:
+                continue
+            keep_steps_set.add(int(keep_step))
 
     deleted_paths = []
     deleted_steps = set()
@@ -454,7 +461,7 @@ def delete_old_checkpoints(checkpoint_dir, step):
         if not entry.is_file():
             continue
         checkpoint_step = _checkpoint_step_from_filename(entry.name)
-        if checkpoint_step is None or checkpoint_step >= step:
+        if checkpoint_step is None or checkpoint_step >= step or checkpoint_step in keep_steps_set:
             continue
         try:
             os.remove(entry.path)
