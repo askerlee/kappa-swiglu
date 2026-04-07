@@ -144,6 +144,10 @@ parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0.0001, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
+parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
+parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
+parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
+parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
@@ -213,6 +217,10 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 
 args = parser.parse_args()
+if args.router_ortho_block_size <= 0:
+    raise ValueError("--router-ortho-block-size must be > 0")
+if not (0.0 < args.router_ortho_on_prob <= 1.0):
+    raise ValueError("--router-ortho-on-prob must be in (0, 1]")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
@@ -642,6 +650,25 @@ def get_router_wg_grad_scale(base_scale, target_scale, it, num_anneal_iterations
     anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
     return target_scale + (base_scale - target_scale) * (1.0 - anneal_progress)
 
+# Hard-coded warmup before enabling blockwise router-ortho gating.
+ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
+
+def get_router_ortho_blockwise_gate(it, block_size, on_prob, seed):
+    """Deterministic per-block Bernoulli gate shared across ranks."""
+    if on_prob >= 1.0:
+        return 1.0, 1.0, it // block_size
+    block_idx = it // block_size
+    # Deterministic 64-bit mix to produce a stable pseudo-random value in [0, 1).
+    state = (int(seed) ^ (block_idx * 0x9E3779B97F4A7C15)) & 0xFFFFFFFFFFFFFFFF
+    state ^= (state >> 30)
+    state = (state * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    state ^= (state >> 27)
+    state = (state * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    state ^= (state >> 31)
+    u = state / float(1 << 64)
+    gate = 1.0 if u < on_prob else 0.0
+    return gate, u, block_idx
+
 def accumulate_step_losses(step_losses, micro_losses):
     """Accumulate detached per-microstep losses for step-level logging."""
     if step_losses is None:
@@ -846,6 +873,21 @@ while True:
         router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
+    if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
+        router_ortho_gate, router_ortho_gate_u, router_ortho_block_idx = get_router_ortho_blockwise_gate(
+            step,
+            args.router_ortho_block_size,
+            args.router_ortho_on_prob,
+            args.seed,
+        )
+    else:
+        router_ortho_gate, router_ortho_gate_u, router_ortho_block_idx = 1.0, 1.0, step // args.router_ortho_block_size
+
+    router_ortho_gate_scale = 1.0
+    if args.use_router_ortho_blockwise and router_ortho_gate > 0.0 and args.router_ortho_blockwise_scale_preserve and args.router_ortho_on_prob < 1.0:
+        router_ortho_gate_scale = 1.0 / args.router_ortho_on_prob
+    router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_gate * router_ortho_gate_scale
+
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
         args.router_wg_grad_scale_anneal_target,
@@ -898,6 +940,7 @@ while True:
                 delete_old_ckpts_failed = True
                 delete_old_ckpts_error = str(exc)
                 print0(delete_old_ckpts_error)
+                
         save_checkpoint(
             checkpoint_dir,
             step,
@@ -1141,7 +1184,7 @@ while True:
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
             router_ortho_loss = micro_losses['router_ortho_loss'] 
-            loss = loss + router_ortho_loss_weight * router_ortho_loss
+            loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
