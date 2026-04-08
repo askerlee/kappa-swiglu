@@ -823,7 +823,6 @@ if not resuming:
     total_training_time = 0 # total wall-clock time of training
     best_core_metric = float("-inf")
     best_core_step = None
-    regular_checkpoint_step = None
 else:
     step = meta_data["step"]
     loop_state = meta_data["loop_state"]
@@ -835,14 +834,6 @@ else:
     best_core_step = loop_state.get("best_core_step")
     if best_core_step is not None:
         best_core_step = int(best_core_step)
-    # Backward compatibility: older checkpoints use base_checkpoint_step.
-    regular_checkpoint_step = loop_state.get("regular_checkpoint_step")
-    if regular_checkpoint_step is None:
-        regular_checkpoint_step = loop_state.get("base_checkpoint_step")
-    if regular_checkpoint_step is not None:
-        regular_checkpoint_step = int(regular_checkpoint_step)
-    elif args.resume_from_step >= 0:
-        regular_checkpoint_step = int(args.resume_from_step)
 
 pending_milestones = [m for m in milestones if m > step]
 if milestones:
@@ -920,14 +911,12 @@ while True:
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
-        if regular_checkpoint_step is None:
-            regular_checkpoint_step = step
         expected_optimizer_ranks = range(ddp_world_size)
         delete_old_ckpts_failed = False
         delete_old_ckpts_error = ""
         comparison_step = None
         reference_file_sizes = None
-        keep_checkpoint_steps = [regular_checkpoint_step, best_core_step]
+        keep_checkpoint_steps = [best_core_step]
         if args.delete_old_ckpts and args.delete_old_ckpts_before_save and master_process:
             try:
                 comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
@@ -961,7 +950,6 @@ while True:
                     "total_training_time": total_training_time,
                     "best_core_metric": best_core_metric if best_core_step is not None else None,
                     "best_core_step": best_core_step,
-                    "regular_checkpoint_step": regular_checkpoint_step,
                 },
             },
             rank=ddp_rank,
@@ -1070,8 +1058,6 @@ while True:
             prev_best_msg = "none" if best_core_step is None else f"step {best_core_step:06d} ({best_core_metric:.6f})"
             best_core_metric = core_metric
             best_core_step = step
-            if regular_checkpoint_step is None:
-                regular_checkpoint_step = step
             print0(
                 f"New best CORE checkpoint at step {step:06d}: {core_metric:.6f} (previous best: {prev_best_msg})."
             )
@@ -1095,7 +1081,6 @@ while True:
                         "total_training_time": total_training_time,
                         "best_core_metric": best_core_metric,
                         "best_core_step": best_core_step,
-                        "regular_checkpoint_step": regular_checkpoint_step,
                     },
                 },
                 rank=ddp_rank,
