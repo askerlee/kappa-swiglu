@@ -31,7 +31,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes, find_best_core_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND
@@ -834,6 +834,18 @@ else:
     best_core_step = loop_state.get("best_core_step")
     if best_core_step is not None:
         best_core_step = int(best_core_step)
+    scanned_best_core_step, scanned_best_core_metric = find_best_core_checkpoint(checkpoint_dir)
+    if scanned_best_core_step is not None and (
+        best_core_step is None
+        or scanned_best_core_metric > best_core_metric
+        or (scanned_best_core_metric == best_core_metric and scanned_best_core_step != best_core_step)
+    ):
+        print0(
+            f"Recovered best CORE checkpoint from checkpoint directory: "
+            f"step {scanned_best_core_step:06d} (CORE={scanned_best_core_metric:.6f})."
+        )
+        best_core_step = scanned_best_core_step
+        best_core_metric = scanned_best_core_metric
 
 pending_milestones = [m for m in milestones if m > step]
 if milestones:

@@ -567,6 +567,47 @@ def find_last_step(checkpoint_dir):
     last_step = int(max(os.path.basename(f).split("_")[-1].split(".")[0] for f in checkpoint_files))
     return last_step
 
+
+def find_best_core_checkpoint(checkpoint_dir):
+    if not os.path.isdir(checkpoint_dir):
+        return None, None
+
+    best_step = None
+    best_metric = None
+
+    for meta_path in glob.glob(os.path.join(checkpoint_dir, "meta_*.json")):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        loop_state = meta_data.get("loop_state") or {}
+        candidate_step = loop_state.get("best_core_step")
+        candidate_metric = loop_state.get("best_core_metric")
+        if candidate_step is None or candidate_metric is None:
+            continue
+
+        try:
+            candidate_step = int(candidate_step)
+            candidate_metric = float(candidate_metric)
+        except (TypeError, ValueError):
+            continue
+
+        checkpoint_files = _checkpoint_files_for_step(checkpoint_dir, candidate_step)
+        if "model" not in checkpoint_files or "meta" not in checkpoint_files:
+            continue
+
+        if (
+            best_metric is None
+            or candidate_metric > best_metric
+            or (candidate_metric == best_metric and candidate_step > best_step)
+        ):
+            best_step = candidate_step
+            best_metric = candidate_metric
+
+    return best_step, best_metric
+
 # -----------------------------------------------------------------------------
 # convenience functions that take into account nanochat's directory structure
 
