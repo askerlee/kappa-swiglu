@@ -31,7 +31,7 @@ from nanochat.gpt import GPT
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes, find_best_core_checkpoint
+from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND
@@ -122,6 +122,31 @@ def build_self_command_with_milestones(remaining_milestones, resume_from_step):
         return " ".join(shlex.quote(part) for part in cmd_parts)
     else:
         return None
+
+
+def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
+    if core_metric_every <= 0 or not os.path.isdir(checkpoint_dir):
+        return None
+
+    last_core_eval_step = None
+    for entry in os.scandir(checkpoint_dir):
+        if not entry.is_file():
+            continue
+        match = re.match(r"meta_(\d+)\.json$", entry.name)
+        if match is None:
+            continue
+        candidate_step = int(match.group(1))
+        if candidate_step >= current_step:
+            continue
+        if candidate_step == 0 or candidate_step % core_metric_every != 0:
+            continue
+        model_path = os.path.join(checkpoint_dir, f"model_{candidate_step:06d}.pt")
+        if not os.path.isfile(model_path):
+            continue
+        if last_core_eval_step is None or candidate_step > last_core_eval_step:
+            last_core_eval_step = candidate_step
+
+    return last_core_eval_step
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -821,8 +846,7 @@ if not resuming:
     min_val_bpb = float("inf")
     smooth_train_loss = 0 # EMA of training loss
     total_training_time = 0 # total wall-clock time of training
-    best_core_metric = float("-inf")
-    best_core_step = None
+    last_core_eval_step = None
 else:
     step = meta_data["step"]
     loop_state = meta_data["loop_state"]
@@ -830,22 +854,20 @@ else:
     min_val_bpb = loop_state["min_val_bpb"]
     smooth_train_loss = loop_state["smooth_train_loss"]
     total_training_time = loop_state["total_training_time"]
-    best_core_metric = loop_state.get("best_core_metric", float("-inf"))
-    best_core_step = loop_state.get("best_core_step")
-    if best_core_step is not None:
-        best_core_step = int(best_core_step)
-    scanned_best_core_step, scanned_best_core_metric = find_best_core_checkpoint(checkpoint_dir)
-    if scanned_best_core_step is not None and (
-        best_core_step is None
-        or scanned_best_core_metric > best_core_metric
-        or (scanned_best_core_metric == best_core_metric and scanned_best_core_step != best_core_step)
-    ):
-        print0(
-            f"Recovered best CORE checkpoint from checkpoint directory: "
-            f"step {scanned_best_core_step:06d} (CORE={scanned_best_core_metric:.6f})."
+    last_core_eval_step = loop_state.get("last_core_eval_step")
+    if last_core_eval_step is not None:
+        last_core_eval_step = int(last_core_eval_step)
+    else:
+        last_core_eval_step = infer_last_completed_core_eval_step(
+            checkpoint_dir,
+            step,
+            args.core_metric_every,
         )
-        best_core_step = scanned_best_core_step
-        best_core_metric = scanned_best_core_metric
+        if last_core_eval_step is not None:
+            print0(
+                f"Recovered last completed CORE evaluation checkpoint from checkpoint directory: "
+                f"step {last_core_eval_step:06d}."
+            )
 
 pending_milestones = [m for m in milestones if m > step]
 if milestones:
@@ -928,7 +950,7 @@ while True:
         delete_old_ckpts_error = ""
         comparison_step = None
         reference_file_sizes = None
-        keep_checkpoint_steps = [best_core_step]
+        keep_checkpoint_steps = [last_core_eval_step]
         if args.delete_old_ckpts and args.delete_old_ckpts_before_save and master_process:
             try:
                 comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
@@ -960,8 +982,7 @@ while True:
                     "min_val_bpb": min_val_bpb,
                     "smooth_train_loss": smooth_train_loss,
                     "total_training_time": total_training_time,
-                    "best_core_metric": best_core_metric if best_core_step is not None else None,
-                    "best_core_step": best_core_step,
+                    "last_core_eval_step": last_core_eval_step,
                 },
             },
             rank=ddp_rank,
@@ -1065,40 +1086,7 @@ while True:
             "core_metric_no_boolq": core_results["core_metric_no_boolq"],
             "centered_results": core_results["centered_results"],
         }, step=step)
-        is_new_best_core = (best_core_step is None) or (core_metric > best_core_metric)
-        if is_new_best_core:
-            prev_best_msg = "none" if best_core_step is None else f"step {best_core_step:06d} ({best_core_metric:.6f})"
-            best_core_metric = core_metric
-            best_core_step = step
-            print0(
-                f"New best CORE checkpoint at step {step:06d}: {core_metric:.6f} (previous best: {prev_best_msg})."
-            )
-            save_checkpoint(
-                checkpoint_dir,
-                step,
-                orig_model.state_dict(),
-                optimizer.state_dict(),
-                {
-                    "step": step,
-                    "val_bpb": val_bpb,
-                    "model_config": model_config_kwargs,
-                    "user_config": user_config,
-                    "device_batch_size": args.device_batch_size,
-                    "max_seq_len": args.max_seq_len,
-                    "optimizer_world_size": ddp_world_size,
-                    "dataloader_state_dict": dataloader_state_dict,
-                    "loop_state": {
-                        "min_val_bpb": min_val_bpb,
-                        "smooth_train_loss": smooth_train_loss,
-                        "total_training_time": total_training_time,
-                        "best_core_metric": best_core_metric,
-                        "best_core_step": best_core_step,
-                    },
-                },
-                rank=ddp_rank,
-            )
-            if ddp:
-                torch.distributed.barrier()
+        last_core_eval_step = step
         model.train()
 
         # For the final evaluation at the end of training, write CSV output
