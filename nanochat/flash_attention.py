@@ -7,6 +7,10 @@ selecting the best available backend at import time:
 - Flash Attention 3 on Hopper when available
 - PyTorch SDPA everywhere else
 
+Environment overrides:
+- NANOCHAT_ATTENTION_IMPL=sdpa|flash|fa3|fa4
+- NANOCHAT_ALLOW_FA4_TRAINING=1 to permit FA4 autograd during training
+
 Usage:
     from nanochat.flash_attention import flash_attn
 
@@ -128,11 +132,15 @@ HAS_FA3 = FLASH_ATTN_BACKEND == 'fa3'
 HAS_FA4 = FLASH_ATTN_BACKEND == 'fa4'
 
 # Override for testing: set to 'flash', 'fa3', 'fa4', 'sdpa', or None (auto)
-_override_impl = None
+_override_impl = os.environ.get("NANOCHAT_ATTENTION_IMPL") or None
+_flash_disabled_due_to_oom = False
+ALLOW_FA4_TRAINING = os.environ.get("NANOCHAT_ALLOW_FA4_TRAINING", "0") == "1"
 
 
 def _use_flash_attention(require_kvcache=False):
     """Determine whether to use an accelerated backend based on availability."""
+    if _flash_disabled_due_to_oom:
+        return False
     if _override_impl in ('flash', 'fa3', 'fa4'):
         assert HAS_FLASH_ATTN, "Cannot override to Flash Attention: no backend is available"
         if _override_impl in ('fa3', 'fa4'):
@@ -153,9 +161,28 @@ def _use_flash_attention(require_kvcache=False):
     return True
 
 
+def _should_skip_fa4_for_training(q, k, v):
+    """Avoid FA4 autograd by default because backward OOM cannot be recovered in this wrapper."""
+    if FLASH_ATTN_BACKEND != 'fa4' or ALLOW_FA4_TRAINING:
+        return False
+    if not torch.is_grad_enabled():
+        return False
+    return q.requires_grad or k.requires_grad or v.requires_grad
+
+
 def _use_fa3():
     """Backward-compatible alias for older tests and callers."""
     return _use_flash_attention()
+
+
+def _is_out_of_memory_error(exc):
+    """Best-effort detection for CUDA OOM errors across torch/cuda versions."""
+    msg = str(exc).lower()
+    return (
+        "out of memory" in msg
+        or "cuda error: out of memory" in msg
+        or "cuda out of memory" in msg
+    )
 
 
 # =============================================================================
@@ -211,14 +238,21 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
     Returns:
         Output tensor of shape (B, T, H, D)
     """
-    if _use_flash_attention():
+    if _use_flash_attention() and not _should_skip_fa4_for_training(q, k, v):
         try:
             y = _backend.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
             return _unwrap_backend_output(y)
         except Exception as exc:
+            global _flash_disabled_due_to_oom
             # FA4 can fail in some environments when CUTLASS expects typed Int32 window args.
             # Fall back to SDPA for this call instead of crashing training.
-            if not (FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)):
+            is_fa4_typed_window_err = FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)
+            is_fa4_oom = FLASH_ATTN_BACKEND == 'fa4' and _is_out_of_memory_error(exc)
+            if is_fa4_oom:
+                _flash_disabled_due_to_oom = True
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            if not (is_fa4_typed_window_err or is_fa4_oom):
                 raise
 
     # SDPA fallback: transpose (B, T, H, D) -> (B, H, T, D)
@@ -256,8 +290,15 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
             )
             return _unwrap_backend_output(y)
         except Exception as exc:
+            global _flash_disabled_due_to_oom
             # Match flash_attn_func behavior: tolerate FA4 window-size type issues.
-            if not (FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)):
+            is_fa4_typed_window_err = FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)
+            is_fa4_oom = FLASH_ATTN_BACKEND == 'fa4' and _is_out_of_memory_error(exc)
+            if is_fa4_oom:
+                _flash_disabled_due_to_oom = True
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            if not (is_fa4_typed_window_err or is_fa4_oom):
                 raise
 
     # SDPA fallback: manually manage KV cache

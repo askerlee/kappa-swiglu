@@ -34,7 +34,7 @@ from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
-from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND
+from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND, ALLOW_FA4_TRAINING
 from scripts.base_eval import evaluate_core
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.manager import MANAGER
@@ -302,7 +302,11 @@ if HAS_FLASH_ATTN:
         "fa3": "Flash Attention 3",
         "fa4": "Flash Attention 4",
     }.get(FLASH_ATTN_BACKEND, "Flash Attention")
-    print0(f"✓ Using {backend_label} backend.")
+    if FLASH_ATTN_BACKEND == "fa4" and not ALLOW_FA4_TRAINING:
+        print0(f"✓ {backend_label} is available, but training defaults to PyTorch SDPA to avoid unrecoverable FA4 backward OOMs.")
+        print0("  Set NANOCHAT_ALLOW_FA4_TRAINING=1 to opt back into FA4 training.")
+    else:
+        print0(f"✓ Using {backend_label} backend.")
 else:
     print0("!" * 80)
     print0("WARNING: No Flash Attention backend available, using PyTorch SDPA fallback")
