@@ -43,6 +43,16 @@ def _unwrap_backend_output(result):
     return result
 
 
+def _is_fa4_window_size_type_error(exc):
+    """Detect FA4/CUTLASS window-size typing issues and trigger SDPA fallback."""
+    msg = str(exc)
+    return (
+        "window_size_left" in msg
+        and "expects argument" in msg
+        and "got <class 'int'>" in msg
+    )
+
+
 def _load_flash_attention_4():
     """Try to load Flash Attention 4 (optimized for Hopper / Blackwell)."""
     try:
@@ -202,8 +212,14 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
         Output tensor of shape (B, T, H, D)
     """
     if _use_flash_attention():
-        y = _backend.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
-        return _unwrap_backend_output(y)
+        try:
+            y = _backend.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+            return _unwrap_backend_output(y)
+        except Exception as exc:
+            # FA4 can fail in some environments when CUTLASS expects typed Int32 window args.
+            # Fall back to SDPA for this call instead of crashing training.
+            if not (FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)):
+                raise
 
     # SDPA fallback: transpose (B, T, H, D) -> (B, H, T, D)
     q = q.transpose(1, 2)
@@ -233,11 +249,16 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
         Output tensor of shape (B, T_new, H, D)
     """
     if _use_flash_attention(require_kvcache=True):
-        y = _backend.flash_attn_with_kvcache(
-            q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
-            causal=causal, window_size=window_size
-        )
-        return _unwrap_backend_output(y)
+        try:
+            y = _backend.flash_attn_with_kvcache(
+                q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
+                causal=causal, window_size=window_size
+            )
+            return _unwrap_backend_output(y)
+        except Exception as exc:
+            # Match flash_attn_func behavior: tolerate FA4 window-size type issues.
+            if not (FLASH_ATTN_BACKEND == 'fa4' and _is_fa4_window_size_type_error(exc)):
+                raise
 
     # SDPA fallback: manually manage KV cache
     B, T_new, H, D = q.shape

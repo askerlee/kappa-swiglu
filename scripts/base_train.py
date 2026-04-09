@@ -166,7 +166,8 @@ parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE r
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
 parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight for the Switch-style router auxiliary load-balancing loss")
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
-parser.add_argument("--router-ortho-loss-weight", type=float, default=0.0001, help="weight for router orthogonality loss")
+# router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
+parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-4, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
@@ -177,7 +178,8 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
-parser.add_argument("--router-z-loss-weight", type=float, default=0.00001, help="weight for router z loss")
+# router-z-loss is around 200. So * weight ~ 0.002.
+parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
 # How to set --router-wg-grad-scale? Maybe it should be set proportional to --moe-top-k,
 # since --moe-top-k determines how dilluted the router wg gradients are across experts?
