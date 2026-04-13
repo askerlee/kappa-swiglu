@@ -15,6 +15,7 @@ Notable features:
 import math
 from collections import deque
 from contextlib import nullcontext
+import weakref
 
 import torch
 import torch._dynamo
@@ -32,6 +33,59 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
+# Orthogonal subtraction of b from a: the residual is orthogonal to b on the specified dims.
+# NOTE: ortho_subtract(a, b) is scale-invariant w.r.t. (b * b_discount),
+# but scales proportionally with a.
+# a, b are n-dimensional tensors. Subtraction happens on `dims`, or on the last
+# `on_last_n_dims` dims for backward compatibility.
+# ortho_subtract(a, b) is not symmetric w.r.t. a and b, nor is ortho_l2loss(a, b).
+# NOTE: always choose a to be something we care about, and b to be something as a reference.
+def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=False, dims=None):
+    assert a.ndim == b.ndim, "Tensors a and b must have the same number of dimensions"
+
+    if dims is None:
+        assert 1 <= on_last_n_dims <= a.ndim, "on_last_n_dims must be between 1 and a.ndim"
+        dims = list(range(a.ndim - on_last_n_dims, a.ndim))
+    else:
+        assert len(dims) > 0, "dims must be a non-empty list"
+        dims = [dim if dim >= 0 else a.ndim + dim for dim in dims]
+        assert all(0 <= dim < a.ndim for dim in dims), "dims must be valid dimension indices"
+        assert len(set(dims)) == len(dims), "dims must not contain duplicates"
+
+    for dim in dims:
+        assert a.shape[dim] == b.shape[dim] or a.shape[dim] == 1 or b.shape[dim] == 1, \
+          f"Tensors a and b must have the same shape or be broadcastable on dims={dims}"
+
+    # There could still be exceptions if a and b have singleton dims at non-matching dims.
+    # Leave the full broadcast check to torch.
+    a, b = torch.broadcast_tensors(a, b)
+
+    keep_dims = [dim for dim in range(a.ndim) if dim not in dims]
+    permute_order = keep_dims + dims
+    inverse_permute = [0] * a.ndim
+    for idx, dim in enumerate(permute_order):
+        inverse_permute[dim] = idx
+
+    a_perm = a.permute(permute_order)
+    b_perm = b.permute(permute_order)
+    projected_ndim = len(dims)
+    a2 = a_perm.reshape(*a_perm.shape[:-projected_ndim], -1)
+    b2 = b_perm.reshape(*b_perm.shape[:-projected_ndim], -1)
+
+    dot_a_b = (a2 * b2).sum(dim=-1)
+    dot_b_b = (b2 * b2).sum(dim=-1)
+
+    w_optimal = dot_a_b / (dot_b_b + 1e-6)
+    result = a2 - b2 * w_optimal.unsqueeze(-1) * b_discount
+
+    result = result.reshape(a_perm.shape).permute(inverse_permute)
+    w_optimal = w_optimal.reshape(*a_perm.shape[:-projected_ndim], *([1] * projected_ndim)).permute(inverse_permute)
+
+    if return_align_coeffs:
+        return result, w_optimal
+    else:
+        return result
+    
 # Revised from RevGrad, by removing the grad negation.
 class ScaleGrad(torch.autograd.Function):
     @staticmethod
@@ -783,6 +837,7 @@ class Qwen3MLP(nn.Module):
 class Qwen3MLPExperts(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.debug = config.debug
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
@@ -801,6 +856,17 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_out_acts_normed = None
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
         self._expert_update_scale = None
+        # Weak reference to the router for debug only. Avoid registering it as a child module.
+        self._debug_router_ref = None
+
+    def set_debug_router(self, router):
+        self._debug_router_ref = weakref.ref(router)
+
+    def _get_debug_router(self):
+        assert self._debug_router_ref is not None, "Debug router reference is not set"
+        router = self._debug_router_ref()
+        assert router is not None, "Debug router reference is no longer valid"
+        return router
 
     def get_param_update_hooks(self):
         hooks = {}
@@ -819,6 +885,13 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out: [n_exp, capacity, intermediate_size]
         gate_out = torch.bmm(x, self.gate_proj)
 
+        if self.debug:
+            router = self._get_debug_router()
+            gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1), dims=[1])
+            gate_out_ortho = torch.bmm(x, gate_proj_ortho)
+            gate_out_ortho_acts = self.act_fn(gate_out_ortho)
+
+
         if self.training and self.use_experts_gate_output_loss:
             if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out
@@ -836,15 +909,27 @@ class Qwen3MLPExperts(nn.Module):
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
         proj_out = torch.bmm(x, self.c_proj)
+
+        if self.debug:
+            gate_out_acts = self.act_fn(gate_out)
+            # ortho_diffs: [n_exp, capacity].
+            # ortho_diffs are almost negative at every element, -0.03 ~ -0.08.
+            # Negative values mean the current router-aligned component of gate_proj
+            # is suppressing gate activations on average relative to the orthogonalized gate_proj.            ortho_diffs = (gate_out_acts - gate_out_ortho_acts).mean(dim=-1)
+            breakpoint()
+
         return proj_out
     
 class MOELayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.router = Router(config)
+        self.debug = config.debug
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
             self.experts = Qwen3MLPExperts(config)
             self.use_qwen3_moe_mlp = True
+            if self.debug:
+                self.experts.set_debug_router(self.router)
         else:
             self.experts = MLPExperts(config)
             self.use_qwen3_moe_mlp = False

@@ -38,6 +38,7 @@ from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND, ALLOW_F
 from scripts.base_eval import evaluate_core
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.manager import MANAGER
+torch.set_printoptions(sci_mode=False)
 
 # print_banner()
 def str2bool(v):
@@ -179,7 +180,7 @@ parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.0
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
-parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
+parser.add_argument("--router-z-loss-weight", type=float, default=1e-6, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
 # How to set --router-wg-grad-scale? Maybe it should be set proportional to --moe-top-k,
 # since --moe-top-k determines how dilluted the router wg gradients are across experts?
@@ -242,8 +243,12 @@ parser.add_argument("--model-tag", type=str, default=None, help="override model 
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
 parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
+parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+if args.debug:
+    args.compile = False
+
 if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
 if not (0.0 < args.router_ortho_on_prob <= 1.0):
@@ -253,6 +258,7 @@ if args.use_aux_free_load_balancing:
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
     print("Forcing --use-full-router-probs-for-aux-loss=True because --moe-top-k=1.")
     args.use_full_router_probs_for_aux_loss = True
+
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
@@ -359,6 +365,7 @@ def build_model_meta(depth):
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
+        debug=args.debug
     )
     with torch.device("meta"):
         model_meta = GPT(config)
