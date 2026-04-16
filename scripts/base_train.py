@@ -766,6 +766,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     router_grad_norms = []
     router_grad_self_alignments = []
     router_weight_exp_alignments = []
+    router_weight_c_fc_alignments = []
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
@@ -799,11 +800,12 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             exp_gate_grad_norms.append(exp_gate_grad_norm)
             losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
-            # Compute router grad - router weight alignment
-            # Compute router expert - gate weight alignment
+            # Compute router grad - router weight alignment.
+            # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
                 exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                exp_c_fc_mean_weight = layer.mlp.experts.c_fc.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                 # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
@@ -820,7 +822,13 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
                         (router_weight.norm(dim=1) * (exp_gate_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
                 router_weight_exp_alignments.append(rw_ew_alignment)
                 mean_rw_ew_alignment = rw_ew_alignment.mean().item()
-                losses[f'router_weight_exp_alignment_{i}'] = mean_rw_ew_alignment
+                losses[f'router_weight_exp_gate_alignment_{i}'] = mean_rw_ew_alignment
+
+                rw_cfc_alignment = (exp_c_fc_mean_weight * router_weight).sum(dim=1) / \
+                    (router_weight.norm(dim=1) * (exp_c_fc_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
+                router_weight_c_fc_alignments.append(rw_cfc_alignment)
+                mean_rw_cfc_alignment = rw_cfc_alignment.mean().item()
+                losses[f'router_weight_exp_cfc_alignment_{i}'] = mean_rw_cfc_alignment
 
                 if expert_utilities is not None:
                     # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
@@ -866,6 +874,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     losses['router_grad_self_alignments'] = router_grad_self_alignments
     router_weight_exp_alignments = torch.stack(router_weight_exp_alignments, dim=0) if router_weight_exp_alignments else None
     losses['router_weight_exp_alignments'] = router_weight_exp_alignments
+    router_weight_c_fc_alignments = torch.stack(router_weight_c_fc_alignments, dim=0) if router_weight_c_fc_alignments else None
+    losses['router_weight_c_fc_alignments'] = router_weight_c_fc_alignments
     exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
     losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
@@ -1300,6 +1310,10 @@ while True:
                 log_data.update({f"inspect/expert_utility_min_{i}": layer_expert_utilities.min().item()})
                 log_data.update({f"inspect/expert_utility_max_{i}": layer_expert_utilities.max().item()})
                 log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})
+            if f'router_weight_exp_gate_alignment_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
+            if f'router_weight_exp_cfc_alignment_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_cfc_alignment_{i}": losses[f'router_weight_exp_cfc_alignment_{i}']})
             if f'router_grad_norm_top_{i}' in losses:
                 log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
             if f'router_grad_norm_bottom_{i}' in losses:
