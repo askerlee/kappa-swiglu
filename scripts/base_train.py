@@ -169,6 +169,8 @@ parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-4, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-target", type=str, default="gate_proj", choices=["gate_proj", "c_fc", "both"],
+                    help="which expert projection(s) to orthogonalize against router w_g: gate_proj|c_fc|both")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
@@ -176,7 +178,7 @@ parser.add_argument("--router-ortho-block-size", type=int, default=100, help="bl
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
 parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
-parser.add_argument("--experts-gate-output-loss-weight", type=float, default=0.00001, help="weight for expert gate z loss")
+parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -350,6 +352,7 @@ def build_model_meta(depth):
         aux_loss_weight=args.aux_loss_weight,
         use_full_router_probs_for_aux_loss=args.use_full_router_probs_for_aux_loss,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
+        router_ortho_loss_target=args.router_ortho_loss_target,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
@@ -432,6 +435,7 @@ if resuming:
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
     model.load_state_dict(model_data, strict=True, assign=True)
+    model.set_router_ortho_loss_target(args.router_ortho_loss_target)
     set_router_wg_grad_scale(model, args.router_wg_grad_scale)
     del model_data # free up this memory after the copy
 
@@ -512,6 +516,8 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
+router_ortho_loss_name = orig_model.get_router_ortho_loss_name()
+router_ortho_sub_loss_names = orig_model.get_router_ortho_sub_loss_names()
 if args.compile:
     model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
 
@@ -1161,7 +1167,7 @@ while True:
             'aux_loss': 0.0,
             'gated_aux_loss': 0.0,
             'router_z_loss': 0.0,
-            'router_ortho_loss': 0.0,
+            router_ortho_loss_name: 0.0,
             'experts_ortho_loss': 0.0,
             'experts_gate_output_loss': 0.0,
             'projs_diversity_loss': 0.0,
@@ -1181,7 +1187,7 @@ while True:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-            router_ortho_loss = micro_losses['router_ortho_loss'] 
+            router_ortho_loss = micro_losses[router_ortho_loss_name]
             loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -1246,8 +1252,6 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
-            "train/router_ortho_loss_weight": router_ortho_loss_weight,
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
@@ -1258,6 +1262,12 @@ while True:
             "mfu": mfu,
             "epoch": epoch,
         }
+        log_data[f"train/{router_ortho_loss_name}_step"] = losses[router_ortho_loss_name].detach().item()
+        log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
+        for sub_loss_name in router_ortho_sub_loss_names:
+            sub_loss = losses.get(sub_loss_name)
+            if sub_loss is not None:
+                log_data[f"train/{sub_loss_name}_step"] = sub_loss.detach().item()
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

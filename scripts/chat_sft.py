@@ -76,6 +76,8 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
+parser.add_argument("--router-ortho-loss-target", type=str, default=None, choices=["gate_proj", "c_fc", "both"],
+                    help="which expert projection(s) to orthogonalize against router w_g (default: inherit from saved config of base model)")
 # If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
 # If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
@@ -197,6 +199,15 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # NOTE: the optim state of the base model is not loaded here.
 # NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+if args.router_ortho_loss_target is None:
+    args.router_ortho_loss_target = getattr(model.config, "router_ortho_loss_target", "gate_proj")
+    print0(f"Inherited router_ortho_loss_target: {args.router_ortho_loss_target}")
+else:
+    print0(f"Specified router_ortho_loss_target: {args.router_ortho_loss_target}")
+model.set_router_ortho_loss_target(args.router_ortho_loss_target)
+user_config["router_ortho_loss_target"] = args.router_ortho_loss_target
+if not use_dummy_wandb:
+    wandb_run.config.update({"router_ortho_loss_target": args.router_ortho_loss_target}, allow_val_change=True)
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)
@@ -299,6 +310,8 @@ set_router_wg_grad_scale(
 )
     
 orig_model = model
+router_ortho_loss_name = orig_model.get_router_ortho_loss_name()
+router_ortho_sub_loss_names = orig_model.get_router_ortho_sub_loss_names()
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 if args.router_ortho_loss_weight == -1:
@@ -725,7 +738,7 @@ while True:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
         # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-        router_ortho_loss = losses['router_ortho_loss'] 
+        router_ortho_loss = losses[router_ortho_loss_name]
         loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -782,7 +795,6 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/router_ortho_loss_step": losses['router_ortho_loss'].detach().item(),
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],            
@@ -795,6 +807,11 @@ while True:
             "train/skipped_overlong_conversations": train_skipped_conversations,
             "train/skipped_overlong_fraction": discard_fraction,
         }
+        log_data[f"train/{router_ortho_loss_name}_step"] = losses[router_ortho_loss_name].detach().item()
+        for sub_loss_name in router_ortho_sub_loss_names:
+            sub_loss = losses.get(sub_loss_name)
+            if sub_loss is not None:
+                log_data[f"train/{sub_loss_name}_step"] = sub_loss.detach().item()
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

@@ -25,6 +25,7 @@ class GPTConfig:
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
+        router_ortho_loss_target: str = "gate_proj",  # which expert projection(s) to orthogonalize against router.w_g: gate_proj|c_fc|both
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
@@ -42,7 +43,7 @@ class GPTConfig:
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
-        experts_gate_output_loss_weight: float = 0.00001,  # default weight for gate output regularization loss
+        experts_gate_output_loss_weight: float = 1e-5,  # default weight for gate output regularization loss
         # projs diversity loss is very small (<0.01) due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         projs_diversity_loss_weight: float = 0.01,  # default weight for expert gate projs diversity loss
@@ -81,6 +82,13 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_router_ortho_loss = use_router_ortho_loss
+        valid_router_ortho_loss_targets = { "gate_proj", "c_fc", "both" }
+        if router_ortho_loss_target not in valid_router_ortho_loss_targets:
+            raise ValueError(
+                "router_ortho_loss_target must be one of "
+                f"{sorted(valid_router_ortho_loss_targets)}, got {router_ortho_loss_target!r}"
+            )
+        self.router_ortho_loss_target = router_ortho_loss_target
         self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k

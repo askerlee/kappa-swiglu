@@ -33,6 +33,16 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
+ROUTER_ORTHO_LOSS_TARGETS = ("gate_proj", "c_fc", "both")
+
+def get_router_ortho_loss_name(target):
+    return f"router_ortho_loss_{target}"
+
+def get_router_ortho_sub_loss_names(target):
+    if target != "both":
+        return ()
+    return ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
+
 # Orthogonal subtraction of b from a: the residual is orthogonal to b on the specified dims.
 # NOTE: ortho_subtract(a, b) is scale-invariant w.r.t. (b * b_discount),
 # but scales proportionally with a.
@@ -108,6 +118,7 @@ class ScaleGrad(torch.autograd.Function):
             grad_output2 = None
         return grad_output2, None, None
 
+# NOTE: alpha is only applied to grad_left, the left leaf node
 class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, output, left, right, alpha):
@@ -127,6 +138,7 @@ class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
             grad_left = torch.bmm(grad_output, right_t)
             if alpha.dtype != grad_left.dtype:
                 alpha = alpha.to(dtype=grad_left.dtype)
+            # NOTE: alpha is only applied to grad_left
             grad_left = grad_left * alpha
             if grad_left.dtype != left.dtype:
                 grad_left = grad_left.to(dtype=left.dtype)
@@ -893,6 +905,7 @@ class Qwen3MLPExperts(nn.Module):
 
 
         if self.training and self.use_experts_gate_output_loss:
+            # experts_gate_output_loss_input_grad_scale is hardcoded as 0.1
             if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out
             else:
@@ -938,6 +951,7 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
+        self.router_ortho_loss_target = getattr(config, 'router_ortho_loss_target', 'gate_proj')
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
         # But the computation is slow, so disabled by default.
@@ -952,6 +966,15 @@ class MOELayer(nn.Module):
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
+
+    def set_router_ortho_loss_target(self, target):
+        self.router_ortho_loss_target = target
+
+    def get_router_ortho_loss_name(self):
+        return get_router_ortho_loss_name(self.router_ortho_loss_target)
+
+    def get_router_ortho_sub_loss_names(self):
+        return get_router_ortho_sub_loss_names(self.router_ortho_loss_target)
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -995,11 +1018,11 @@ class MOELayer(nn.Module):
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
-            router_ortho_loss, router_ortho_losses_by_exp = self.compute_router_ortho_loss()
+            router_ortho_loss, router_ortho_sub_losses = self.compute_router_ortho_loss()
             # router_ortho_loss will be optimized, so we keep its computation graph.
             MANAGER.add("router_ortho_loss", router_ortho_loss)
-            # router_ortho_losses_by_exp is only for logging, so we detach it.
-            MANAGER.add("router_ortho_losses_by_exp", router_ortho_losses_by_exp.detach())
+            for loss_name, loss_value in router_ortho_sub_losses.items():
+                MANAGER.add(loss_name, loss_value)
             # Always use gate diversity loss when using router orthogonality loss.
             projs_diversity_loss = self.compute_projs_diversity_loss()
             MANAGER.add("projs_diversity_loss", projs_diversity_loss)
@@ -1045,8 +1068,6 @@ class MOELayer(nn.Module):
             MANAGER.add("gated_aux_loss", gated_aux_loss)
             print0("expert_mean_act_ratios:")
             print0(expert_mean_act_ratios)
-            print0("router_ortho_losses_by_exp:")
-            print0(router_ortho_losses_by_exp)
         '''
 
         # --- Combine expert outputs (the "gather" part) ---
@@ -1087,26 +1108,33 @@ class MOELayer(nn.Module):
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
-            return 0, None
-        else:
-            # Compute orthogonality loss between router weight vectors and expert gate projection vectors
-            router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-            # gate_proj_weights: [n_exp, n_embd, intermediate_size]
-            gate_proj_weights = self.experts.gate_proj
+            zero = self.experts.c_fc.new_zeros(())
+            return zero, {}
 
-            # ortho_losses: [n_exp, intermediate_size]
-            ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)
+        router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
+        target_names = [self.router_ortho_loss_target]
+        if self.router_ortho_loss_target == 'both':
+            target_names = ['gate_proj', 'c_fc']
+
+        ortho_losses_by_target = {}
+        for target_name in target_names:
+            expert_weights = getattr(self.experts, target_name)
+            ortho_losses_signed = (router_weights * expert_weights).sum(dim=1)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
-            ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight       
-            # Square the dot products to penalize both positive and negative correlations
-            ortho_losses = ortho_losses_signed.square()
-            # Change mean to sum over the hidden channel, otherwise the loss is too small to have effect.
-            # sum(dim=1).mean() is intermediate_size times larger than mean().
-            # intermediate_size = 2048, so the loss is 2048 times larger.
-            ortho_loss = (ortho_losses * ortho_losses_weights).sum(dim=1).mean()
-            ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
-            return ortho_loss, ortho_losses_by_exp
+            ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
+            ortho_losses_by_target[target_name] = (ortho_losses_signed.square() * ortho_losses_weights).sum(dim=1).mean()
+
+        ortho_loss = torch.stack(tuple(ortho_losses_by_target.values())).mean()
+        # The keys in sub_losses are full loss names:
+        # "router_ortho_loss_gate_proj", "router_ortho_loss_c_fc",
+        # instead of the short names in ortho_losses_by_target.
+        sub_losses = {
+            get_router_ortho_loss_name(target_name): target_loss
+            for target_name, target_loss in ortho_losses_by_target.items()
+            if self.router_ortho_loss_target == 'both'
+        }
+        return ortho_loss, sub_losses
 
     @torch._dynamo.disable
     def compute_gated_aux_loss(
@@ -1470,6 +1498,19 @@ class GPT(nn.Module):
                     bias_update_speed=bias_update_speed,
                 )
 
+    def set_router_ortho_loss_target(self, target):
+        self.config.router_ortho_loss_target = target
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.set_router_ortho_loss_target(target)
+
+    def get_router_ortho_loss_name(self):
+        return get_router_ortho_loss_name(getattr(self.config, 'router_ortho_loss_target', 'gate_proj'))
+
+    def get_router_ortho_sub_loss_names(self):
+        return get_router_ortho_sub_loss_names(getattr(self.config, 'router_ortho_loss_target', 'gate_proj'))
+
     def update_aux_free_load_balancing(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
@@ -1560,6 +1601,8 @@ class GPT(nn.Module):
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
+        router_ortho_loss_name = self.get_router_ortho_loss_name()
+        router_ortho_sub_loss_names = self.get_router_ortho_sub_loss_names()
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
@@ -1591,23 +1634,21 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'gated_aux_loss': 0,
                    'router_z_loss': 0,
-                   'router_ortho_loss': 0,
-                   'experts_ortho_loss': 0, 
+                   router_ortho_loss_name: 0,
+                   'experts_ortho_loss': 0,
                    'experts_gate_output_loss': 0,
                    'projs_diversity_loss': 0,
-                   'router_ortho_losses_by_exp': None,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
-                   'selected_scores':  None,
+                   'selected_scores': None,
                  }
+        for sub_loss_name in router_ortho_sub_loss_names:
+            losses[sub_loss_name] = 0
 
         # If MANAGER.collect_load_balancing_stats is False, these will return None
         expert_utilities = MANAGER.aggregate("expert_utilities")
         losses['expert_utilities'] = expert_utilities.detach() if expert_utilities is not None else None
         MANAGER.reset("expert_utilities")
-        router_ortho_losses_by_exp = MANAGER.aggregate("router_ortho_losses_by_exp")
-        losses['router_ortho_losses_by_exp'] = router_ortho_losses_by_exp.detach() if router_ortho_losses_by_exp is not None else None
-        MANAGER.reset("router_ortho_losses_by_exp")
         drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
         losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")
@@ -1640,8 +1681,12 @@ class GPT(nn.Module):
                 # We use dynamic weight for router_ortho_loss, so we just save it in losses (without detach()), 
                 # and don't add it to the main loss here. 
                 # loss += self.config.router_ortho_loss_weight * router_ortho_loss 
-                losses['router_ortho_loss'] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
+                losses[router_ortho_loss_name] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset("router_ortho_loss")
+                for sub_loss_name in router_ortho_sub_loss_names:
+                    sub_loss = MANAGER.aggregate(sub_loss_name)
+                    losses[sub_loss_name] = sub_loss.detach() if isinstance(sub_loss, torch.Tensor) else sub_loss
+                    MANAGER.reset(sub_loss_name)
                 projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
                 losses['projs_diversity_loss'] = projs_diversity_loss.detach() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
