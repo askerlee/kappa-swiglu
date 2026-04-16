@@ -33,12 +33,12 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
-ROUTER_ORTHO_LOSS_TARGETS = ("gate_proj", "c_fc", "both")
-
+# target: "gate_proj", "c_fc", "both"
 def get_router_ortho_loss_name(target):
     return f"router_ortho_loss_{target}"
 
 def get_router_ortho_sub_loss_names(target):
+    # If not both, then the router ortho loss has no sub losses.
     if target != "both":
         return ()
     return ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
@@ -1685,7 +1685,7 @@ class GPT(nn.Module):
                 MANAGER.reset("router_ortho_loss")
                 for sub_loss_name in router_ortho_sub_loss_names:
                     sub_loss = MANAGER.aggregate(sub_loss_name)
-                    losses[sub_loss_name] = sub_loss.detach() if isinstance(sub_loss, torch.Tensor) else sub_loss
+                    losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
                 projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
