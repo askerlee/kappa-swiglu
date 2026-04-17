@@ -142,6 +142,7 @@ def summarize_values(alignments: torch.Tensor) -> dict[str, Any]:
     return {
         "n_experts": int(alignments.numel()),
         "mean": float(alignments.mean().item()),
+        "abs-mean": float(alignments.abs().mean().item()),
         "std": float(alignments.std(unbiased=False).item()),
         "min": float(alignments.min().item()),
         "max": float(alignments.max().item()),
@@ -168,6 +169,7 @@ def summarize_overall(alignments: torch.Tensor) -> dict[str, Any]:
     summary = summarize_values(alignments)
     return {
         "mean": summary["mean"],
+        "abs-mean": summary["abs-mean"],
         "std": summary["std"],
         "min": summary["min"],
         "max": summary["max"],
@@ -183,13 +185,14 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
     print(f"num_moe_layers: {len(result['layers'])}")
     print()
     print("gate_proj alignment")
-    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'abs-mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
     for layer_result in result["layers"]:
         gate_result = layer_result["gate_proj"]
         print(
             f"{layer_result['layer']:5d}  "
             f"{layer_result['n_experts']:5d}  "
             f"{gate_result['mean']:10.6f}  "
+            f"{gate_result['abs-mean']:10.6f}  "
             f"{gate_result['std']:10.6f}  "
             f"{gate_result['min']:10.6f}  "
             f"{gate_result['max']:10.6f}"
@@ -200,13 +203,14 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
 
     print()
     print("c_fc alignment")
-    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'abs-mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
     for layer_result in result["layers"]:
         cfc_result = layer_result["c_fc"]
         print(
             f"{layer_result['layer']:5d}  "
             f"{layer_result['n_experts']:5d}  "
             f"{cfc_result['mean']:10.6f}  "
+            f"{cfc_result['abs-mean']:10.6f}  "
             f"{cfc_result['std']:10.6f}  "
             f"{cfc_result['min']:10.6f}  "
             f"{cfc_result['max']:10.6f}"
@@ -220,12 +224,12 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
     print()
     print(
         "overall gate_proj: "
-        f"mean={gate_overall['mean']:.6f}, std={gate_overall['std']:.6f}, min={gate_overall['min']:.6f}, max={gate_overall['max']:.6f}, "
+        f"mean={gate_overall['mean']:.6f}, abs-mean={gate_overall['abs-mean']:.6f}, std={gate_overall['std']:.6f}, min={gate_overall['min']:.6f}, max={gate_overall['max']:.6f}, "
         f"n_values={gate_overall['n_values']}"
     )
     print(
         "overall c_fc: "
-        f"mean={cfc_overall['mean']:.6f}, std={cfc_overall['std']:.6f}, min={cfc_overall['min']:.6f}, max={cfc_overall['max']:.6f}, "
+        f"mean={cfc_overall['mean']:.6f}, abs-mean={cfc_overall['abs-mean']:.6f}, std={cfc_overall['std']:.6f}, min={cfc_overall['min']:.6f}, max={cfc_overall['max']:.6f}, "
         f"n_values={cfc_overall['n_values']}"
     )
 
