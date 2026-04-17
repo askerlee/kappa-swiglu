@@ -150,6 +150,20 @@ def summarize_values(alignments: torch.Tensor) -> dict[str, Any]:
     }
 
 
+def compute_alignment_correlation(lhs: torch.Tensor, rhs: torch.Tensor) -> float:
+    if lhs.shape != rhs.shape:
+        raise ValueError(f"Correlation requires matching shapes, got {tuple(lhs.shape)} vs {tuple(rhs.shape)}")
+    if lhs.numel() < 2:
+        return float("nan")
+
+    lhs_centered = lhs - lhs.mean()
+    rhs_centered = rhs - rhs.mean()
+    denominator = lhs_centered.norm() * rhs_centered.norm()
+    if denominator.item() <= 1e-12:
+        return float("nan")
+    return float((lhs_centered * rhs_centered).sum().item() / denominator.item())
+
+
 def summarize_layer(layer_idx: int, gate_alignments: torch.Tensor, cfc_alignments: torch.Tensor) -> dict[str, Any]:
     gate_summary = summarize_values(gate_alignments)
     cfc_summary = summarize_values(cfc_alignments)
@@ -160,6 +174,7 @@ def summarize_layer(layer_idx: int, gate_alignments: torch.Tensor, cfc_alignment
     return {
         "layer": layer_idx,
         "n_experts": gate_summary["n_experts"],
+        "gate_cfc_correlation": compute_alignment_correlation(gate_alignments, cfc_alignments),
         "gate_proj": gate_summary,
         "c_fc": cfc_summary,
     }
@@ -183,6 +198,12 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         print(f"model_tag: {result['model_tag']}")
     print(f"step: {result['step']}")
     print(f"num_moe_layers: {len(result['layers'])}")
+    print()
+    print("gate_proj vs c_fc correlation")
+    print(f"{'layer':>5}  {'corr':>10}")
+    for layer_result in result["layers"]:
+        print(f"{layer_result['layer']:5d}  {layer_result['gate_cfc_correlation']:10.6f}")
+
     print()
     print("gate_proj alignment")
     print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'abs-mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
@@ -222,6 +243,7 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
     gate_overall = result["overall"]["gate_proj"]
     cfc_overall = result["overall"]["c_fc"]
     print()
+    print(f"overall gate_proj_vs_c_fc correlation: {result['overall']['gate_cfc_correlation']:.6f}")
     print(
         "overall gate_proj: "
         f"mean={gate_overall['mean']:.6f}, abs-mean={gate_overall['abs-mean']:.6f}, std={gate_overall['std']:.6f}, min={gate_overall['min']:.6f}, max={gate_overall['max']:.6f}, "
@@ -281,6 +303,7 @@ def main() -> None:
         "model_config": meta_data.get("model_config", {}),
         "layers": layer_results,
         "overall": {
+            "gate_cfc_correlation": compute_alignment_correlation(overall_gate_alignments, overall_cfc_alignments),
             "gate_proj": summarize_overall(overall_gate_alignments),
             "c_fc": summarize_overall(overall_cfc_alignments),
         },
