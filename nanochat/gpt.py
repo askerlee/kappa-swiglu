@@ -1126,7 +1126,8 @@ class MOELayer(nn.Module):
             ortho_losses_by_target[target_name] = (ortho_losses_signed.square() * ortho_losses_weights).sum(dim=1).mean()
 
         if self.router_ortho_loss_target == 'both':
-            ortho_loss = (ortho_losses_by_target['gate_proj'] + 2 * ortho_losses_by_target['c_fc']) / 2
+            # NOTE: 'c_fc' loss is not scaled down, but 'gate_proj' loss is halved.
+            ortho_loss = ortho_losses_by_target['gate_proj'] * 0.5 + ortho_losses_by_target['c_fc']
         else:
             ortho_loss = ortho_losses_by_target[target_name]
         # The keys in sub_losses are full loss names:

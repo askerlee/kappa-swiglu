@@ -175,7 +175,7 @@ parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
 parser.add_argument("--router-ortho-both-switch-target", type=str2bool, nargs='?', const=True, default=False,
-                    help="when --router-ortho-loss-target=both, use router_ortho_gate to alternate between gate_proj and c_fc sub-losses instead of using on/off gating; forces --router-ortho-on-prob=0.5")
+                    help="when --router-ortho-loss-target=both, use router_ortho_is_on to alternate between gate_proj and c_fc sub-losses instead of using on/off gating; forces --router-ortho-on-prob=0.5")
 parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
 parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
@@ -945,26 +945,42 @@ while True:
         router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
+    router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
-        router_ortho_gate, router_ortho_gate_u, router_ortho_block_idx = get_router_ortho_blockwise_gate(
+        router_ortho_blockwise_active = True
+    if router_ortho_blockwise_active:
+        # router_ortho_gate_random_u is the underlying random sample u in [0, 1),
+        # It is the random score that gets compared against on_prob to decide the gate:
+        # if u < on_prob, then router_ortho_is_on = 1.0, otherwise router_ortho_is_on = 0.0.
+        router_ortho_is_on, router_ortho_gate_random_u, router_ortho_block_idx = get_router_ortho_blockwise_gate(
             step,
             args.router_ortho_block_size,
             args.router_ortho_on_prob,
             args.seed,
         )
     else:
-        router_ortho_gate, router_ortho_gate_u, router_ortho_block_idx = 1.0, 1.0, step // args.router_ortho_block_size
+        router_ortho_is_on, router_ortho_gate_random_u, router_ortho_block_idx = 1.0, 1.0, step // args.router_ortho_block_size
 
-    router_ortho_gate_scale = 1.0
-    if args.use_router_ortho_blockwise and router_ortho_gate > 0.0 and args.router_ortho_blockwise_scale_preserve and args.router_ortho_on_prob < 1.0:
-        router_ortho_gate_scale = 1.0 / args.router_ortho_on_prob
-    router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_gate * router_ortho_gate_scale
+    router_ortho_loss_on_scale = 1.0
+    if router_ortho_blockwise_active and router_ortho_is_on > 0.0 and args.router_ortho_blockwise_scale_preserve and args.router_ortho_on_prob < 1.0:
+        router_ortho_loss_on_scale = 1.0 / args.router_ortho_on_prob
+    router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
     router_ortho_switched_loss_name = router_ortho_loss_name
-    if args.router_ortho_both_switch_target:
+    # If router_ortho_both_switch_target, then if router_ortho_is_on, 
+    # we apply the gate_proj loss, otherwise we apply the c_fc loss,
+    # so that in effect it switches between these two.
+    # During warmup we disable switch-target behavior and use the regular
+    # combined router_ortho_loss instead.
+    if args.router_ortho_both_switch_target and router_ortho_blockwise_active:
         router_ortho_switched_loss_name = (
-            router_ortho_gate_proj_loss_name if router_ortho_gate > 0.0 else router_ortho_c_fc_loss_name
+            router_ortho_gate_proj_loss_name if router_ortho_is_on > 0.0 else router_ortho_c_fc_loss_name
         )
-        router_ortho_effective_loss_weight = router_ortho_loss_weight
+        # In the 'else' branch, we give the c_fc loss a 2x weight to penlize it more.
+        router_ortho_effective_loss_weight = (
+            router_ortho_loss_weight 
+            if router_ortho_is_on > 0.0
+            else router_ortho_loss_weight * 2
+        )
 
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
