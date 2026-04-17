@@ -169,7 +169,7 @@ parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-4, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-loss-target", type=str, default="gate_proj", choices=["gate_proj", "c_fc", "both"],
+parser.add_argument("--router-ortho-loss-target", type=str, default="both", choices=["gate_proj", "c_fc", "both"],
                     help="which expert projection(s) to orthogonalize against router w_g: gate_proj|c_fc|both")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
