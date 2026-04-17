@@ -1125,7 +1125,9 @@ class MOELayer(nn.Module):
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
             ortho_losses_by_target[target_name] = (ortho_losses_signed.square() * ortho_losses_weights).sum(dim=1).mean()
 
-        ortho_loss = torch.stack(tuple(ortho_losses_by_target.values())).mean()
+        # If router_ortho_loss_target == 'both', add the loss of gate_proj and c_fc, 
+        # instead of averaging them.
+        ortho_loss = torch.stack(tuple(ortho_losses_by_target.values())).sum()
         # The keys in sub_losses are full loss names:
         # "router_ortho_loss_gate_proj", "router_ortho_loss_c_fc",
         # instead of the short names in ortho_losses_by_target.
