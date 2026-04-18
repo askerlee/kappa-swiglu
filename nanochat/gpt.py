@@ -1119,7 +1119,7 @@ class MOELayer(nn.Module):
         ortho_losses_by_target = {}
         for target_name in target_names:
             expert_weights = getattr(self.experts, target_name)
-            ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-12)
+            ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
