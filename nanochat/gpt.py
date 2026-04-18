@@ -1123,6 +1123,7 @@ class MOELayer(nn.Module):
             # Weight columns by their current energy without letting the loss reduce
             # itself by shrinking those magnitudes directly.
             expert_weight_energy = expert_weights.float().square().sum(dim=1).detach()
+            expert_weight_energy = expert_weight_energy / expert_weight_energy.mean().clamp_min(1e-12)
             expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
