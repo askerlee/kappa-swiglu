@@ -975,12 +975,7 @@ while True:
         router_ortho_switched_loss_name = (
             router_ortho_gate_proj_loss_name if router_ortho_is_on > 0.0 else router_ortho_c_fc_loss_name
         )
-        # In the 'else' branch, we give the c_fc loss a 2x weight to penlize it more.
-        router_ortho_effective_loss_weight = (
-            router_ortho_loss_weight 
-            if router_ortho_is_on > 0.0
-            else router_ortho_loss_weight * 2
-        )
+        router_ortho_effective_loss_weight = router_ortho_loss_weight
 
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
