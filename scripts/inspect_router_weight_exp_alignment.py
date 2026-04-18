@@ -112,7 +112,7 @@ def compute_router_weight_exp_alignment(
     model_data: dict[str, torch.Tensor],
     layer_idx: int,
     expert_weight_name: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     router_key = f"transformer.h.{layer_idx}.mlp.router.w_g.weight"
     expert_weight_key = f"transformer.h.{layer_idx}.mlp.experts.{expert_weight_name}"
 
@@ -149,7 +149,8 @@ def compute_router_weight_exp_alignment(
         column_energies.sum(dim=1).clamp_min(1e-10)
     )
     mean_column_energies = column_energies.mean(dim=1)
-    return cosine_alignments, energy_weighted_alignments, mean_column_energies
+    column_energy_dispersion = column_energies.std(dim=1, unbiased=False) / mean_column_energies.clamp_min(1e-10)
+    return cosine_alignments, energy_weighted_alignments, mean_column_energies, column_energy_dispersion
 
 
 def summarize_values(alignments: torch.Tensor) -> dict[str, Any]:
@@ -186,6 +187,8 @@ def summarize_layer(
     cfc_energy_weighted_alignments: torch.Tensor,
     gate_column_energies: torch.Tensor,
     cfc_column_energies: torch.Tensor,
+    gate_column_energy_dispersion: torch.Tensor,
+    cfc_column_energy_dispersion: torch.Tensor,
 ) -> dict[str, Any]:
     gate_summary = summarize_values(gate_alignments)
     cfc_summary = summarize_values(cfc_alignments)
@@ -193,6 +196,8 @@ def summarize_layer(
     cfc_energy_weighted_summary = summarize_values(cfc_energy_weighted_alignments)
     gate_column_energy_summary = summarize_values(gate_column_energies)
     cfc_column_energy_summary = summarize_values(cfc_column_energies)
+    gate_column_energy_dispersion_summary = summarize_values(gate_column_energy_dispersion)
+    cfc_column_energy_dispersion_summary = summarize_values(cfc_column_energy_dispersion)
     if gate_summary["n_experts"] != cfc_summary["n_experts"]:
         raise ValueError(
             f"Expert count mismatch at layer {layer_idx}: gate_proj={gate_summary['n_experts']} c_fc={cfc_summary['n_experts']}"
@@ -211,6 +216,8 @@ def summarize_layer(
         "c_fc_energy_weighted": cfc_energy_weighted_summary,
         "gate_proj_column_energy": gate_column_energy_summary,
         "c_fc_column_energy": cfc_column_energy_summary,
+        "gate_proj_column_energy_dispersion": gate_column_energy_dispersion_summary,
+        "c_fc_column_energy_dispersion": cfc_column_energy_dispersion_summary,
     }
 
 
@@ -350,12 +357,50 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
             values = ", ".join(f"{value:.6f}" for value in cfc_result["alignments"])
             print(f"  c_fc_column_energy experts[{layer_result['layer']}]: [{values}]")
 
+    print()
+    print("gate_proj within-expert column-energy dispersion (cv)")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
+    for layer_result in result["layers"]:
+        gate_result = layer_result["gate_proj_column_energy_dispersion"]
+        print(
+            f"{layer_result['layer']:5d}  "
+            f"{layer_result['n_experts']:5d}  "
+            f"{gate_result['mean']:12.6f}  "
+            f"{gate_result['abs-mean']:12.6f}  "
+            f"{gate_result['std']:12.6f}  "
+            f"{gate_result['min']:12.6f}  "
+            f"{gate_result['max']:12.6f}"
+        )
+        if print_expert_alignments:
+            values = ", ".join(f"{value:.6f}" for value in gate_result["alignments"])
+            print(f"  gate_proj_column_energy_dispersion experts[{layer_result['layer']}]: [{values}]")
+
+    print()
+    print("c_fc within-expert column-energy dispersion (cv)")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
+    for layer_result in result["layers"]:
+        cfc_result = layer_result["c_fc_column_energy_dispersion"]
+        print(
+            f"{layer_result['layer']:5d}  "
+            f"{layer_result['n_experts']:5d}  "
+            f"{cfc_result['mean']:12.6f}  "
+            f"{cfc_result['abs-mean']:12.6f}  "
+            f"{cfc_result['std']:12.6f}  "
+            f"{cfc_result['min']:12.6f}  "
+            f"{cfc_result['max']:12.6f}"
+        )
+        if print_expert_alignments:
+            values = ", ".join(f"{value:.6f}" for value in cfc_result["alignments"])
+            print(f"  c_fc_column_energy_dispersion experts[{layer_result['layer']}]: [{values}]")
+
     gate_overall = result["overall"]["gate_proj"]
     cfc_overall = result["overall"]["c_fc"]
     gate_energy_weighted_overall = result["overall"]["gate_proj_energy_weighted"]
     cfc_energy_weighted_overall = result["overall"]["c_fc_energy_weighted"]
     gate_column_energy_overall = result["overall"]["gate_proj_column_energy"]
     cfc_column_energy_overall = result["overall"]["c_fc_column_energy"]
+    gate_column_energy_dispersion_overall = result["overall"]["gate_proj_column_energy_dispersion"]
+    cfc_column_energy_dispersion_overall = result["overall"]["c_fc_column_energy_dispersion"]
     print()
     print(
         "overall gate_proj_vs_c_fc correlation: "
@@ -392,6 +437,16 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         f"mean={cfc_column_energy_overall['mean']:.6f}, abs-mean={cfc_column_energy_overall['abs-mean']:.6f}, std={cfc_column_energy_overall['std']:.6f}, min={cfc_column_energy_overall['min']:.6f}, max={cfc_column_energy_overall['max']:.6f}, "
         f"n_values={cfc_column_energy_overall['n_values']}"
     )
+    print(
+        "overall gate_proj_column_energy_dispersion: "
+        f"mean={gate_column_energy_dispersion_overall['mean']:.6f}, abs-mean={gate_column_energy_dispersion_overall['abs-mean']:.6f}, std={gate_column_energy_dispersion_overall['std']:.6f}, min={gate_column_energy_dispersion_overall['min']:.6f}, max={gate_column_energy_dispersion_overall['max']:.6f}, "
+        f"n_values={gate_column_energy_dispersion_overall['n_values']}"
+    )
+    print(
+        "overall c_fc_column_energy_dispersion: "
+        f"mean={cfc_column_energy_dispersion_overall['mean']:.6f}, abs-mean={cfc_column_energy_dispersion_overall['abs-mean']:.6f}, std={cfc_column_energy_dispersion_overall['std']:.6f}, min={cfc_column_energy_dispersion_overall['min']:.6f}, max={cfc_column_energy_dispersion_overall['max']:.6f}, "
+        f"n_values={cfc_column_energy_dispersion_overall['n_values']}"
+    )
 
 
 def main() -> None:
@@ -423,10 +478,12 @@ def main() -> None:
         all_cfc_energy_weighted_alignments = []
         all_gate_column_energies = []
         all_cfc_column_energies = []
+        all_gate_column_energy_dispersion = []
+        all_cfc_column_energy_dispersion = []
         for layer_idx in moe_layers:
             log_progress(f"computing alignments for layer {layer_idx}")
-            gate_alignments, gate_energy_weighted_alignments, gate_column_energies = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
-            cfc_alignments, cfc_energy_weighted_alignments, cfc_column_energies = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
+            gate_alignments, gate_energy_weighted_alignments, gate_column_energies, gate_column_energy_dispersion = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
+            cfc_alignments, cfc_energy_weighted_alignments, cfc_column_energies, cfc_column_energy_dispersion = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
             layer_results.append(
                 summarize_layer(
                     layer_idx,
@@ -436,6 +493,8 @@ def main() -> None:
                     cfc_energy_weighted_alignments,
                     gate_column_energies,
                     cfc_column_energies,
+                    gate_column_energy_dispersion,
+                    cfc_column_energy_dispersion,
                 )
             )
             all_gate_alignments.append(gate_alignments)
@@ -444,6 +503,8 @@ def main() -> None:
             all_cfc_energy_weighted_alignments.append(cfc_energy_weighted_alignments)
             all_gate_column_energies.append(gate_column_energies)
             all_cfc_column_energies.append(cfc_column_energies)
+            all_gate_column_energy_dispersion.append(gate_column_energy_dispersion)
+            all_cfc_column_energy_dispersion.append(cfc_column_energy_dispersion)
             log_progress(f"finished layer {layer_idx}")
 
         log_progress("concatenating per-layer alignments")
@@ -453,6 +514,8 @@ def main() -> None:
         overall_cfc_energy_weighted_alignments = torch.cat(all_cfc_energy_weighted_alignments, dim=0)
         overall_gate_column_energies = torch.cat(all_gate_column_energies, dim=0)
         overall_cfc_column_energies = torch.cat(all_cfc_column_energies, dim=0)
+        overall_gate_column_energy_dispersion = torch.cat(all_gate_column_energy_dispersion, dim=0)
+        overall_cfc_column_energy_dispersion = torch.cat(all_cfc_column_energy_dispersion, dim=0)
         log_progress("finished overall alignment aggregation")
 
     result = {
@@ -474,6 +537,8 @@ def main() -> None:
             "c_fc_energy_weighted": summarize_overall(overall_cfc_energy_weighted_alignments),
             "gate_proj_column_energy": summarize_overall(overall_gate_column_energies),
             "c_fc_column_energy": summarize_overall(overall_cfc_column_energies),
+            "gate_proj_column_energy_dispersion": summarize_overall(overall_gate_column_energy_dispersion),
+            "c_fc_column_energy_dispersion": summarize_overall(overall_cfc_column_energy_dispersion),
         },
     }
     log_progress("built result summary")
