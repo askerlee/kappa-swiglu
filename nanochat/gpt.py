@@ -1122,7 +1122,7 @@ class MOELayer(nn.Module):
             ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
             # Weight columns by their current energy without letting the loss reduce
             # itself by shrinking those magnitudes directly.
-            expert_weight_energy = expert_weights.float().square().sum(dim=1).detach()
+            expert_weight_energy = expert_weights.detach().float().square().sum(dim=1)
             expert_weight_energy = expert_weight_energy / expert_weight_energy.mean().clamp_min(1e-12)
             expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
