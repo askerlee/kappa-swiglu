@@ -904,7 +904,7 @@ class Qwen3MLPExperts(nn.Module):
         if not self.use_ortho_x_for_exp_gate:
             gate_input = x
         else:
-            gate_input = ortho_subtract(x, router.w_g.weight.unsqueeze(1), dims=[2])
+            gate_input = ortho_subtract(x, router.w_g.weight.unsqueeze(1), b_discount=0.9, dims=[2])
         gate_out = torch.bmm(gate_input, self.gate_proj)
 
         if self.debug:
