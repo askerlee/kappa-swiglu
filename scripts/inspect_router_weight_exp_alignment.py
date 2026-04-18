@@ -1,10 +1,13 @@
 """Static checkpoint analysis for router-to-expert weight alignments.
 
 This script computes the same per-expert cosine similarity used in
-scripts/base_train.py for each MoE layer in a checkpoint:
+scripts/base_train.py for each MoE layer in a checkpoint, along with
+the corresponding raw dot product scores:
 
     rw_gate_alignment = cos(router.w_g.weight, experts.gate_proj.mean(dim=2))
     rw_cfc_alignment = cos(router.w_g.weight, experts.c_fc.mean(dim=2))
+    rw_gate_dot = router.w_g.weight · experts.gate_proj.mean(dim=2)
+    rw_cfc_dot = router.w_g.weight · experts.c_fc.mean(dim=2)
 
 Examples:
 
@@ -39,7 +42,7 @@ def log_progress(message: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute router-weight alignments against expert gate_proj and c_fc for every MoE layer in a checkpoint."
+        description="Compute cosine and dot-product router-weight alignments against expert gate_proj and c_fc for every MoE layer in a checkpoint."
     )
     parser.add_argument(
         "--source",
@@ -107,7 +110,7 @@ def compute_router_weight_exp_alignment(
     model_data: dict[str, torch.Tensor],
     layer_idx: int,
     expert_weight_name: str,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     router_key = f"transformer.h.{layer_idx}.mlp.router.w_g.weight"
     expert_weight_key = f"transformer.h.{layer_idx}.mlp.experts.{expert_weight_name}"
 
@@ -133,9 +136,10 @@ def compute_router_weight_exp_alignment(
             f"Shape mismatch at layer {layer_idx}: router {tuple(router_weight.shape)} vs mean {expert_weight_name} {tuple(expert_mean_weight.shape)}"
         )
 
-    numerator = (expert_mean_weight * router_weight).sum(dim=1)
+    dot_products = (expert_mean_weight * router_weight).sum(dim=1)
     denominator = router_weight.norm(dim=1) * expert_mean_weight.norm(dim=1)
-    return numerator / (denominator + 1e-10)
+    cosine_alignments = dot_products / (denominator + 1e-10)
+    return cosine_alignments, dot_products
 
 
 def summarize_values(alignments: torch.Tensor) -> dict[str, Any]:
@@ -164,9 +168,17 @@ def compute_alignment_correlation(lhs: torch.Tensor, rhs: torch.Tensor) -> float
     return float((lhs_centered * rhs_centered).sum().item() / denominator.item())
 
 
-def summarize_layer(layer_idx: int, gate_alignments: torch.Tensor, cfc_alignments: torch.Tensor) -> dict[str, Any]:
+def summarize_layer(
+    layer_idx: int,
+    gate_alignments: torch.Tensor,
+    cfc_alignments: torch.Tensor,
+    gate_dot_products: torch.Tensor,
+    cfc_dot_products: torch.Tensor,
+) -> dict[str, Any]:
     gate_summary = summarize_values(gate_alignments)
     cfc_summary = summarize_values(cfc_alignments)
+    gate_dot_summary = summarize_values(gate_dot_products)
+    cfc_dot_summary = summarize_values(cfc_dot_products)
     if gate_summary["n_experts"] != cfc_summary["n_experts"]:
         raise ValueError(
             f"Expert count mismatch at layer {layer_idx}: gate_proj={gate_summary['n_experts']} c_fc={cfc_summary['n_experts']}"
@@ -175,8 +187,11 @@ def summarize_layer(layer_idx: int, gate_alignments: torch.Tensor, cfc_alignment
         "layer": layer_idx,
         "n_experts": gate_summary["n_experts"],
         "gate_cfc_correlation": compute_alignment_correlation(gate_alignments, cfc_alignments),
+        "gate_cfc_dot_correlation": compute_alignment_correlation(gate_dot_products, cfc_dot_products),
         "gate_proj": gate_summary,
         "c_fc": cfc_summary,
+        "gate_proj_dot": gate_dot_summary,
+        "c_fc_dot": cfc_dot_summary,
     }
 
 
@@ -200,12 +215,16 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
     print(f"num_moe_layers: {len(result['layers'])}")
     print()
     print("gate_proj vs c_fc correlation")
-    print(f"{'layer':>5}  {'corr':>10}")
+    print(f"{'layer':>5}  {'cos-corr':>10}  {'dot-corr':>10}")
     for layer_result in result["layers"]:
-        print(f"{layer_result['layer']:5d}  {layer_result['gate_cfc_correlation']:10.6f}")
+        print(
+            f"{layer_result['layer']:5d}  "
+            f"{layer_result['gate_cfc_correlation']:10.6f}  "
+            f"{layer_result['gate_cfc_dot_correlation']:10.6f}"
+        )
 
     print()
-    print("gate_proj alignment")
+    print("gate_proj cosine alignment")
     print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'abs-mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
     for layer_result in result["layers"]:
         gate_result = layer_result["gate_proj"]
@@ -223,7 +242,7 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
             print(f"  gate_proj experts[{layer_result['layer']}]: [{values}]")
 
     print()
-    print("c_fc alignment")
+    print("c_fc cosine alignment")
     print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>10}  {'abs-mean':>10}  {'std':>10}  {'min':>10}  {'max':>10}")
     for layer_result in result["layers"]:
         cfc_result = layer_result["c_fc"]
@@ -240,10 +259,52 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
             values = ", ".join(f"{value:.6f}" for value in cfc_result["alignments"])
             print(f"  c_fc experts[{layer_result['layer']}]: [{values}]")
 
+    print()
+    print("gate_proj dot product alignment")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
+    for layer_result in result["layers"]:
+        gate_result = layer_result["gate_proj_dot"]
+        print(
+            f"{layer_result['layer']:5d}  "
+            f"{layer_result['n_experts']:5d}  "
+            f"{gate_result['mean']:12.6f}  "
+            f"{gate_result['abs-mean']:12.6f}  "
+            f"{gate_result['std']:12.6f}  "
+            f"{gate_result['min']:12.6f}  "
+            f"{gate_result['max']:12.6f}"
+        )
+        if print_expert_alignments:
+            values = ", ".join(f"{value:.6f}" for value in gate_result["alignments"])
+            print(f"  gate_proj_dot experts[{layer_result['layer']}]: [{values}]")
+
+    print()
+    print("c_fc dot product alignment")
+    print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
+    for layer_result in result["layers"]:
+        cfc_result = layer_result["c_fc_dot"]
+        print(
+            f"{layer_result['layer']:5d}  "
+            f"{layer_result['n_experts']:5d}  "
+            f"{cfc_result['mean']:12.6f}  "
+            f"{cfc_result['abs-mean']:12.6f}  "
+            f"{cfc_result['std']:12.6f}  "
+            f"{cfc_result['min']:12.6f}  "
+            f"{cfc_result['max']:12.6f}"
+        )
+        if print_expert_alignments:
+            values = ", ".join(f"{value:.6f}" for value in cfc_result["alignments"])
+            print(f"  c_fc_dot experts[{layer_result['layer']}]: [{values}]")
+
     gate_overall = result["overall"]["gate_proj"]
     cfc_overall = result["overall"]["c_fc"]
+    gate_dot_overall = result["overall"]["gate_proj_dot"]
+    cfc_dot_overall = result["overall"]["c_fc_dot"]
     print()
-    print(f"overall gate_proj_vs_c_fc correlation: {result['overall']['gate_cfc_correlation']:.6f}")
+    print(
+        "overall gate_proj_vs_c_fc correlation: "
+        f"cos={result['overall']['gate_cfc_correlation']:.6f}, "
+        f"dot={result['overall']['gate_cfc_dot_correlation']:.6f}"
+    )
     print(
         "overall gate_proj: "
         f"mean={gate_overall['mean']:.6f}, abs-mean={gate_overall['abs-mean']:.6f}, std={gate_overall['std']:.6f}, min={gate_overall['min']:.6f}, max={gate_overall['max']:.6f}, "
@@ -253,6 +314,16 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         "overall c_fc: "
         f"mean={cfc_overall['mean']:.6f}, abs-mean={cfc_overall['abs-mean']:.6f}, std={cfc_overall['std']:.6f}, min={cfc_overall['min']:.6f}, max={cfc_overall['max']:.6f}, "
         f"n_values={cfc_overall['n_values']}"
+    )
+    print(
+        "overall gate_proj_dot: "
+        f"mean={gate_dot_overall['mean']:.6f}, abs-mean={gate_dot_overall['abs-mean']:.6f}, std={gate_dot_overall['std']:.6f}, min={gate_dot_overall['min']:.6f}, max={gate_dot_overall['max']:.6f}, "
+        f"n_values={gate_dot_overall['n_values']}"
+    )
+    print(
+        "overall c_fc_dot: "
+        f"mean={cfc_dot_overall['mean']:.6f}, abs-mean={cfc_dot_overall['abs-mean']:.6f}, std={cfc_dot_overall['std']:.6f}, min={cfc_dot_overall['min']:.6f}, max={cfc_dot_overall['max']:.6f}, "
+        f"n_values={cfc_dot_overall['n_values']}"
     )
 
 
@@ -281,18 +352,24 @@ def main() -> None:
         layer_results = []
         all_gate_alignments = []
         all_cfc_alignments = []
+        all_gate_dot_products = []
+        all_cfc_dot_products = []
         for layer_idx in moe_layers:
             log_progress(f"computing alignments for layer {layer_idx}")
-            gate_alignments = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
-            cfc_alignments = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
-            layer_results.append(summarize_layer(layer_idx, gate_alignments, cfc_alignments))
+            gate_alignments, gate_dot_products = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
+            cfc_alignments, cfc_dot_products = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
+            layer_results.append(summarize_layer(layer_idx, gate_alignments, cfc_alignments, gate_dot_products, cfc_dot_products))
             all_gate_alignments.append(gate_alignments)
             all_cfc_alignments.append(cfc_alignments)
+            all_gate_dot_products.append(gate_dot_products)
+            all_cfc_dot_products.append(cfc_dot_products)
             log_progress(f"finished layer {layer_idx}")
 
         log_progress("concatenating per-layer alignments")
         overall_gate_alignments = torch.cat(all_gate_alignments, dim=0)
         overall_cfc_alignments = torch.cat(all_cfc_alignments, dim=0)
+        overall_gate_dot_products = torch.cat(all_gate_dot_products, dim=0)
+        overall_cfc_dot_products = torch.cat(all_cfc_dot_products, dim=0)
         log_progress("finished overall alignment aggregation")
 
     result = {
@@ -304,8 +381,11 @@ def main() -> None:
         "layers": layer_results,
         "overall": {
             "gate_cfc_correlation": compute_alignment_correlation(overall_gate_alignments, overall_cfc_alignments),
+            "gate_cfc_dot_correlation": compute_alignment_correlation(overall_gate_dot_products, overall_cfc_dot_products),
             "gate_proj": summarize_overall(overall_gate_alignments),
             "c_fc": summarize_overall(overall_cfc_alignments),
+            "gate_proj_dot": summarize_overall(overall_gate_dot_products),
+            "c_fc_dot": summarize_overall(overall_cfc_dot_products),
         },
     }
     log_progress("built result summary")
