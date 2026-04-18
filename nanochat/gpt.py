@@ -1120,10 +1120,16 @@ class MOELayer(nn.Module):
         for target_name in target_names:
             expert_weights = getattr(self.experts, target_name)
             ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
+            # Weight columns by their current energy without letting the loss reduce
+            # itself by shrinking those magnitudes directly.
+            expert_weight_energy = expert_weights.float().square().sum(dim=1).detach()
+            expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
-            ortho_losses_by_target[target_name] = (ortho_losses_signed.square() * ortho_losses_weights).sum(dim=1).mean()
+            ortho_losses_by_target[target_name] = (
+                ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
+            ).sum(dim=1).mean()
 
         if self.router_ortho_loss_target == 'both':
             # NOTE: 'c_fc' loss is not scaled down, but 'gate_proj' loss is halved.
