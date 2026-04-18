@@ -78,6 +78,8 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0,
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
 parser.add_argument("--router-ortho-loss-target", type=str, default=None, choices=["gate_proj", "c_fc", "both"],
                     help="which expert projection(s) to orthogonalize against router w_g (default: inherit from saved config of base model)")
+parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=None,
+                    help="subtract each expert's router w_g row from expert gate inputs before gate_proj (default: inherit from saved config of base model)")
 # If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
 # If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
@@ -208,6 +210,18 @@ model.set_router_ortho_loss_target(args.router_ortho_loss_target)
 user_config["router_ortho_loss_target"] = args.router_ortho_loss_target
 if not use_dummy_wandb:
     wandb_run.config.update({"router_ortho_loss_target": args.router_ortho_loss_target}, allow_val_change=True)
+if args.use_ortho_x_for_exp_gate is None:
+    args.use_ortho_x_for_exp_gate = bool(getattr(model.config, "use_ortho_x_for_exp_gate", False))
+    print0(f"Inherited use_ortho_x_for_exp_gate: {args.use_ortho_x_for_exp_gate}")
+else:
+    print0(f"Specified use_ortho_x_for_exp_gate: {args.use_ortho_x_for_exp_gate}")
+model.set_use_ortho_x_for_exp_gate(args.use_ortho_x_for_exp_gate)
+user_config["use_ortho_x_for_exp_gate"] = args.use_ortho_x_for_exp_gate
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {"use_ortho_x_for_exp_gate": args.use_ortho_x_for_exp_gate},
+        allow_val_change=True,
+    )
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)

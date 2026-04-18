@@ -867,18 +867,22 @@ class Qwen3MLPExperts(nn.Module):
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
+        self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
         self._expert_update_scale = None
-        # Weak reference to the router for debug only. Avoid registering it as a child module.
-        self._debug_router_ref = None
+        # Weak reference to the router. Avoid registering it as a child module.
+        self._router_ref = None
 
-    def set_debug_router(self, router):
-        self._debug_router_ref = weakref.ref(router)
+    def set_router(self, router):
+        self._router_ref = weakref.ref(router)
 
-    def _get_debug_router(self):
-        assert self._debug_router_ref is not None, "Debug router reference is not set"
-        router = self._debug_router_ref()
-        assert router is not None, "Debug router reference is no longer valid"
+    def _get_router(self):
+        assert self._router_ref is not None, "Router reference is not set"
+        router = self._router_ref()
+        assert router is not None, "Router reference is no longer valid"
         return router
+
+    def set_use_ortho_x_for_exp_gate(self, enabled):
+        self.use_ortho_x_for_exp_gate = bool(enabled)
 
     def get_param_update_hooks(self):
         hooks = {}
@@ -895,14 +899,18 @@ class Qwen3MLPExperts(nn.Module):
         self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
-        gate_out = torch.bmm(x, self.gate_proj)
+        router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
+
+        if not self.use_ortho_x_for_exp_gate:
+            gate_input = x
+        else:
+            gate_input = ortho_subtract(x, router.w_g.weight.unsqueeze(1), dims=[2])
+        gate_out = torch.bmm(gate_input, self.gate_proj)
 
         if self.debug:
-            router = self._get_debug_router()
             gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1), dims=[1])
             gate_out_ortho = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho)
-
 
         if self.training and self.use_experts_gate_output_loss:
             # experts_gate_output_loss_input_grad_scale is hardcoded as 0.1
@@ -910,7 +918,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_out_gs = gate_out
             else:
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
-                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, x, self.gate_proj, alpha_t)
+                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, gate_input, self.gate_proj, alpha_t)
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
@@ -941,8 +949,7 @@ class MOELayer(nn.Module):
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
             self.experts = Qwen3MLPExperts(config)
             self.use_qwen3_moe_mlp = True
-            if self.debug:
-                self.experts.set_debug_router(self.router)
+            self.experts.set_router(self.router)
         else:
             self.experts = MLPExperts(config)
             self.use_qwen3_moe_mlp = False
@@ -969,6 +976,10 @@ class MOELayer(nn.Module):
 
     def set_router_ortho_loss_target(self, target):
         self.router_ortho_loss_target = target
+
+    def set_use_ortho_x_for_exp_gate(self, enabled):
+        if hasattr(self.experts, 'set_use_ortho_x_for_exp_gate'):
+            self.experts.set_use_ortho_x_for_exp_gate(enabled)
 
     def get_router_ortho_loss_name(self):
         return get_router_ortho_loss_name(self.router_ortho_loss_target)
@@ -1090,8 +1101,8 @@ class MOELayer(nn.Module):
         if MANAGER.collect_load_balancing_stats:
             slot_served = (rank < exp_capacity)                     # [B*T, k]
             # Since k=2, drop_rate_per_k = [drop_rate_0_step, drop_rate_1_step].
-            # Entry 0 means: fraction of tokens whose top-1 expert assignment overflowed capacity.
-            # Entry 1 means: fraction of tokens whose top-2 expert assignment overflowed capacity.
+            # drop_rate_0_step: fraction of tokens whose top-1 expert assignment overflowed capacity.
+            # drop_rate_1_step: fraction of tokens whose top-2 expert assignment overflowed capacity.
             #LINK #routing_ranks
             # for top_k = 2:
             # if top-1 and top-2 both fit, the token is sent to both experts
@@ -1108,6 +1119,7 @@ class MOELayer(nn.Module):
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
+            # new_zeros(()) returns a zero scalar.
             zero = self.experts.c_fc.new_zeros(())
             return zero, {}
 
@@ -1518,6 +1530,14 @@ class GPT(nn.Module):
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 mlp.set_router_ortho_loss_target(target)
+
+    def set_use_ortho_x_for_exp_gate(self, enabled):
+        enabled = bool(enabled)
+        self.config.use_ortho_x_for_exp_gate = enabled
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.set_use_ortho_x_for_exp_gate(enabled)
 
     def get_router_ortho_loss_name(self):
         return get_router_ortho_loss_name(getattr(self.config, 'router_ortho_loss_target', 'gate_proj'))
