@@ -38,7 +38,7 @@ class GPTConfig:
         use_experts_dyn_grad_scale: bool = False,  # whether to apply the derived router grad scaling to expert weights
         use_cumulative_dyn_grad_scale: bool = False,  # Enables moving-average smoothing for per-expert dynamic grad scales
         dyn_grad_scale_ma_window_size: int = 128,  # Number of recent routing steps used in moving-average smoothing
-        router_ortho_loss_weight: float = 1e-4,  # default weight for orthogonality loss
+        router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
