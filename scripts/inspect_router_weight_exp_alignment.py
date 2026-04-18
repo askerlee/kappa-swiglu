@@ -2,12 +2,13 @@
 
 This script computes the same per-expert cosine similarity used in
 scripts/base_train.py for each MoE layer in a checkpoint, along with
-the corresponding raw dot product scores:
+an energy-weighted router/expert correlation that weights each expert
+column by its squared norm:
 
     rw_gate_alignment = cos(router.w_g.weight, experts.gate_proj.mean(dim=2))
     rw_cfc_alignment = cos(router.w_g.weight, experts.c_fc.mean(dim=2))
-    rw_gate_dot = router.w_g.weight · experts.gate_proj.mean(dim=2)
-    rw_cfc_dot = router.w_g.weight · experts.c_fc.mean(dim=2)
+    rw_gate_energy_weighted = sum_j cos(router_i, gate_proj_i[:, j]) * ||gate_proj_i[:, j]||^2 / sum_j ||gate_proj_i[:, j]||^2
+    rw_cfc_energy_weighted = sum_j cos(router_i, c_fc_i[:, j]) * ||c_fc_i[:, j]||^2 / sum_j ||c_fc_i[:, j]||^2
 
 Examples:
 
@@ -24,6 +25,7 @@ import re
 from typing import Any
 
 import torch
+from torch.nn import functional as F
 
 from nanochat.checkpoint_manager import find_largest_model, find_last_step, load_checkpoint
 from nanochat.common import get_base_dir
@@ -42,7 +44,7 @@ def log_progress(message: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute cosine and dot-product router-weight alignments against expert gate_proj and c_fc for every MoE layer in a checkpoint."
+        description="Compute cosine and energy-weighted router-weight alignments against expert gate_proj and c_fc for every MoE layer in a checkpoint."
     )
     parser.add_argument(
         "--source",
@@ -139,7 +141,14 @@ def compute_router_weight_exp_alignment(
     dot_products = (expert_mean_weight * router_weight).sum(dim=1)
     denominator = router_weight.norm(dim=1) * expert_mean_weight.norm(dim=1)
     cosine_alignments = dot_products / (denominator + 1e-10)
-    return cosine_alignments, dot_products
+
+    router_weight_expanded = router_weight.unsqueeze(-1)
+    column_cosine_alignments = F.cosine_similarity(router_weight_expanded, expert_weight, dim=1, eps=1e-10)
+    column_energies = expert_weight.square().sum(dim=1)
+    energy_weighted_alignments = (column_cosine_alignments * column_energies).sum(dim=1) / (
+        column_energies.sum(dim=1).clamp_min(1e-10)
+    )
+    return cosine_alignments, energy_weighted_alignments
 
 
 def summarize_values(alignments: torch.Tensor) -> dict[str, Any]:
@@ -172,13 +181,13 @@ def summarize_layer(
     layer_idx: int,
     gate_alignments: torch.Tensor,
     cfc_alignments: torch.Tensor,
-    gate_dot_products: torch.Tensor,
-    cfc_dot_products: torch.Tensor,
+    gate_energy_weighted_alignments: torch.Tensor,
+    cfc_energy_weighted_alignments: torch.Tensor,
 ) -> dict[str, Any]:
     gate_summary = summarize_values(gate_alignments)
     cfc_summary = summarize_values(cfc_alignments)
-    gate_dot_summary = summarize_values(gate_dot_products)
-    cfc_dot_summary = summarize_values(cfc_dot_products)
+    gate_energy_weighted_summary = summarize_values(gate_energy_weighted_alignments)
+    cfc_energy_weighted_summary = summarize_values(cfc_energy_weighted_alignments)
     if gate_summary["n_experts"] != cfc_summary["n_experts"]:
         raise ValueError(
             f"Expert count mismatch at layer {layer_idx}: gate_proj={gate_summary['n_experts']} c_fc={cfc_summary['n_experts']}"
@@ -187,11 +196,14 @@ def summarize_layer(
         "layer": layer_idx,
         "n_experts": gate_summary["n_experts"],
         "gate_cfc_correlation": compute_alignment_correlation(gate_alignments, cfc_alignments),
-        "gate_cfc_dot_correlation": compute_alignment_correlation(gate_dot_products, cfc_dot_products),
+        "gate_cfc_energy_weighted_correlation": compute_alignment_correlation(
+            gate_energy_weighted_alignments,
+            cfc_energy_weighted_alignments,
+        ),
         "gate_proj": gate_summary,
         "c_fc": cfc_summary,
-        "gate_proj_dot": gate_dot_summary,
-        "c_fc_dot": cfc_dot_summary,
+        "gate_proj_energy_weighted": gate_energy_weighted_summary,
+        "c_fc_energy_weighted": cfc_energy_weighted_summary,
     }
 
 
@@ -215,12 +227,12 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
     print(f"num_moe_layers: {len(result['layers'])}")
     print()
     print("gate_proj vs c_fc correlation")
-    print(f"{'layer':>5}  {'cos-corr':>10}  {'dot-corr':>10}")
+    print(f"{'layer':>5}  {'cos-corr':>10}  {'energy-corr':>12}")
     for layer_result in result["layers"]:
         print(
             f"{layer_result['layer']:5d}  "
             f"{layer_result['gate_cfc_correlation']:10.6f}  "
-            f"{layer_result['gate_cfc_dot_correlation']:10.6f}"
+            f"{layer_result['gate_cfc_energy_weighted_correlation']:12.6f}"
         )
 
     print()
@@ -260,10 +272,10 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
             print(f"  c_fc experts[{layer_result['layer']}]: [{values}]")
 
     print()
-    print("gate_proj dot product alignment")
+    print("gate_proj energy-weighted alignment")
     print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
     for layer_result in result["layers"]:
-        gate_result = layer_result["gate_proj_dot"]
+        gate_result = layer_result["gate_proj_energy_weighted"]
         print(
             f"{layer_result['layer']:5d}  "
             f"{layer_result['n_experts']:5d}  "
@@ -275,13 +287,13 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         )
         if print_expert_alignments:
             values = ", ".join(f"{value:.6f}" for value in gate_result["alignments"])
-            print(f"  gate_proj_dot experts[{layer_result['layer']}]: [{values}]")
+            print(f"  gate_proj_energy_weighted experts[{layer_result['layer']}]: [{values}]")
 
     print()
-    print("c_fc dot product alignment")
+    print("c_fc energy-weighted alignment")
     print(f"{'layer':>5}  {'n_exp':>5}  {'mean':>12}  {'abs-mean':>12}  {'std':>12}  {'min':>12}  {'max':>12}")
     for layer_result in result["layers"]:
-        cfc_result = layer_result["c_fc_dot"]
+        cfc_result = layer_result["c_fc_energy_weighted"]
         print(
             f"{layer_result['layer']:5d}  "
             f"{layer_result['n_experts']:5d}  "
@@ -293,17 +305,17 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         )
         if print_expert_alignments:
             values = ", ".join(f"{value:.6f}" for value in cfc_result["alignments"])
-            print(f"  c_fc_dot experts[{layer_result['layer']}]: [{values}]")
+            print(f"  c_fc_energy_weighted experts[{layer_result['layer']}]: [{values}]")
 
     gate_overall = result["overall"]["gate_proj"]
     cfc_overall = result["overall"]["c_fc"]
-    gate_dot_overall = result["overall"]["gate_proj_dot"]
-    cfc_dot_overall = result["overall"]["c_fc_dot"]
+    gate_energy_weighted_overall = result["overall"]["gate_proj_energy_weighted"]
+    cfc_energy_weighted_overall = result["overall"]["c_fc_energy_weighted"]
     print()
     print(
         "overall gate_proj_vs_c_fc correlation: "
         f"cos={result['overall']['gate_cfc_correlation']:.6f}, "
-        f"dot={result['overall']['gate_cfc_dot_correlation']:.6f}"
+        f"energy={result['overall']['gate_cfc_energy_weighted_correlation']:.6f}"
     )
     print(
         "overall gate_proj: "
@@ -316,14 +328,14 @@ def print_summary(result: dict[str, Any], print_expert_alignments: bool) -> None
         f"n_values={cfc_overall['n_values']}"
     )
     print(
-        "overall gate_proj_dot: "
-        f"mean={gate_dot_overall['mean']:.6f}, abs-mean={gate_dot_overall['abs-mean']:.6f}, std={gate_dot_overall['std']:.6f}, min={gate_dot_overall['min']:.6f}, max={gate_dot_overall['max']:.6f}, "
-        f"n_values={gate_dot_overall['n_values']}"
+        "overall gate_proj_energy_weighted: "
+        f"mean={gate_energy_weighted_overall['mean']:.6f}, abs-mean={gate_energy_weighted_overall['abs-mean']:.6f}, std={gate_energy_weighted_overall['std']:.6f}, min={gate_energy_weighted_overall['min']:.6f}, max={gate_energy_weighted_overall['max']:.6f}, "
+        f"n_values={gate_energy_weighted_overall['n_values']}"
     )
     print(
-        "overall c_fc_dot: "
-        f"mean={cfc_dot_overall['mean']:.6f}, abs-mean={cfc_dot_overall['abs-mean']:.6f}, std={cfc_dot_overall['std']:.6f}, min={cfc_dot_overall['min']:.6f}, max={cfc_dot_overall['max']:.6f}, "
-        f"n_values={cfc_dot_overall['n_values']}"
+        "overall c_fc_energy_weighted: "
+        f"mean={cfc_energy_weighted_overall['mean']:.6f}, abs-mean={cfc_energy_weighted_overall['abs-mean']:.6f}, std={cfc_energy_weighted_overall['std']:.6f}, min={cfc_energy_weighted_overall['min']:.6f}, max={cfc_energy_weighted_overall['max']:.6f}, "
+        f"n_values={cfc_energy_weighted_overall['n_values']}"
     )
 
 
@@ -352,24 +364,32 @@ def main() -> None:
         layer_results = []
         all_gate_alignments = []
         all_cfc_alignments = []
-        all_gate_dot_products = []
-        all_cfc_dot_products = []
+        all_gate_energy_weighted_alignments = []
+        all_cfc_energy_weighted_alignments = []
         for layer_idx in moe_layers:
             log_progress(f"computing alignments for layer {layer_idx}")
-            gate_alignments, gate_dot_products = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
-            cfc_alignments, cfc_dot_products = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
-            layer_results.append(summarize_layer(layer_idx, gate_alignments, cfc_alignments, gate_dot_products, cfc_dot_products))
+            gate_alignments, gate_energy_weighted_alignments = compute_router_weight_exp_alignment(model_data, layer_idx, "gate_proj")
+            cfc_alignments, cfc_energy_weighted_alignments = compute_router_weight_exp_alignment(model_data, layer_idx, "c_fc")
+            layer_results.append(
+                summarize_layer(
+                    layer_idx,
+                    gate_alignments,
+                    cfc_alignments,
+                    gate_energy_weighted_alignments,
+                    cfc_energy_weighted_alignments,
+                )
+            )
             all_gate_alignments.append(gate_alignments)
             all_cfc_alignments.append(cfc_alignments)
-            all_gate_dot_products.append(gate_dot_products)
-            all_cfc_dot_products.append(cfc_dot_products)
+            all_gate_energy_weighted_alignments.append(gate_energy_weighted_alignments)
+            all_cfc_energy_weighted_alignments.append(cfc_energy_weighted_alignments)
             log_progress(f"finished layer {layer_idx}")
 
         log_progress("concatenating per-layer alignments")
         overall_gate_alignments = torch.cat(all_gate_alignments, dim=0)
         overall_cfc_alignments = torch.cat(all_cfc_alignments, dim=0)
-        overall_gate_dot_products = torch.cat(all_gate_dot_products, dim=0)
-        overall_cfc_dot_products = torch.cat(all_cfc_dot_products, dim=0)
+        overall_gate_energy_weighted_alignments = torch.cat(all_gate_energy_weighted_alignments, dim=0)
+        overall_cfc_energy_weighted_alignments = torch.cat(all_cfc_energy_weighted_alignments, dim=0)
         log_progress("finished overall alignment aggregation")
 
     result = {
@@ -381,11 +401,14 @@ def main() -> None:
         "layers": layer_results,
         "overall": {
             "gate_cfc_correlation": compute_alignment_correlation(overall_gate_alignments, overall_cfc_alignments),
-            "gate_cfc_dot_correlation": compute_alignment_correlation(overall_gate_dot_products, overall_cfc_dot_products),
+            "gate_cfc_energy_weighted_correlation": compute_alignment_correlation(
+                overall_gate_energy_weighted_alignments,
+                overall_cfc_energy_weighted_alignments,
+            ),
             "gate_proj": summarize_overall(overall_gate_alignments),
             "c_fc": summarize_overall(overall_cfc_alignments),
-            "gate_proj_dot": summarize_overall(overall_gate_dot_products),
-            "c_fc_dot": summarize_overall(overall_cfc_dot_products),
+            "gate_proj_energy_weighted": summarize_overall(overall_gate_energy_weighted_alignments),
+            "c_fc_energy_weighted": summarize_overall(overall_cfc_energy_weighted_alignments),
         },
     }
     log_progress("built result summary")
