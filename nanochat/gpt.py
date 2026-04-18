@@ -95,7 +95,29 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
         return result, w_optimal
     else:
         return result
-    
+
+# Revised from RevGrad, by removing the grad negation.
+class ScaleGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_, alpha_, debug=False):
+        ctx.save_for_backward(alpha_, debug)
+        output = input_
+        if debug:
+            print(f"input: {input_.abs().mean().detach().item()}")
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        # saved_tensors returns a tuple of tensors.
+        alpha_, debug = ctx.saved_tensors
+        if ctx.needs_input_grad[0]:
+            grad_output2 = grad_output * alpha_
+            if debug:
+                print(f"grad_output2: {grad_output2.abs().mean().detach().item()}")
+        else:
+            grad_output2 = None
+        return grad_output2, None, None
+
 # NOTE: alpha is only applied to grad_left, the left leaf node
 class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -882,7 +904,12 @@ class Qwen3MLPExperts(nn.Module):
         if not self.use_ortho_x_for_exp_gate:
             gate_input = x
         else:
-            gate_input = ortho_subtract(x, router.w_g.weight.detach().unsqueeze(1), dims=[2])
+            router_wg_for_gate = ScaleGrad.apply(
+                router.w_g.weight,
+                torch.as_tensor(0.1, device=router.w_g.weight.device, dtype=router.w_g.weight.dtype),
+                torch.tensor(False, device=router.w_g.weight.device, dtype=torch.bool),
+            )
+            gate_input = ortho_subtract(x, router_wg_for_gate.unsqueeze(1), dims=[2])
         gate_out = torch.bmm(gate_input, self.gate_proj)
 
         if self.debug:
