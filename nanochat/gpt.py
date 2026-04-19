@@ -777,7 +777,7 @@ class Qwen3MLPExperts(nn.Module):
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size, gate_proj_m]
-        # gate_out: [n_exp, capacity, intermediate_size]
+        # gate_out_acts: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
 
         if not self.use_ortho_x_for_exp_gate:
@@ -795,25 +795,22 @@ class Qwen3MLPExperts(nn.Module):
                 dims=[2],
             )
         gate_out_raw = torch.einsum('ech,ehim->ecim', gate_input, self.gate_proj)
-        gate_out = gate_out_raw.mean(dim=-1)
+        gate_out_acts = self.act_fn(gate_out_raw).mean(dim=-1)
 
         if self.debug:
             gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1).unsqueeze(-1), dims=[1])
-            gate_out_ortho = torch.einsum('ech,ehim->ecim', x, gate_proj_ortho).mean(dim=-1)
-            gate_out_ortho_acts = self.act_fn(gate_out_ortho)
+            gate_out_ortho_raw = torch.einsum('ech,ehim->ecim', x, gate_proj_ortho)
+            gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw).mean(dim=-1)
 
+        # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
             # experts_gate_output_loss_input_grad_scale is hardcoded as 0.1
             if self.experts_gate_output_loss_input_grad_scale == 1:
-                gate_out_gs = gate_out
+                gate_out_gs = gate_out_acts
             else:
-                alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
-                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(
-                    gate_out,
-                    gate_input,
-                    self.gate_proj.mean(dim=-1),
-                    alpha_t,
-                )
+                alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out_acts.device, dtype=gate_out_acts.dtype)
+                gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
+                gate_out_gs = self.act_fn(torch.einsum('ech,ehim->ecim', gate_input_gs, self.gate_proj)).mean(dim=-1)
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
@@ -823,11 +820,10 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("experts_gate_output_loss", experts_gate_output_loss)
 
         fc_out = torch.bmm(x, self.c_fc)
-        x = self.act_fn(gate_out) * fc_out
+        x = gate_out_acts * fc_out
         proj_out = torch.bmm(x, self.c_proj)
 
         if self.debug:
-            gate_out_acts = self.act_fn(gate_out)
             # ortho_diffs: [n_exp, capacity].
             # ortho_diffs are almost negative at every element, -0.03 ~ -0.08.
             # Negative values mean the current router-aligned component of gate_proj

@@ -29,7 +29,7 @@ class GPTConfig:
         use_ortho_x_for_exp_gate: bool = False,  # subtract router.w_g from expert gate inputs before gate_proj
         ortho_x_router_wg_coeff: float = 1.0,  # b_discount coefficient for router.w_g subtraction used by expert gate orthogonalization
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
-        use_experts_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
+        use_experts_gate_output_loss: bool = False,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.

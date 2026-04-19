@@ -4,7 +4,7 @@ from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLPExperts
 
 
-def test_exp_gate_proj_m_means_before_fc_gating():
+def test_exp_gate_proj_m_means_activated_gate_before_fc_gating():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -22,12 +22,12 @@ def test_exp_gate_proj_m_means_before_fc_gating():
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
         raw_gate_out = torch.einsum('ech,ehim->ecim', x, experts.gate_proj)
-        expected_gate_out = raw_gate_out.mean(dim=-1)
-        actual_gate_out = raw_gate_out.mean(dim=-1)
-        torch.testing.assert_close(actual_gate_out, expected_gate_out)
+        expected_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1)
+        actual_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1)
+        torch.testing.assert_close(actual_gate_out_acts, expected_gate_out_acts)
 
         fc_out = torch.bmm(x, experts.c_fc)
-        expected = torch.bmm(experts.act_fn(expected_gate_out) * fc_out, experts.c_proj)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 
     actual = experts(x)
     torch.testing.assert_close(actual, expected)
