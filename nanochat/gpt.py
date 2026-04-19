@@ -1523,19 +1523,29 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 mlp.update_aux_free_load_balancing()
 
-    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, 
-                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
+    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0,
+                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
+                        exp_gate_proj_weight_decay_frac=0.1):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
         # Separate out all parameters into groups
         matrix_params = list(self.transformer.h.parameters())
+        gate_factor_param_ids = set()
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            experts = getattr(mlp, 'experts', None)
+            if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_rank > 0:
+                gate_factor_param_ids.add(id(experts.gate_proj_a))
+                gate_factor_param_ids.add(id(experts.gate_proj_b))
+        gate_factor_params = [param for param in matrix_params if id(param) in gate_factor_param_ids]
+        matrix_params = [param for param in matrix_params if id(param) not in gate_factor_param_ids]
         value_embeds_params = list(self.value_embeds.parameters())
         embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params)
+        assert len(list(self.parameters())) == len(matrix_params) + len(gate_factor_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params)
 
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (tuned for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -1561,11 +1571,25 @@ class GPT(nn.Module):
         # Muon groups (matrix params, grouped by shape for stacking)
         muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"Muon LR scaling: {muon_lr_scaling}")
+        gate_factor_weight_decay = weight_decay * float(exp_gate_proj_weight_decay_frac)
+        if gate_factor_params and gate_factor_weight_decay != weight_decay:
+            print0(
+                f"Using reduced weight decay {gate_factor_weight_decay:.6f} for expert gate factors "
+                f"(fraction {float(exp_gate_proj_weight_decay_frac):.4f} of matrix weight decay)"
+            )
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                chunk_size=2,
+                match_rms_adamw=muon_match_rms_adamw,
+            ))
+        for shape in sorted({p.shape for p in gate_factor_params}):
+            group_params = [p for p in gate_factor_params if p.shape == shape]
+            param_groups.append(dict(
+                kind='muon', params=group_params, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=gate_factor_weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))

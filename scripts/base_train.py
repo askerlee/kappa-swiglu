@@ -221,6 +221,8 @@ parser.add_argument("--total-batch-size", type=int, default=-1, help="total batc
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for the Muon optimizer (for weights)")
+parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.1,
+                    help="fraction of Muon weight decay to apply to low-rank expert gate factors gate_proj_a/gate_proj_b")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
@@ -647,6 +649,7 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
+    exp_gate_proj_weight_decay_frac=args.exp_gate_proj_weight_decay_frac,
 )
 
 if resuming and load_optimizer_state:

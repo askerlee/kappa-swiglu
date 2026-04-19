@@ -1,5 +1,7 @@
 import torch
 
+from nanochat.configuration_nanomoe_gpt import GPTConfig
+from nanochat.gpt import GPT
 from nanochat.optim import MuonAdamW
 
 
@@ -106,3 +108,46 @@ def test_muon_chunk_size_one_updates_all_params():
 
     for param, param_before in zip(params, before):
         assert not torch.allclose(param, param_before)
+
+
+def test_setup_optimizer_uses_reduced_weight_decay_for_low_rank_gate_factors():
+    config = GPTConfig(
+        n_layer=3,
+        moe_start_layer=1,
+        stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        exp_gate_proj_rank=3,
+        exp_gate_proj_m=2,
+    )
+    model = GPT(config)
+
+    optimizer = model.setup_optimizer(
+        matrix_lr=0.01,
+        weight_decay=0.2,
+        exp_gate_proj_weight_decay_frac=0.25,
+    )
+
+    gate_factor_params = set()
+    for block in model.transformer.h:
+        experts = getattr(getattr(block, 'mlp', None), 'experts', None)
+        if experts is not None and hasattr(experts, 'gate_proj_a'):
+            gate_factor_params.add(experts.gate_proj_a)
+            gate_factor_params.add(experts.gate_proj_b)
+
+    gate_factor_groups = []
+    other_muon_groups = []
+    for group in optimizer.param_groups:
+        if group.get('kind') != 'muon':
+            continue
+        params = set(group['params'])
+        if params and params.issubset(gate_factor_params):
+            gate_factor_groups.append(group)
+        else:
+            other_muon_groups.append(group)
+
+    assert gate_factor_groups
+    assert other_muon_groups
+    assert all(group['weight_decay'] == 0.05 for group in gate_factor_groups)
+    assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
