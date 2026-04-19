@@ -550,7 +550,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
             exp_gate_grad = layer.mlp.experts.gate_proj.grad
-            exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+            exp_gate_grad_norm = exp_gate_grad.norm(dim=tuple(range(1, exp_gate_grad.ndim)))
             exp_gate_grad_norms.append(exp_gate_grad_norm)
             losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
@@ -558,7 +558,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 exp_cfc_mean_weight  = layer.mlp.experts.c_fc.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),

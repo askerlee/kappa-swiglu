@@ -32,6 +32,8 @@ def _patch_missing_config_keys(model_config_kwargs):
         model_config_kwargs["use_aux_free_load_balancing"] = False
     if "aux_free_load_balancing_bias_update_speed" not in model_config_kwargs:
         model_config_kwargs["aux_free_load_balancing_bias_update_speed"] = 1e-3
+    if "qwen3_gate_proj_m" not in model_config_kwargs:
+        model_config_kwargs["qwen3_gate_proj_m"] = 1
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
@@ -49,6 +51,11 @@ def _patch_missing_keys(model_data, model_config):
             use_moe = (layer_idx >= model_config.moe_start_layer) and ((layer_idx + 1) % model_config.stride == 0)
             if not use_moe:
                 continue
+            gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"
+            gate_proj = model_data.get(gate_proj_key)
+            if gate_proj is not None and gate_proj.ndim == 3 and getattr(model_config, "qwen3_gate_proj_m", 1) == 1:
+                model_data[gate_proj_key] = gate_proj.unsqueeze(-1)
+                log0(f"Patching legacy {gate_proj_key} to add qwen3_gate_proj_m=1 dimension")
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)

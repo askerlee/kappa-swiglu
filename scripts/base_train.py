@@ -185,6 +185,8 @@ parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', cons
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj")
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
                     help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
+parser.add_argument("--qwen3-gate-proj-m", type=int, default=1,
+                    help="extra summed dimension m for Qwen3 MoE gate_proj weights")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -262,6 +264,8 @@ if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
 if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
+if args.qwen3_gate_proj_m < 1:
+    raise ValueError("--qwen3-gate-proj-m must be >= 1")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
@@ -363,6 +367,7 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
+        qwen3_gate_proj_m=args.qwen3_gate_proj_m,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
@@ -817,7 +822,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
             exp_gate_grad = layer.mlp.experts.gate_proj.grad
-            exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+            exp_gate_grad_norm = exp_gate_grad.norm(dim=tuple(range(1, exp_gate_grad.ndim)))
             exp_gate_grad_norms.append(exp_gate_grad_norm)
             losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
@@ -825,7 +830,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 exp_cfc_mean_weight  = layer.mlp.experts.c_fc.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),

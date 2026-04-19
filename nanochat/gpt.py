@@ -708,8 +708,11 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.gate_proj_m = int(getattr(config, 'qwen3_gate_proj_m', 1))
 
-        self.gate_proj = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
+        self.gate_proj = nn.Parameter(
+            torch.empty(self.n_exp, self.hidden_size, self.intermediate_size, self.gate_proj_m)
+        )
         self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -741,8 +744,15 @@ class Qwen3MLPExperts(nn.Module):
     def set_ortho_x_router_wg_coeff(self, coeff):
         self.ortho_x_router_wg_coeff = float(coeff)
 
+    def get_equivalent_expert_weight(self, weight_name):
+        weight = getattr(self, weight_name)
+        if weight_name == 'gate_proj':
+            return weight.sum(dim=-1)
+        return weight
+
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
+        # gate_out_raw: [n_exp, capacity, intermediate_size, gate_proj_m]
         # gate_out: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
 
@@ -760,11 +770,12 @@ class Qwen3MLPExperts(nn.Module):
                 b_discount=self.ortho_x_router_wg_coeff,
                 dims=[2],
             )
-        gate_out = torch.bmm(gate_input, self.gate_proj)
+        gate_out_raw = torch.einsum('ech,ehim->ecim', gate_input, self.gate_proj)
+        gate_out = gate_out_raw.sum(dim=-1)
 
         if self.debug:
-            gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1), dims=[1])
-            gate_out_ortho = torch.bmm(x, gate_proj_ortho)
+            gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1).unsqueeze(-1), dims=[1])
+            gate_out_ortho = torch.einsum('ech,ehim->ecim', x, gate_proj_ortho).sum(dim=-1)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho)
 
         if self.training and self.use_experts_gate_output_loss:
@@ -773,7 +784,12 @@ class Qwen3MLPExperts(nn.Module):
                 gate_out_gs = gate_out
             else:
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out.device, dtype=gate_out.dtype)
-                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(gate_out, gate_input, self.gate_proj, alpha_t)
+                gate_out_gs = ReuseBmmWithScaledInputGrad.apply(
+                    gate_out,
+                    gate_input,
+                    self.gate_proj.sum(dim=-1),
+                    alpha_t,
+                )
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
@@ -977,7 +993,10 @@ class MOELayer(nn.Module):
 
         ortho_losses_by_target = {}
         for target_name in target_names:
-            expert_weights = getattr(self.experts, target_name)
+            if hasattr(self.experts, 'get_equivalent_expert_weight'):
+                expert_weights = self.experts.get_equivalent_expert_weight(target_name)
+            else:
+                expert_weights = getattr(self.experts, target_name)
             # Use cosine instead of unnormalized dot product. Otherwise, the loss
             # will reduce itself by suppressing the increase of the magnitudes of 
             # router_weights and expert_weights, which will hurt performance.
@@ -990,6 +1009,10 @@ class MOELayer(nn.Module):
             ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
             ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
+            # NOTE: the ortho loss is summed over all feature columns (intermediate_size dimension) 
+            # and averaged over rows (expert dimension).
+            # Later the ortho losses of different MoE layers are added up.
+            # So the magnitude could be as large as 50~200.
             ortho_losses_by_target[target_name] = (
                 ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
             ).sum(dim=1).mean()
@@ -1051,7 +1074,10 @@ class MOELayer(nn.Module):
 
         for proj_name in ('gate_proj', 'c_fc'):
             # G: [n_exp, n_embd, intermediate_size]
-            G = getattr(self.experts, proj_name)
+            if hasattr(self.experts, 'get_equivalent_expert_weight'):
+                G = self.experts.get_equivalent_expert_weight(proj_name)
+            else:
+                G = getattr(self.experts, proj_name)
             # Row-normalize: normalize each row vector over intermediate_size
             G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
             E, D, F = G.size()  # n_exp, n_embd, intermediate_size
@@ -1575,7 +1601,7 @@ class GPT(nn.Module):
                 losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
                 exp_gate_grad = layer.mlp.experts.gate_proj.grad
                 if exp_gate_grad is not None:
-                    exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+                    exp_gate_grad_norm = exp_gate_grad.norm(dim=tuple(range(1, exp_gate_grad.ndim)))
                     exp_gate_grad_norms.append(exp_gate_grad_norm)
                     losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
@@ -1583,7 +1609,8 @@ class GPT(nn.Module):
                 # Compute router expert - gate weight alignment
                 with torch.no_grad():
                     router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                    exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                    exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                    exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                     # Compute the cosine similarity between router weights and router weight grads.
                     # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                     # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),

@@ -5,9 +5,9 @@ scripts/base_train.py for each MoE layer in a checkpoint, along with
 an energy-weighted router/expert correlation that weights each expert
 column by its squared norm:
 
-    rw_gate_alignment = cos(router.w_g.weight, experts.gate_proj.mean(dim=2))
+    rw_gate_alignment = cos(router.w_g.weight, experts.gate_proj.sum(dim=-1).mean(dim=2))
     rw_cfc_alignment = cos(router.w_g.weight, experts.c_fc.mean(dim=2))
-    rw_gate_energy_weighted = sum_j cos(router_i, gate_proj_i[:, j]) * ||gate_proj_i[:, j]||^2 / sum_j ||gate_proj_i[:, j]||^2
+    rw_gate_energy_weighted = sum_j cos(router_i, gate_proj_sum_i[:, j]) * ||gate_proj_sum_i[:, j]||^2 / sum_j ||gate_proj_sum_i[:, j]||^2
     rw_cfc_energy_weighted = sum_j cos(router_i, c_fc_i[:, j]) * ||c_fc_i[:, j]||^2 / sum_j ||c_fc_i[:, j]||^2
 
 Examples:
@@ -127,6 +127,8 @@ def compute_router_weight_exp_alignment(
         raise ValueError(
             f"Expected router weights with shape [n_exp, hidden_size] at layer {layer_idx}, got {tuple(router_weight.shape)}"
         )
+    if expert_weight_name == "gate_proj" and expert_weight.ndim == 4:
+        expert_weight = expert_weight.sum(dim=-1)
     if expert_weight.ndim != 3:
         raise ValueError(
             f"Expected expert {expert_weight_name} weights with shape [n_exp, hidden_size, intermediate_size] at layer {layer_idx}, got {tuple(expert_weight.shape)}"
