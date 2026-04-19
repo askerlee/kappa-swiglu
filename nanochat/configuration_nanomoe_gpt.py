@@ -54,7 +54,8 @@ class GPTConfig:
         switch_tfm_init_scale: float = 1.0,
         router_use_full_prec: bool = False,  # use float32 precision in the router
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
-        exp_gate_proj_m: int = 1,  # extra averaged dimension on expert gate_proj
+        exp_gate_proj_rank: int = 0,  # low-rank factorization rank for expert gate_proj; 0 disables factorization
+        exp_gate_proj_m: int = 1,  # extra averaged dimension on expert gate_proj; only enabled on the highest MoE layers
         # Sliding window attention pattern string, tiled across layers. Final layer always L.
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
@@ -111,6 +112,9 @@ class GPTConfig:
         self.switch_tfm_init_scale = switch_tfm_init_scale
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
+        if int(exp_gate_proj_rank) < 0:
+            raise ValueError(f"exp_gate_proj_rank must be >= 0, got {exp_gate_proj_rank}")
+        self.exp_gate_proj_rank = int(exp_gate_proj_rank)
         if int(exp_gate_proj_m) < 1:
             raise ValueError(f"exp_gate_proj_m must be >= 1, got {exp_gate_proj_m}")
         self.exp_gate_proj_m = int(exp_gate_proj_m)

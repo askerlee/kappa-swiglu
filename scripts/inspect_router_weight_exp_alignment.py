@@ -115,14 +115,26 @@ def compute_router_weight_exp_alignment(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     router_key = f"transformer.h.{layer_idx}.mlp.router.w_g.weight"
     expert_weight_key = f"transformer.h.{layer_idx}.mlp.experts.{expert_weight_name}"
+    expert_weight_a_key = f"transformer.h.{layer_idx}.mlp.experts.{expert_weight_name}_a"
+    expert_weight_b_key = f"transformer.h.{layer_idx}.mlp.experts.{expert_weight_name}_b"
 
     if router_key not in model_data:
         raise KeyError(f"Missing router weights for layer {layer_idx}: {router_key}")
-    if expert_weight_key not in model_data:
-        raise KeyError(f"Missing expert {expert_weight_name} weights for layer {layer_idx}: {expert_weight_key}")
 
     router_weight = model_data[router_key].float()
-    expert_weight = model_data[expert_weight_key].float()
+    if expert_weight_key in model_data:
+        expert_weight = model_data[expert_weight_key].float()
+        if expert_weight.ndim == 4:
+            expert_weight = expert_weight.mean(dim=-1)
+    elif expert_weight_a_key in model_data and expert_weight_b_key in model_data:
+        expert_weight_a = model_data[expert_weight_a_key].float()
+        expert_weight_b = model_data[expert_weight_b_key].float()
+        if expert_weight_a.ndim == 4:
+            expert_weight = torch.einsum('ehrm,erim->ehim', expert_weight_a, expert_weight_b).mean(dim=-1)
+        else:
+            expert_weight = torch.bmm(expert_weight_a, expert_weight_b)
+    else:
+        raise KeyError(f"Missing expert {expert_weight_name} weights for layer {layer_idx}: {expert_weight_key}")
     if router_weight.ndim != 2:
         raise ValueError(
             f"Expected router weights with shape [n_exp, hidden_size] at layer {layer_idx}, got {tuple(router_weight.shape)}"

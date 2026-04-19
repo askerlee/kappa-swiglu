@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
 def make_optimizer(param_groups):
@@ -414,3 +415,35 @@ def test_validate_checkpoint_file_sizes_raises_on_large_size_mismatch(tmp_path):
             20,
             expected_optimizer_ranks=[0],
         )
+
+
+def test_patch_missing_keys_factorizes_dense_gate_proj_when_rank_enabled():
+    config = GPTConfig(
+        n_layer=1,
+        moe_start_layer=0,
+        stride=1,
+        n_exp=2,
+        n_embd=4,
+        exp_gate_proj_rank=2,
+        exp_gate_proj_m=3,
+    )
+
+    gate_proj_a = torch.randn(2, 4, 2, 3)
+    gate_proj_b = torch.randn(2, 2, 16, 3)
+    dense_gate_proj = torch.einsum('ehrm,erim->ehim', gate_proj_a, gate_proj_b)
+    model_data = {
+        "transformer.h.0.mlp.experts.gate_proj": dense_gate_proj.clone(),
+    }
+
+    _patch_missing_keys(model_data, config)
+
+    assert "transformer.h.0.mlp.experts.gate_proj" not in model_data
+    assert "transformer.h.0.mlp.experts.gate_proj_a" in model_data
+    assert "transformer.h.0.mlp.experts.gate_proj_b" in model_data
+
+    reconstructed = torch.einsum(
+        'ehrm,erim->ehim',
+        model_data["transformer.h.0.mlp.experts.gate_proj_a"],
+        model_data["transformer.h.0.mlp.experts.gate_proj_b"],
+    )
+    torch.testing.assert_close(reconstructed, dense_gate_proj, atol=1e-5, rtol=1e-5)
