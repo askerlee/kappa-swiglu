@@ -500,26 +500,45 @@ class DistMuonAdamW(torch.optim.Optimizer):
     def _reduce_muon(self, group: dict, world_size: int) -> dict:
         """Launch async reduce op for Muon group. Returns info dict."""
         params = group['params']
-        chunk_size = (len(params) + world_size - 1) // world_size
-        padded_num_params = chunk_size * world_size
-        p = params[0]
-        shape, device, dtype = p.shape, p.device, p.dtype
+        num_params = len(params)
+        if num_params == 0:
+            return dict(chunk_infos=[])
 
-        # Stack grads and zero-pad to padded_num_params
-        grad_stack = torch.stack([
-            param.grad if param.grad is not None else torch.zeros_like(param)
-            for param in params
-        ])
-        stacked_grads = torch.empty(padded_num_params, *shape, dtype=dtype, device=device)
-        stacked_grads[:len(params)].copy_(grad_stack)
-        if len(params) < padded_num_params:
-            stacked_grads[len(params):].zero_()
+        reduce_chunk_size = _get_muon_chunk_size(group, num_params)
+        chunk_infos = []
+        for chunk_start in range(0, num_params, reduce_chunk_size):
+            chunk_params = params[chunk_start:chunk_start + reduce_chunk_size]
+            shard_chunk_size = (len(chunk_params) + world_size - 1) // world_size
+            padded_num_params = shard_chunk_size * world_size
+            p = chunk_params[0]
+            shape, device, dtype = p.shape, p.device, p.dtype
 
-        # Reduce_scatter to get this rank's chunk
-        grad_chunk = torch.empty(chunk_size, *shape, dtype=dtype, device=device)
-        future = dist.reduce_scatter_tensor(grad_chunk, stacked_grads, op=dist.ReduceOp.AVG, async_op=True).get_future()
+            grad_stack = torch.stack([
+                param.grad if param.grad is not None else torch.zeros_like(param)
+                for param in chunk_params
+            ])
+            stacked_grads = torch.empty(padded_num_params, *shape, dtype=dtype, device=device)
+            stacked_grads[:len(chunk_params)].copy_(grad_stack)
+            if len(chunk_params) < padded_num_params:
+                stacked_grads[len(chunk_params):].zero_()
 
-        return dict(future=future, grad_chunk=grad_chunk, stacked_grads=stacked_grads, chunk_size=chunk_size)
+            grad_chunk = torch.empty(shard_chunk_size, *shape, dtype=dtype, device=device)
+            future = dist.reduce_scatter_tensor(
+                grad_chunk,
+                stacked_grads,
+                op=dist.ReduceOp.AVG,
+                async_op=True,
+            ).get_future()
+
+            chunk_infos.append(dict(
+                params=chunk_params,
+                future=future,
+                grad_chunk=grad_chunk,
+                stacked_grads=stacked_grads,
+                chunk_size=shard_chunk_size,
+            ))
+
+        return dict(chunk_infos=chunk_infos)
 
     def _compute_adamw(self, group: dict, info: dict, gather_list: list, rank: int, world_size: int) -> None:
         """Wait for reduce, compute AdamW updates, launch gathers for large params."""
@@ -564,62 +583,58 @@ class DistMuonAdamW(torch.optim.Optimizer):
 
     def _compute_muon(self, group: dict, info: dict, gather_list: list, rank: int) -> None:
         """Wait for reduce, compute Muon updates, launch gather."""
-        info['future'].wait()
-        params = group['params']
-        chunk_size = info['chunk_size']
-        grad_chunk = info['grad_chunk']
-        p = params[0]
-        shape, device, dtype = p.shape, p.device, p.dtype
+        for chunk_info in info['chunk_infos']:
+            chunk_info['future'].wait()
+            params = chunk_info['params']
+            chunk_size = chunk_info['chunk_size']
+            grad_chunk = chunk_info['grad_chunk']
+            p = params[0]
+            shape, device, dtype = p.shape, p.device, p.dtype
 
-        # How many params does this rank own?
-        start_idx = rank * chunk_size
-        num_owned = min(chunk_size, max(0, len(params) - start_idx))
+            start_idx = rank * chunk_size
+            num_owned = min(chunk_size, max(0, len(params) - start_idx))
 
-        # Get or create group-level state
-        state = self.state[p]
-        if "momentum_buffer" not in state:
-            state["momentum_buffer"] = torch.zeros(chunk_size, *shape, dtype=dtype, device=device)
-        if "second_momentum_buffer" not in state:
-            if shape[-2] >= shape[-1]:
-                state_shape = (chunk_size, *shape[:-2], shape[-2], 1)
-            else:
-                state_shape = (chunk_size, *shape[:-2], 1, shape[-1])
-            state["second_momentum_buffer"] = torch.zeros(state_shape, dtype=dtype, device=device)
-        red_dim = -1 if shape[-2] >= shape[-1] else -2
+            state = self.state[p]
+            if "momentum_buffer" not in state:
+                state["momentum_buffer"] = torch.zeros(chunk_size, *shape, dtype=dtype, device=device)
+            if "second_momentum_buffer" not in state:
+                if shape[-2] >= shape[-1]:
+                    state_shape = (chunk_size, *shape[:-2], shape[-2], 1)
+                else:
+                    state_shape = (chunk_size, *shape[:-2], 1, shape[-1])
+                state["second_momentum_buffer"] = torch.zeros(state_shape, dtype=dtype, device=device)
+            red_dim = -1 if shape[-2] >= shape[-1] else -2
 
-        # Build output buffer for all_gather
-        updated_params = torch.empty(chunk_size, *shape, dtype=dtype, device=device)
+            updated_params = torch.empty(chunk_size, *shape, dtype=dtype, device=device)
 
-        if num_owned > 0:
-            owned_params = [params[start_idx + i] for i in range(num_owned)]
+            if num_owned > 0:
+                owned_params = [params[start_idx + i] for i in range(num_owned)]
 
-            # Fill 0-D tensors and run fused kernel
-            self._muon_momentum_t.fill_(group["momentum"])
-            self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
-            adjust_lr_fn = group.get("adjust_lr_fn")
-            if adjust_lr_fn is None:
-                adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
-            muon_lr_scale_max = group.get("muon_lr_scale_max")
-            if muon_lr_scale_max is None and adjust_lr_fn == "match_rms_adamw":
-                muon_lr_scale_max = 1.0
-            self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
-            self._muon_wd_t.fill_(group["weight_decay"])
-            stacked_owned = torch.stack(owned_params)
-            muon_step_fused(
-                grad_chunk[:num_owned], stacked_owned,
-                state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
-                self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
-                group["ns_steps"], red_dim,
-            )
-            updated_params[:num_owned].copy_(stacked_owned)
+                self._muon_momentum_t.fill_(group["momentum"])
+                self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
+                adjust_lr_fn = group.get("adjust_lr_fn")
+                if adjust_lr_fn is None:
+                    adjust_lr_fn = "match_rms_adamw" if group.get("match_rms_adamw", False) else "original"
+                muon_lr_scale_max = group.get("muon_lr_scale_max")
+                if muon_lr_scale_max is None and adjust_lr_fn == "match_rms_adamw":
+                    muon_lr_scale_max = 1.0
+                self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
+                self._muon_wd_t.fill_(group["weight_decay"])
+                stacked_owned = torch.stack(owned_params)
+                muon_step_fused(
+                    grad_chunk[:num_owned], stacked_owned,
+                    state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
+                    self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
+                    group["ns_steps"], red_dim,
+                )
+                updated_params[:num_owned].copy_(stacked_owned)
 
-        if num_owned < chunk_size:
-            updated_params[num_owned:].zero_()
+            if num_owned < chunk_size:
+                updated_params[num_owned:].zero_()
 
-        # Reuse stacked_grads buffer for all_gather output
-        stacked_params = info["stacked_grads"]
-        future = dist.all_gather_into_tensor(stacked_params, updated_params, async_op=True).get_future()
-        gather_list.append(dict(future=future, stacked_params=stacked_params, params=params))
+            stacked_params = chunk_info["stacked_grads"]
+            future = dist.all_gather_into_tensor(stacked_params, updated_params, async_op=True).get_future()
+            gather_list.append(dict(future=future, stacked_params=stacked_params, params=params))
 
     def _finish_gathers(self, gather_list: list) -> None:
         """Wait for all gathers and copy Muon params back."""
