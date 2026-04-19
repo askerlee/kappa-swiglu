@@ -842,6 +842,9 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_raw: [n_exp, capacity, intermediate_size] or [n_exp, capacity, intermediate_size, gate_proj_m]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
+        # After averaging gate_proj_m activations, the std is scaled down by
+        # 1 / sqrt(gate_proj_m). Therefore we need to scale up the mean activations 
+        # by sqrt(gate_proj_m) to restore the variances of the mean activations.
         gate_reduce_scale = self.gate_proj_m ** 0.5 if self.gate_proj_m > 1 else 1.0
 
         if not self.use_ortho_x_for_exp_gate:
