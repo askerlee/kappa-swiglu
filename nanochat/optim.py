@@ -10,6 +10,7 @@ Further contributions from @karpathy and @chrisjmccormick.
 import torch
 import torch.distributed as dist
 from torch import Tensor
+from nanochat.common import COMPUTE_DTYPE
 
 # -----------------------------------------------------------------------------
 """
@@ -153,8 +154,9 @@ def muon_step_fused(
     g = stacked_grads.lerp_(momentum_buffer, momentum)
 
     # Polar express
-    X = g.bfloat16()
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+    # Cast to bf16 for speed when available; skip cast otherwise because fp16 is unstable here.
+    X = g.bfloat16() if COMPUTE_DTYPE == torch.bfloat16 else g
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-6)
     if g.size(-2) > g.size(-1): # Tall matrix
         for a, b, c in polar_express_coeffs[:ns_steps]:
             A = X.mT @ X
@@ -202,8 +204,8 @@ def muon_grad_update_fused(
     momentum_buffer.lerp_(stacked_grads, 1 - momentum)
     g = stacked_grads.lerp_(momentum_buffer, momentum)
 
-    X = g.bfloat16()
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+    X = g.bfloat16() if COMPUTE_DTYPE == torch.bfloat16 else g
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-6)
     if g.size(-2) > g.size(-1):
         for a, b, c in polar_express_coeffs[:ns_steps]:
             A = X.mT @ X
