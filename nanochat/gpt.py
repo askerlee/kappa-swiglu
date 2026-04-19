@@ -33,16 +33,6 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
-# target: "gate_proj", "c_fc", "both"
-def get_router_ortho_loss_name(target):
-    return f"router_ortho_loss_{target}"
-
-def get_router_ortho_sub_loss_names(target):
-    # If not both, then the router ortho loss has no sub losses.
-    if target != "both":
-        return ()
-    return ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
-
 # Orthogonal subtraction of b from a: the residual is orthogonal to b on the specified dims.
 # NOTE: ortho_subtract(a, b) is scale-invariant w.r.t. (b * b_discount),
 # but scales proportionally with a.
@@ -986,12 +976,6 @@ class MOELayer(nn.Module):
         if hasattr(self.experts, 'set_use_ortho_x_for_exp_gate'):
             self.experts.set_use_ortho_x_for_exp_gate(enabled)
 
-    def get_router_ortho_loss_name(self):
-        return get_router_ortho_loss_name(self.router_ortho_loss_target)
-
-    def get_router_ortho_sub_loss_names(self):
-        return get_router_ortho_sub_loss_names(self.router_ortho_loss_target)
-
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
         valid_mask = flat_rank < exp_capacity
@@ -1126,12 +1110,14 @@ class MOELayer(nn.Module):
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
             # new_zeros(()) returns a zero scalar.
             zero = self.experts.c_fc.new_zeros(())
-            return zero, {}
+            sub_losses = {
+                'router_ortho_loss_gate_proj': zero,
+                'router_ortho_loss_c_fc': zero,
+            }
+            return zero, sub_losses
 
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-        target_names = [self.router_ortho_loss_target]
-        if self.router_ortho_loss_target == 'both':
-            target_names = ['gate_proj', 'c_fc']
+        target_names = ['gate_proj', 'c_fc']
 
         ortho_losses_by_target = {}
         for target_name in target_names:
@@ -1152,18 +1138,10 @@ class MOELayer(nn.Module):
                 ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
             ).sum(dim=1).mean()
 
-        if self.router_ortho_loss_target == 'both':
-            # NOTE: 'c_fc' loss is not scaled down, but 'gate_proj' loss is halved.
-            ortho_loss = (ortho_losses_by_target['gate_proj'] + ortho_losses_by_target['c_fc']) / 2
-        else:
-            ortho_loss = ortho_losses_by_target[target_name]
-        # The keys in sub_losses are full loss names:
-        # "router_ortho_loss_gate_proj", "router_ortho_loss_c_fc",
-        # instead of the short names in ortho_losses_by_target.
+        ortho_loss = (ortho_losses_by_target['gate_proj'] + ortho_losses_by_target['c_fc']) / 2
         sub_losses = {
-            get_router_ortho_loss_name(target_name): target_loss
-            for target_name, target_loss in ortho_losses_by_target.items()
-            if self.router_ortho_loss_target == 'both'
+            'router_ortho_loss_gate_proj': ortho_losses_by_target['gate_proj'],
+            'router_ortho_loss_c_fc': ortho_losses_by_target['c_fc'],
         }
         return ortho_loss, sub_losses
 
@@ -1544,12 +1522,6 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 mlp.set_use_ortho_x_for_exp_gate(enabled)
 
-    def get_router_ortho_loss_name(self):
-        return get_router_ortho_loss_name(getattr(self.config, 'router_ortho_loss_target', 'gate_proj'))
-
-    def get_router_ortho_sub_loss_names(self):
-        return get_router_ortho_sub_loss_names(getattr(self.config, 'router_ortho_loss_target', 'gate_proj'))
-
     def update_aux_free_load_balancing(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
@@ -1640,8 +1612,7 @@ class GPT(nn.Module):
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
-        router_ortho_loss_name = self.get_router_ortho_loss_name()
-        router_ortho_sub_loss_names = self.get_router_ortho_sub_loss_names()
+        router_ortho_sub_loss_names = ('router_ortho_loss_gate_proj', 'router_ortho_loss_c_fc')
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
@@ -1673,7 +1644,7 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'gated_aux_loss': 0,
                    'router_z_loss': 0,
-                   router_ortho_loss_name: 0,
+                   'router_ortho_loss': 0,
                    'experts_ortho_loss': 0,
                    'experts_gate_output_loss': 0,
                    'projs_diversity_loss': 0,
@@ -1720,7 +1691,7 @@ class GPT(nn.Module):
                 # We use dynamic weight for router_ortho_loss, so we just save it in losses (without detach()), 
                 # and don't add it to the main loss here. 
                 # loss += self.config.router_ortho_loss_weight * router_ortho_loss 
-                losses[router_ortho_loss_name] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
+                losses['router_ortho_loss'] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset("router_ortho_loss")
                 for sub_loss_name in router_ortho_sub_loss_names:
                     sub_loss = MANAGER.aggregate(sub_loss_name)

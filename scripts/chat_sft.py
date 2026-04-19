@@ -168,6 +168,29 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale, use_router_wg_dyn_grad
         if experts is not None and hasattr(experts, "use_experts_dyn_grad_scale"):
             experts.use_experts_dyn_grad_scale = use_experts_dyn_grad_scale
 
+def get_router_ortho_subloss_weights(target):
+    if target == "gate_proj":
+        return 1.0, 0.0
+    if target == "c_fc":
+        return 0.0, 1.0
+    return 0.5, 0.5
+
+def combine_router_ortho_sublosses(losses, gate_proj_weight, c_fc_weight):
+    combined_loss = None
+    gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
+    c_fc_loss = losses.get("router_ortho_loss_c_fc")
+
+    if gate_proj_weight != 0.0 and gate_proj_loss is not None:
+        combined_loss = gate_proj_loss * gate_proj_weight
+    if c_fc_weight != 0.0 and c_fc_loss is not None:
+        c_fc_term = c_fc_loss * c_fc_weight
+        if combined_loss is None:
+            combined_loss = c_fc_term
+        else:
+            combined_loss = combined_loss + c_fc_term
+    if combined_loss is None:
+        return 0.0
+    return combined_loss
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -322,10 +345,12 @@ set_router_wg_grad_scale(
     args.use_cumulative_dyn_grad_scale,
     args.dyn_grad_scale_ma_window_size,
 )
-    
+
 orig_model = model
-router_ortho_loss_name = orig_model.get_router_ortho_loss_name()
-router_ortho_sub_loss_names = orig_model.get_router_ortho_sub_loss_names()
+router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
+router_ortho_gate_proj_weight, router_ortho_c_fc_weight = get_router_ortho_subloss_weights(
+    args.router_ortho_loss_target
+)
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 if args.router_ortho_loss_weight == -1:
@@ -767,13 +792,23 @@ while True:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
         # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-        router_ortho_loss = losses[router_ortho_loss_name]
+        router_ortho_loss = combine_router_ortho_sublosses(
+            losses,
+            router_ortho_gate_proj_weight,
+            router_ortho_c_fc_weight,
+        )
         loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
+
+    losses['router_ortho_loss'] = combine_router_ortho_sublosses(
+        losses,
+        router_ortho_gate_proj_weight,
+        router_ortho_c_fc_weight,
+    )
 
     if MANAGER.collect_load_balancing_stats:
         collect_grad_stats(model, losses, model.config.moe_start_layer, depth)
@@ -836,7 +871,7 @@ while True:
             "train/skipped_overlong_conversations": train_skipped_conversations,
             "train/skipped_overlong_fraction": discard_fraction,
         }
-        log_data[f"train/{router_ortho_loss_name}_step"] = losses[router_ortho_loss_name].detach().item()
+        log_data[f"train/router_ortho_loss_step"] = losses['router_ortho_loss'].detach().item()
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
             if sub_loss is not None:
