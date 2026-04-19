@@ -708,7 +708,7 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_m = int(getattr(config, 'qwen3_gate_proj_m', 1))
+        self.gate_proj_m = int(getattr(config, 'exp_gate_proj_m', 1))
 
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size, self.gate_proj_m)

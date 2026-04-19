@@ -4,11 +4,11 @@ from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import Qwen3MLPExperts
 
 
-def test_qwen3_gate_proj_m_means_before_fc_gating():
+def test_exp_gate_proj_m_means_before_fc_gating():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        qwen3_gate_proj_m=3,
+        exp_gate_proj_m=3,
         use_experts_gate_output_loss=False,
         debug=False,
     )

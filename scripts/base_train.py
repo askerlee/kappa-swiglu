@@ -185,7 +185,7 @@ parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', cons
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj")
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
                     help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
-parser.add_argument("--qwen3-gate-proj-m", type=int, default=1,
+parser.add_argument("--exp-gate-proj-m", type=int, default=1,
                     help="extra averaged dimension m for Qwen3 MoE gate_proj weights")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
@@ -264,8 +264,8 @@ if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
 if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
-if args.qwen3_gate_proj_m < 1:
-    raise ValueError("--qwen3-gate-proj-m must be >= 1")
+if args.exp_gate_proj_m < 1:
+    raise ValueError("--exp-gate-proj-m must be >= 1")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
@@ -367,7 +367,7 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
-        qwen3_gate_proj_m=args.qwen3_gate_proj_m,
+        exp_gate_proj_m=args.exp_gate_proj_m,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
