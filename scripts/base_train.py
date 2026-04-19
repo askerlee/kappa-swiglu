@@ -200,14 +200,6 @@ parser.add_argument("--router-wg-grad-scale-anneal-iterations", type=int, defaul
                     help="anneal router w_g grad scale over this many iterations (-1 disables)")
 parser.add_argument("--router-wg-grad-scale-anneal-target", type=float, default=1.0,
                     help="final router w_g grad scale reached after annealing completes")
-parser.add_argument("--use-router-wg-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False, 
-                    help="whether to use dynamic gradient scaling for router w_g weights")
-parser.add_argument("--use-experts-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
-                    help="whether to apply the derived router grad scaling to expert weights")
-parser.add_argument("--use-cumulative-dyn-grad-scale", type=str2bool, nargs='?', const=True, default=False,
-                    help="whether to use moving-average smoothing for dynamic router/expert grad scales")
-parser.add_argument("--dyn-grad-scale-ma-window-size", type=int, default=128,
-                    help="number of recent steps used by moving-average smoothing for dynamic router/expert grad scales")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -377,10 +369,6 @@ def build_model_meta(depth):
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         router_wg_grad_scale=args.router_wg_grad_scale,
-        use_router_wg_dyn_grad_scale=args.use_router_wg_dyn_grad_scale,
-        use_experts_dyn_grad_scale=args.use_experts_dyn_grad_scale,
-        use_cumulative_dyn_grad_scale=args.use_cumulative_dyn_grad_scale,
-        dyn_grad_scale_ma_window_size=args.dyn_grad_scale_ma_window_size,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,

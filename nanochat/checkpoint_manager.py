@@ -28,10 +28,6 @@ def _patch_missing_config_keys(model_config_kwargs):
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
         log0(f"Patching missing window_pattern in model config to 'L'")
-    if "use_cumulative_dyn_grad_scale" not in model_config_kwargs:
-        model_config_kwargs["use_cumulative_dyn_grad_scale"] = False
-    if "dyn_grad_scale_ma_window_size" not in model_config_kwargs:
-        model_config_kwargs["dyn_grad_scale_ma_window_size"] = 128
     if "use_aux_free_load_balancing" not in model_config_kwargs:
         model_config_kwargs["use_aux_free_load_balancing"] = False
     if "aux_free_load_balancing_bias_update_speed" not in model_config_kwargs:

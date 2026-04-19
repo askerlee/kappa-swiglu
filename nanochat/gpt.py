@@ -13,7 +13,6 @@ Notable features:
 """
 
 import math
-from collections import deque
 from contextlib import nullcontext
 import weakref
 
@@ -227,14 +226,6 @@ class ReuseMmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
-def scale_param_update_delta(delta: torch.Tensor, alpha: torch.Tensor | None):
-    if alpha is None:
-        return delta
-    alpha = alpha.to(device=delta.device, dtype=delta.dtype)
-    while alpha.ndim < delta.ndim:
-        alpha = alpha.unsqueeze(-1)
-    return delta * alpha
-
 def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True, 
                    z_loss_penalize_mean_logits: bool = True):
     """
@@ -392,39 +383,13 @@ class Router(nn.Module):
             torch.tensor(self.router_wg_grad_scale, dtype=torch.float32),
             persistent=False,
         )
-        self.use_router_wg_dyn_grad_scale = bool(getattr(config, 'use_router_wg_dyn_grad_scale', False))
-        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', True))
-        self.use_cumulative_dyn_grad_scale = bool(
-            getattr(
-                config,
-                'use_cumulative_dyn_grad_scale',
-                False,
-            )
-        )
-        self.dyn_grad_scale_ma_window_size = max(
-            1,
-            int(getattr(config, 'dyn_grad_scale_ma_window_size', 128)),
-        )
-        self._router_wg_update_scale = None
-        self._expert_utility_window = None
-        self._expert_utility_window_sum = None
         if self.use_aux_loss and self.use_aux_free_load_balancing:
             raise ValueError("use_aux_loss and use_aux_free_load_balancing are mutually exclusive")
-
-    def get_param_update_hooks(self):
-        return {self.w_g.weight: self._apply_router_wg_update}
-
-    def _apply_router_wg_update(self, param, delta):
-        param.add_(scale_param_update_delta(delta, self._router_wg_update_scale))
 
     def set_router_wg_grad_scale(self, router_wg_grad_scale):
         router_wg_grad_scale = float(router_wg_grad_scale)
         self.router_wg_grad_scale = router_wg_grad_scale
         self._router_wg_grad_scale_tensor.fill_(router_wg_grad_scale)
-
-    def reset_cumulative_dyn_grad_scale(self):
-        self._expert_utility_window = None
-        self._expert_utility_window_sum = None
 
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
@@ -467,93 +432,6 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def _normalize_router_wg_scales(self, router_wg_scales, min_scale=0.5, max_scale=1.5):
-        router_wg_scales = router_wg_scales / router_wg_scales.mean()
-        router_wg_scales.clamp_(min_scale, max_scale)
-        # Normalize again to make sure router_wg_scales have a mean of 1. 
-        return router_wg_scales / router_wg_scales.mean()
-
-    def _get_cumulative_profile(self, values, profile_attr_name):
-        if not self.use_cumulative_dyn_grad_scale:
-            return values
-
-        window_sum_attr_name = profile_attr_name.replace("_window", "_window_sum")
-        window = getattr(self, profile_attr_name)
-        running_sum = getattr(self, window_sum_attr_name)
-        detached_values = values.detach().clone()
-        if window is None or running_sum is None:
-            window = deque(maxlen=self.dyn_grad_scale_ma_window_size)
-            running_sum = detached_values
-        else:
-            if len(window) == window.maxlen:
-                running_sum = running_sum - window[0]
-            running_sum = running_sum + detached_values
-        # NOTE: window is a deque, so the earliest element automatically pops out
-        # when the length exceeds maxlen.
-        window.append(detached_values)
-
-        running_sum_mean = running_sum.mean().clamp_min(1e-12)
-        normalized_profile = running_sum / running_sum_mean
-        setattr(self, profile_attr_name, window)
-        setattr(self, window_sum_attr_name, running_sum.detach().clone())
-        return normalized_profile * values.mean()
-
-    @torch._dynamo.disable
-    def _compute_router_expert_grad_alphas(self, logits, num_tokens, selection_scores=None):
-        logits = logits.detach()
-        if selection_scores is None:
-            selection_scores = logits
-        else:
-            selection_scores = selection_scores.detach()
-        _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
-        top_k_logits = logits.gather(-1, top_k_indices)
-        alpha = self._router_wg_grad_scale_tensor.to(device=logits.device, dtype=logits.dtype)
-        # Return fixed wg grad scales of self.router_wg_grad_scale.
-        if not (self.use_router_wg_dyn_grad_scale or self.use_experts_dyn_grad_scale):
-            return top_k_indices, alpha, None
-        router_probs = F.softmax(top_k_logits, dim=-1)
-
-        # Compute the mean fraction of tokens are allocated to each expert 
-        # (weighted by the routing probabilities).
-        mean_expert_probs = router_probs.new_zeros(self.n_exp)
-        mean_expert_probs.scatter_add_(0, top_k_indices.reshape(-1), router_probs.reshape(-1))
-        mean_expert_probs.div_(num_tokens)
-
-        expert_util_counts = torch.bincount(top_k_indices.flatten(), minlength=self.n_exp).float()
-        expert_utilities = expert_util_counts / expert_util_counts.sum()
-        expert_utilities = self._get_cumulative_profile(
-            expert_utilities,
-            '_expert_utility_window',
-        )
-
-        combined_utilities = (mean_expert_probs * expert_utilities).sqrt()
-
-        router_wg_scales = torch.rsqrt(combined_utilities.clamp_min(1e-4))
-        # Before normalization, least utilized expert rows have scales rsqrt(1e-4) = 100.
-        # After normalization, router_wg_scales is still dominated by large scales: 100 -> 5,
-        # while popular expert rows have scales around 0.75.
-        # Thus after clamping, we do **normalization again** to avoid suppressing popular expert rows 
-        # with overly small scales.
-        router_wg_scales = self._normalize_router_wg_scales(router_wg_scales, min_scale=0.5, max_scale=1.5)
-        expert_grad_scales = router_wg_scales.sqrt()
-        # NOTE: router_wg_scales are capped so that top-utilized experts have scales < 1,
-        # since the different gate rows compete with each other for tokens.
-        #   but expert_grad_scales are at least 1, because different experts 
-        # don't compete for tokens once the router decides how to route.
-        expert_grad_scales.clamp_(1, 1.5)
-
-        if self.use_router_wg_dyn_grad_scale:
-            router_wg_scales = router_wg_scales * alpha
-        else:
-            router_wg_scales = alpha
-        router_wg_scales = router_wg_scales.to(dtype=logits.dtype)
-        
-        if self.use_experts_dyn_grad_scale:
-            expert_grad_scales = expert_grad_scales.to(dtype=logits.dtype)
-        else:
-            expert_grad_scales = None
-        return top_k_indices, router_wg_scales, expert_grad_scales
-        
     def forward(self, x):
         """
         Computes routing information for tokens, including which experts to use,
@@ -568,11 +446,20 @@ class Router(nn.Module):
             B, T, C = x.size()
             num_tokens = B * T
             x_flat = x.view(num_tokens, C)
-            self._router_wg_update_scale = None
 
             # 1. GET ROUTING LOGITS
             # ---------------------
-            logits_wg = self.w_g(x_flat)  # [B*T, n_exp]
+            router_weight = self.w_g.weight
+            if self.training:
+                router_weight = ScaleGrad.apply(
+                    router_weight,
+                    self._router_wg_grad_scale_tensor.to(
+                        device=router_weight.device,
+                        dtype=router_weight.dtype,
+                    ),
+                    torch.tensor(False, device=router_weight.device, dtype=torch.bool),
+                )
+            logits_wg = F.linear(x_flat, router_weight)  # [B*T, n_exp]
             noise = None
 
             if self.training and self.use_noisy_top_k:
@@ -584,15 +471,8 @@ class Router(nn.Module):
             # -------------------------------
             if self.training:
                 selection_scores = self._get_selection_scores(logits)
-                top_k_indices, router_wg_grad_alpha, expert_grad_alpha = self._compute_router_expert_grad_alphas(
-                    logits,
-                    num_tokens,
-                    selection_scores=selection_scores,
-                )
+                _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
                 self._accumulate_aux_free_load_balancing_counts(top_k_indices)
-                self._router_wg_update_scale = router_wg_grad_alpha.detach()
-                if self.use_router_wg_dyn_grad_scale and MANAGER.collect_backward_stats:
-                    MANAGER.add("router_wg_grad_dyn_scales", router_wg_grad_alpha.detach())
 
                 logits_for_router = logits
 
@@ -603,7 +483,7 @@ class Router(nn.Module):
                     else:
                         input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
-                            logits_wg, x_flat, self.w_g.weight, input_alpha_t
+                            logits_wg, x_flat, router_weight, input_alpha_t
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
@@ -636,7 +516,6 @@ class Router(nn.Module):
                 _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
                 top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
-                expert_grad_alpha = None
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
@@ -699,7 +578,7 @@ class Router(nn.Module):
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
             # Their memory usage all scale linearly with (B * T).
-            return final_expert_mask, router_probs_masked, top_k_indices, final_rank, expert_grad_alpha 
+            return final_expert_mask, router_probs_masked, top_k_indices, final_rank
     
     def compute_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor):
         """
@@ -797,22 +676,8 @@ class MLPExperts(nn.Module):
         super().__init__()
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
-        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
-        self._expert_update_scale = None
 
-    def get_param_update_hooks(self):
-        if not self.use_experts_dyn_grad_scale:
-            return {}
-        return {
-            self.c_fc: self._apply_expert_update,
-            self.c_proj: self._apply_expert_update,
-        }
-
-    def _apply_expert_update(self, param, delta):
-        param.add_(scale_param_update_delta(delta, self._expert_update_scale))
-    
-    def forward(self, x, expert_grad_alpha=None):
-        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
+    def forward(self, x):
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -856,10 +721,8 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
-        self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
         self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
         self.ortho_x_router_wg_coeff = float(getattr(config, 'ortho_x_router_wg_coeff', 1.0))
-        self._expert_update_scale = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -878,19 +741,7 @@ class Qwen3MLPExperts(nn.Module):
     def set_ortho_x_router_wg_coeff(self, coeff):
         self.ortho_x_router_wg_coeff = float(coeff)
 
-    def get_param_update_hooks(self):
-        hooks = {}
-        if self.use_experts_dyn_grad_scale:
-            hooks[self.c_fc]        = self._apply_expert_update
-            hooks[self.c_proj]      = self._apply_expert_update
-            hooks[self.gate_proj]   = self._apply_expert_update
-        return hooks
-    
-    def _apply_expert_update(self, param, delta):
-        param.add_(scale_param_update_delta(delta, self._expert_update_scale))
-
-    def forward(self, x, expert_grad_alpha=None):
-        self._expert_update_scale = None if expert_grad_alpha is None else expert_grad_alpha.detach()
+    def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
         # gate_out: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
@@ -970,11 +821,6 @@ class MOELayer(nn.Module):
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
 
-    def get_param_update_hooks(self):
-        hooks = self.router.get_param_update_hooks()
-        hooks.update(self.experts.get_param_update_hooks())
-        return hooks
-
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
 
@@ -1024,10 +870,7 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
-        expert_mask, router_probs, top_k_indices, rank, router_expert_grad_alpha = self.router(x)
-        # Make expert_grad_alpha milder than router_expert_grad_alpha, to avoid 
-        # overshooting of unpopular experts or over-suppressing popular ones.
-        expert_grad_alpha = router_expert_grad_alpha.sqrt() if router_expert_grad_alpha is not None else None
+        expert_mask, router_probs, top_k_indices, rank = self.router(x)
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
@@ -1063,7 +906,7 @@ class MOELayer(nn.Module):
         )
 
         # --- Run experts ---
-        expert_outputs = self.experts(expert_inputs, expert_grad_alpha=expert_grad_alpha) # [n_exp, exp_capacity, C]
+        expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
         
         '''
         if self.training and self.use_aux_loss:
@@ -1497,15 +1340,6 @@ class GPT(nn.Module):
             'total': total,
         }
 
-    # hooks: a dict of param p -> the update hook function for p.
-    def get_param_update_hooks(self):
-        hooks = {}
-        for block in self.transformer.h:
-            mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                hooks.update(mlp.get_param_update_hooks())
-        return hooks
-
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         enabled = bool(enabled)
         self.config.use_aux_free_load_balancing = enabled
@@ -1553,31 +1387,6 @@ class GPT(nn.Module):
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
-        param_update_hooks = self.get_param_update_hooks()
-
-        def split_group_by_update_hooks(group):
-            hooked_params = []
-            hooked_fns = []
-            plain_params = []
-            for param in group['params']:
-                hook = param_update_hooks.get(param)
-                if hook is None:
-                    plain_params.append(param)
-                else:
-                    hooked_params.append(param)
-                    hooked_fns.append(hook)
-
-            groups = []
-            if plain_params:
-                plain_group = dict(group)
-                plain_group['params'] = plain_params
-                groups.append(plain_group)
-            if hooked_params:
-                hooked_group = dict(group)
-                hooked_group['params'] = hooked_params
-                hooked_group['param_update_hooks'] = hooked_fns
-                groups.append(hooked_group)
-            return groups
 
         # Separate out all parameters into groups
         matrix_params = list(self.transformer.h.parameters())
@@ -1594,33 +1403,32 @@ class GPT(nn.Module):
 
         # Build param_groups with all required fields explicit
         param_groups = []
-        param_groups.extend(split_group_by_update_hooks(
-            # AdamW groups (embeddings, lm_head, scalars)
+        param_groups.append(
             dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
-        ))
-        param_groups.extend(split_group_by_update_hooks(
+        )
+        param_groups.append(
             dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
-        ))
-        param_groups.extend(split_group_by_update_hooks(
+        )
+        param_groups.append(
             dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
-        ))
-        param_groups.extend(split_group_by_update_hooks(
+        )
+        param_groups.append(
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
-        ))
-        param_groups.extend(split_group_by_update_hooks(
+        )
+        param_groups.append(
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
-        ))  # higher beta1 for x0
+        )  # higher beta1 for x0
         # Muon groups (matrix params, grouped by shape for stacking)
         muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"Muon LR scaling: {muon_lr_scaling}")
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.extend(split_group_by_update_hooks(dict(
+            param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
-            )))
+            ))
 
         Factory = DistMuonAdamW if ddp else MuonAdamW
         optimizer = Factory(param_groups)

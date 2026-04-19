@@ -3,46 +3,29 @@ import torch
 from nanochat.optim import MuonAdamW
 
 
-def test_adamw_param_update_hook_applies_same_delta_as_default_path():
-    base_param = torch.nn.Parameter(torch.tensor([0.5, -1.0, 1.5], dtype=torch.float32))
-    hooked_param = torch.nn.Parameter(base_param.detach().clone())
+def test_adamw_step_updates_parameter_and_state():
+    param = torch.nn.Parameter(torch.tensor([0.5, -1.0, 1.5], dtype=torch.float32))
     grad = torch.tensor([0.2, -0.4, 0.6], dtype=torch.float32)
-    base_param.grad = grad.clone()
-    hooked_param.grad = grad.clone()
-    hooked_before = hooked_param.detach().clone()
-    captured = {}
+    before = param.detach().clone()
+    param.grad = grad.clone()
     lr = 0.1
     weight_decay = 0.01
 
-    def hook(delta):
-        captured['delta'] = delta.detach().clone()
-        hooked_param.add_(delta)
-
-    default_optimizer = MuonAdamW([
-        dict(kind='adamw', params=[base_param], lr=lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=weight_decay),
-    ])
-    hooked_optimizer = MuonAdamW([
+    optimizer = MuonAdamW([
         dict(
-            kind='adamw', params=[hooked_param], lr=lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=weight_decay,
-            param_update_hooks=[hook],
+            kind='adamw', params=[param], lr=lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=weight_decay,
         ),
     ])
 
-    assert 'param_update_hooks' not in hooked_optimizer.param_groups[0]
+    optimizer.step()
 
-    default_optimizer.step()
-    hooked_optimizer.step()
-
-    assert torch.allclose(hooked_param, base_param)
-    decayed_before = hooked_before * (1 - lr * weight_decay)
-    assert torch.allclose(captured['delta'], hooked_param.detach() - decayed_before)
+    assert not torch.allclose(param, before)
+    assert optimizer.state[param]['step'] == 1
 
 
-def test_muon_param_update_hook_preserves_group_update_behavior():
+def test_muon_group_update_changes_all_params():
     param_a = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10)
     param_b = torch.nn.Parameter(-param_a.detach().clone())
-    hooked_a = torch.nn.Parameter(param_a.detach().clone())
-    hooked_b = torch.nn.Parameter(param_b.detach().clone())
 
     grad_a = torch.tensor([
         [0.3, -0.2, 0.1, 0.4],
@@ -57,28 +40,19 @@ def test_muon_param_update_hook_preserves_group_update_behavior():
 
     param_a.grad = grad_a.clone()
     param_b.grad = grad_b.clone()
-    hooked_a.grad = grad_a.clone()
-    hooked_b.grad = grad_b.clone()
-    hooked_a_before = hooked_a.detach().clone()
-    hooked_b_before = hooked_b.detach().clone()
-    captured = {}
+    before_a = param_a.detach().clone()
+    before_b = param_b.detach().clone()
 
-    def hook(param, delta):
-        captured['delta'] = delta.detach().clone()
-        param.add_(delta)
-
-    hooked_optimizer = MuonAdamW([
+    optimizer = MuonAdamW([
         dict(
-            kind='muon', params=[hooked_a, hooked_b], lr=0.05, momentum=0.95, ns_steps=3, beta2=0.95, weight_decay=0.0,
-            param_update_hooks=[hook, None],
+            kind='muon', params=[param_a, param_b], lr=0.05, momentum=0.95, ns_steps=3, beta2=0.95, weight_decay=0.0,
         ),
     ])
 
-    hooked_optimizer.step()
+    optimizer.step()
 
-    assert torch.allclose(captured['delta'], hooked_a.detach() - hooked_a_before)
-    assert not torch.allclose(hooked_a, hooked_a_before)
-    assert not torch.allclose(hooked_b, hooked_b_before)
+    assert not torch.allclose(param_a, before_a)
+    assert not torch.allclose(param_b, before_b)
 
 
 def test_muon_chunk_size_preserves_full_group_update():
@@ -109,7 +83,7 @@ def test_muon_chunk_size_preserves_full_group_update():
         assert torch.allclose(chunked_param, full_param)
 
 
-def test_muon_chunked_hooked_group_applies_updates():
+def test_muon_chunk_size_one_updates_all_params():
     torch.manual_seed(1)
     params = [
         torch.nn.Parameter(torch.randn(3, 4, dtype=torch.float32))
@@ -117,11 +91,6 @@ def test_muon_chunked_hooked_group_applies_updates():
     ]
     grads = [torch.randn_like(param) for param in params]
     before = [param.detach().clone() for param in params]
-    captured = []
-
-    def hook(param, delta):
-        captured.append(delta.detach().clone())
-        param.add_(delta)
 
     for param, grad in zip(params, grads):
         param.grad = grad.clone()
@@ -129,12 +98,11 @@ def test_muon_chunked_hooked_group_applies_updates():
     optimizer = MuonAdamW([
         dict(
             kind='muon', params=params, lr=0.05, momentum=0.95, ns_steps=3, beta2=0.95,
-            weight_decay=0.01, chunk_size=1, param_update_hooks=[hook, None, hook],
+            weight_decay=0.01, chunk_size=1,
         ),
     ])
 
     optimizer.step()
 
-    assert len(captured) == 2
     for param, param_before in zip(params, before):
         assert not torch.allclose(param, param_before)
