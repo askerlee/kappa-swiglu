@@ -842,6 +842,7 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_raw: [n_exp, capacity, intermediate_size] or [n_exp, capacity, intermediate_size, gate_proj_m]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
+        gate_reduce_scale = self.gate_proj_m ** 0.5 if self.gate_proj_m > 1 else 1.0
 
         if not self.use_ortho_x_for_exp_gate:
             gate_input = x
@@ -860,7 +861,7 @@ class Qwen3MLPExperts(nn.Module):
         gate_out_raw = self._compute_gate_out_raw(gate_input)
         gate_out_acts = self.act_fn(gate_out_raw)
         if gate_out_acts.ndim == 4:
-            gate_out_acts = gate_out_acts.mean(dim=-1)
+            gate_out_acts = gate_out_acts.mean(dim=-1) * gate_reduce_scale
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -874,7 +875,7 @@ class Qwen3MLPExperts(nn.Module):
             gate_out_ortho_raw = self._compute_gate_out_raw(x, gate_proj=gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
             if gate_out_ortho_acts.ndim == 4:
-                gate_out_ortho_acts = gate_out_ortho_acts.mean(dim=-1)
+                gate_out_ortho_acts = gate_out_ortho_acts.mean(dim=-1) * gate_reduce_scale
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -886,7 +887,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
                 gate_out_gs = self.act_fn(self._compute_gate_out_raw(gate_input_gs))
                 if gate_out_gs.ndim == 4:
-                    gate_out_gs = gate_out_gs.mean(dim=-1)
+                    gate_out_gs = gate_out_gs.mean(dim=-1) * gate_reduce_scale
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
@@ -1325,7 +1326,13 @@ class GPT(nn.Module):
                 experts = block.mlp.experts
                 if isinstance(experts, Qwen3MLPExperts):
                     if experts.gate_proj_rank > 0:
+                        # X \sim U(-a, a) \quad\Rightarrow\quad \mathrm{Var}(X) = \frac{a^2}{3}
                         gate_proj_rank_scale = 3**0.5 * experts.gate_proj_rank**-0.5
+                        # \mathrm{Var}(W_{ij}) \approx \sum_{k=1}^r \mathrm{Var}(A_{ik}B_{kj})
+                        # \approx r \cdot \frac{1}{n_{embd}} \cdot \frac{1}{r}
+                        # then for W = AB,                
+                        # \mathrm{Var}(W_{ij}) \approx \sum_{k=1}^r \mathrm{Var}(A_{ik}B_{kj})
+                        # \approx r \cdot \frac{1}{n_{embd}} \cdot \frac{1}{r} = \frac{1}{n_{embd}}
                         torch.nn.init.uniform_(experts.gate_proj_a, -s, s)
                         torch.nn.init.uniform_(experts.gate_proj_b, -gate_proj_rank_scale, gate_proj_rank_scale)
                     else:

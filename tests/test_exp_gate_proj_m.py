@@ -2,7 +2,7 @@ import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLPExperts
-
+import math
 
 def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
     torch.manual_seed(0)
@@ -25,8 +25,8 @@ def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
         raw_gate_hidden = torch.einsum('ech,ehrm->ecrm', x, experts.gate_proj_a)
         raw_gate_out = torch.einsum('ecrm,erim->ecim', raw_gate_hidden, experts.gate_proj_b)
-        expected_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1)
-        actual_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1)
+        expected_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1) * math.sqrt(config.exp_gate_proj_m)
+        actual_gate_out_acts = experts.act_fn(raw_gate_out).mean(dim=-1) * math.sqrt(config.exp_gate_proj_m)
         torch.testing.assert_close(actual_gate_out_acts, expected_gate_out_acts)
 
         fc_out = torch.bmm(x, experts.c_fc)
