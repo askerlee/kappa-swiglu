@@ -774,6 +774,7 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_out_acts_normed = None
         self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
         self.ortho_x_router_wg_coeff = float(getattr(config, 'ortho_x_router_wg_coeff', 1.0))
+        self.gate_proj_aggr_scheme = getattr(config, 'exp_gate_proj_aggr_scheme', 'mean')
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -837,15 +838,23 @@ class Qwen3MLPExperts(nn.Module):
             return self.get_gate_proj_dense_weight(average_over_m=True)
         return getattr(self, weight_name)
 
+    def _reduce_gate_acts(self, gate_acts):
+        if gate_acts.ndim != 4:
+            return gate_acts
+        if self.gate_proj_aggr_scheme == 'mean':
+            # After averaging gate_proj_m activations, the std is scaled down by
+            # 1 / sqrt(gate_proj_m). Scale the mean activations by sqrt(gate_proj_m)
+            # to preserve variance relative to the single-slice baseline.
+            return gate_acts.mean(dim=-1) * (self.gate_proj_m ** 0.5)
+        if self.gate_proj_aggr_scheme == 'logsumexp':
+            return torch.logsumexp(gate_acts, dim=-1)
+        raise ValueError(f"Unsupported gate_proj aggregation scheme: {self.gate_proj_aggr_scheme}")
+
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size] or [n_exp, capacity, intermediate_size, gate_proj_m]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
-        # After averaging gate_proj_m activations, the std is scaled down by
-        # 1 / sqrt(gate_proj_m). Therefore we need to scale up the mean activations 
-        # by sqrt(gate_proj_m) to restore the variances of the mean activations.
-        gate_reduce_scale = self.gate_proj_m ** 0.5 if self.gate_proj_m > 1 else 1.0
 
         if not self.use_ortho_x_for_exp_gate:
             gate_input = x
@@ -863,8 +872,7 @@ class Qwen3MLPExperts(nn.Module):
             )
         gate_out_raw = self._compute_gate_out_raw(gate_input)
         gate_out_acts = self.act_fn(gate_out_raw)
-        if gate_out_acts.ndim == 4:
-            gate_out_acts = gate_out_acts.mean(dim=-1) * gate_reduce_scale
+        gate_out_acts = self._reduce_gate_acts(gate_out_acts)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -877,8 +885,7 @@ class Qwen3MLPExperts(nn.Module):
             )
             gate_out_ortho_raw = self._compute_gate_out_raw(x, gate_proj=gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
-            if gate_out_ortho_acts.ndim == 4:
-                gate_out_ortho_acts = gate_out_ortho_acts.mean(dim=-1) * gate_reduce_scale
+            gate_out_ortho_acts = self._reduce_gate_acts(gate_out_ortho_acts)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -889,8 +896,7 @@ class Qwen3MLPExperts(nn.Module):
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out_acts.device, dtype=gate_out_acts.dtype)
                 gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
                 gate_out_gs = self.act_fn(self._compute_gate_out_raw(gate_input_gs))
-                if gate_out_gs.ndim == 4:
-                    gate_out_gs = gate_out_gs.mean(dim=-1) * gate_reduce_scale
+                gate_out_gs = self._reduce_gate_acts(gate_out_gs)
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,

@@ -39,6 +39,11 @@ def _patch_missing_config_keys(model_config_kwargs):
             model_config_kwargs["exp_gate_proj_m"] = model_config_kwargs.pop("qwen3_gate_proj_m")
         else:
             model_config_kwargs["exp_gate_proj_m"] = 1
+    if "exp_gate_proj_aggr_scheme" not in model_config_kwargs:
+        if "exp_gate_proj_aggregation" in model_config_kwargs:
+            model_config_kwargs["exp_gate_proj_aggr_scheme"] = model_config_kwargs.pop("exp_gate_proj_aggregation")
+        else:
+            model_config_kwargs["exp_gate_proj_aggr_scheme"] = "mean"
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""

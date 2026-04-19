@@ -82,3 +82,31 @@ def test_exp_gate_proj_rank_zero_keeps_dense_gate_projection():
     assert experts.gate_proj.ndim == 4
     assert not hasattr(experts, 'gate_proj_a')
     assert not hasattr(experts, 'gate_proj_b')
+
+
+def test_exp_gate_proj_logsumexp_aggregation_matches_expected_output():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        exp_gate_proj_rank=0,
+        exp_gate_proj_m=3,
+        exp_gate_proj_aggr_scheme='logsumexp',
+        use_experts_gate_output_loss=False,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        raw_gate_out = torch.einsum('ech,ehim->ecim', x, experts.gate_proj)
+        expected_gate_out_acts = torch.logsumexp(experts.act_fn(raw_gate_out), dim=-1)
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
+
+    actual = experts(x)
+    torch.testing.assert_close(actual, expected)

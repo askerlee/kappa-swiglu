@@ -189,6 +189,8 @@ parser.add_argument("--exp-gate-proj-rank", type=int, default=0,
                     help="low-rank factorization rank for expert gate_proj; 0 keeps a dense gate_proj")
 parser.add_argument("--exp-gate-proj-m", type=int, default=1,
                     help="extra averaged dimension m for expert gate_proj on all MoE layers")
+parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="mean", choices=["mean", "logsumexp"],
+                    help="how to combine the expert gate activation m axis: mean or logsumexp")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -221,7 +223,7 @@ parser.add_argument("--total-batch-size", type=int, default=-1, help="total batc
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for the Muon optimizer (for weights)")
-parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.4,
+parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.1,
                     help="fraction of Muon weight decay to apply to low-rank expert gate factors gate_proj_a/gate_proj_b")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -375,6 +377,7 @@ def build_model_meta(depth):
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
         exp_gate_proj_rank=args.exp_gate_proj_rank,
         exp_gate_proj_m=args.exp_gate_proj_m,
+        exp_gate_proj_aggr_scheme=args.exp_gate_proj_aggr_scheme,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,

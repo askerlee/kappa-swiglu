@@ -56,6 +56,7 @@ class GPTConfig:
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         exp_gate_proj_rank: int = 0,  # low-rank factorization rank for expert gate_proj; 0 disables factorization
         exp_gate_proj_m: int = 1,  # extra averaged dimension on expert gate_proj for all MoE layers
+        exp_gate_proj_aggr_scheme: str = "mean",  # how to combine the m axis of expert gate activations: mean|logsumexp
         # Sliding window attention pattern string, tiled across layers. Final layer always L.
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
@@ -118,6 +119,13 @@ class GPTConfig:
         if int(exp_gate_proj_m) < 1:
             raise ValueError(f"exp_gate_proj_m must be >= 1, got {exp_gate_proj_m}")
         self.exp_gate_proj_m = int(exp_gate_proj_m)
+        valid_exp_gate_proj_aggr_schemes = {"mean", "logsumexp"}
+        if exp_gate_proj_aggr_scheme not in valid_exp_gate_proj_aggr_schemes:
+            raise ValueError(
+                "exp_gate_proj_aggr_scheme must be one of "
+                f"{sorted(valid_exp_gate_proj_aggr_schemes)}, got {exp_gate_proj_aggr_scheme!r}"
+            )
+        self.exp_gate_proj_aggr_scheme = exp_gate_proj_aggr_scheme
         self.window_pattern = window_pattern
         self.debug = debug
         
