@@ -10,7 +10,7 @@ import logging
 import torch
 
 from nanochat.common import get_base_dir
-from nanochat.gpt import GPT
+from nanochat.gpt import GPT, get_layer_exp_gate_proj_m
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import setup_default_logging
@@ -40,6 +40,16 @@ def _patch_missing_config_keys(model_config_kwargs):
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
+    def resize_gate_proj_to_target_m(gate_proj, target_m):
+        if gate_proj.ndim == 3:
+            gate_proj = gate_proj.unsqueeze(-1)
+        if gate_proj.shape[-1] == target_m:
+            return gate_proj
+        gate_proj_base = gate_proj.mean(dim=-1, keepdim=True)
+        if target_m == 1:
+            return gate_proj_base
+        return gate_proj_base.expand(*gate_proj_base.shape[:-1], target_m).clone()
+
     n_layer = model_config.n_layer
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
@@ -56,9 +66,15 @@ def _patch_missing_keys(model_data, model_config):
                 continue
             gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"
             gate_proj = model_data.get(gate_proj_key)
-            if gate_proj is not None and gate_proj.ndim == 3 and getattr(model_config, "exp_gate_proj_m", 1) == 1:
-                model_data[gate_proj_key] = gate_proj.unsqueeze(-1)
-                log0(f"Patching legacy {gate_proj_key} to add exp_gate_proj_m=1 dimension")
+            target_m = get_layer_exp_gate_proj_m(model_config, layer_idx)
+            if gate_proj is not None:
+                resized_gate_proj = resize_gate_proj_to_target_m(gate_proj, target_m)
+                if resized_gate_proj.shape != gate_proj.shape:
+                    model_data[gate_proj_key] = resized_gate_proj
+                    log0(
+                        f"Resizing {gate_proj_key} from shape {tuple(gate_proj.shape)} "
+                        f"to {tuple(resized_gate_proj.shape)} for exp_gate_proj_m={target_m}"
+                    )
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)

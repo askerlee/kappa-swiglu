@@ -260,6 +260,28 @@ def has_ve(layer_idx, n_layer):
     """Returns True if GPT layer should have Value Embedding (alternating, last layer always included)."""
     return layer_idx % 2 == (n_layer - 1) % 2
 
+
+def get_moe_layer_indices(config):
+    if config.n_exp <= 1:
+        return []
+    return [
+        layer_idx
+        for layer_idx in range(config.n_layer)
+        if (layer_idx >= config.moe_start_layer) and ((layer_idx + 1) % config.stride == 0)
+    ]
+
+# Only apply gate_proj expansion to the top 2 MoE layers.
+def get_layer_exp_gate_proj_m(config, layer_idx, top_moe_layers=2):
+    configured_m = int(getattr(config, 'exp_gate_proj_m', 1))
+    if configured_m <= 1:
+        return 1
+
+    moe_layers = get_moe_layer_indices(config)
+    if layer_idx not in moe_layers:
+        return 1
+
+    return configured_m if layer_idx in moe_layers[-top_moe_layers:] else 1
+
 def apply_rotary_emb(x, cos, sin):
     assert x.ndim == 4  # multihead attention
     d = x.shape[3] // 2
@@ -654,7 +676,7 @@ class Block(nn.Module):
         super().__init__()
         self.attn = CausalSelfAttention(config, layer_idx)
         if use_moe:
-            self.mlp = MOELayer(config)
+            self.mlp = MOELayer(config, layer_idx)
         else:
             self.mlp = MLP(config)
 
@@ -702,13 +724,15 @@ class Qwen3MLP(nn.Module):
         return down_proj
 
 class Qwen3MLPExperts(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, gate_proj_m=None):
         super().__init__()
         self.debug = config.debug
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_m = int(getattr(config, 'exp_gate_proj_m', 1))
+        if gate_proj_m is None:
+            gate_proj_m = getattr(config, 'exp_gate_proj_m', 1)
+        self.gate_proj_m = int(gate_proj_m)
 
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size, self.gate_proj_m)
@@ -813,12 +837,15 @@ class Qwen3MLPExperts(nn.Module):
         return proj_out
     
 class MOELayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx):
         super().__init__()
         self.router = Router(config)
         self.debug = config.debug
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
-            self.experts = Qwen3MLPExperts(config)
+            self.experts = Qwen3MLPExperts(
+                config,
+                gate_proj_m=get_layer_exp_gate_proj_m(config, layer_idx),
+            )
             self.use_qwen3_moe_mlp = True
             self.experts.set_router(self.router)
         else:
