@@ -104,7 +104,7 @@ def test_exp_gate_proj_logsumexp_aggregation_matches_expected_output():
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
         raw_gate_out = torch.einsum('ech,ehim->ecim', x, experts.gate_proj)
-        expected_gate_out_acts = torch.logsumexp(experts.act_fn(raw_gate_out), dim=-1)
+        expected_gate_out_acts = torch.logsumexp(experts.act_fn(raw_gate_out), dim=-1) - math.log(config.exp_gate_proj_m)
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 

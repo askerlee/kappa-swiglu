@@ -847,7 +847,9 @@ class Qwen3MLPExperts(nn.Module):
             # to preserve variance relative to the single-slice baseline.
             return gate_acts.mean(dim=-1) * (self.gate_proj_m ** 0.5)
         if self.gate_proj_aggr_scheme == 'logsumexp':
-            return torch.logsumexp(gate_acts, dim=-1)
+            # Normalize logsumexp by log(m) so it removes the additive offset and
+            # approaches the mean rather than mean + log(m) at high temperature.
+            return torch.logsumexp(gate_acts, dim=-1) - math.log(gate_acts.size(-1))
         raise ValueError(f"Unsupported gate_proj aggregation scheme: {self.gate_proj_aggr_scheme}")
 
     def forward(self, x):

@@ -56,7 +56,7 @@ class GPTConfig:
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         exp_gate_proj_rank: int = 0,  # low-rank factorization rank for expert gate_proj; 0 disables factorization
         exp_gate_proj_m: int = 1,  # extra averaged dimension on expert gate_proj for all MoE layers
-        exp_gate_proj_aggr_scheme: str = "mean",  # how to combine the m axis of expert gate activations: mean|logsumexp
+        exp_gate_proj_aggr_scheme: str = "mean",  # how to combine the m axis of expert gate activations: mean|normalized logsumexp
         # Sliding window attention pattern string, tiled across layers. Final layer always L.
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long

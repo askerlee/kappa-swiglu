@@ -189,8 +189,8 @@ parser.add_argument("--exp-gate-proj-rank", type=int, default=0,
                     help="low-rank factorization rank for expert gate_proj; 0 keeps a dense gate_proj")
 parser.add_argument("--exp-gate-proj-m", type=int, default=1,
                     help="extra averaged dimension m for expert gate_proj on all MoE layers")
-parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="mean", choices=["mean", "logsumexp"],
-                    help="how to combine the expert gate activation m axis: mean or logsumexp")
+parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="logsumexp", choices=["mean", "logsumexp"],
+                    help="how to combine the expert gate activation m axis: mean or normalized logsumexp")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
