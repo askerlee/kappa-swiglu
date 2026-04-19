@@ -747,7 +747,7 @@ class Qwen3MLPExperts(nn.Module):
     def get_equivalent_expert_weight(self, weight_name):
         weight = getattr(self, weight_name)
         if weight_name == 'gate_proj':
-            return weight.sum(dim=-1)
+            return weight.mean(dim=-1)
         return weight
 
     def forward(self, x):
@@ -771,11 +771,11 @@ class Qwen3MLPExperts(nn.Module):
                 dims=[2],
             )
         gate_out_raw = torch.einsum('ech,ehim->ecim', gate_input, self.gate_proj)
-        gate_out = gate_out_raw.sum(dim=-1)
+        gate_out = gate_out_raw.mean(dim=-1)
 
         if self.debug:
             gate_proj_ortho = ortho_subtract(self.gate_proj, router.w_g.weight.unsqueeze(-1).unsqueeze(-1), dims=[1])
-            gate_out_ortho = torch.einsum('ech,ehim->ecim', x, gate_proj_ortho).sum(dim=-1)
+            gate_out_ortho = torch.einsum('ech,ehim->ecim', x, gate_proj_ortho).mean(dim=-1)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho)
 
         if self.training and self.use_experts_gate_output_loss:
@@ -787,7 +787,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_out_gs = ReuseBmmWithScaledInputGrad.apply(
                     gate_out,
                     gate_input,
-                    self.gate_proj.sum(dim=-1),
+                    self.gate_proj.mean(dim=-1),
                     alpha_t,
                 )
 

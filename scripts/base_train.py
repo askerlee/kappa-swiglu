@@ -186,7 +186,7 @@ parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', cons
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
                     help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
 parser.add_argument("--qwen3-gate-proj-m", type=int, default=1,
-                    help="extra summed dimension m for Qwen3 MoE gate_proj weights")
+                    help="extra averaged dimension m for Qwen3 MoE gate_proj weights")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
