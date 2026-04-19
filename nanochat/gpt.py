@@ -1601,7 +1601,10 @@ class GPT(nn.Module):
                 losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
                 exp_gate_grad = layer.mlp.experts.gate_proj.grad
                 if exp_gate_grad is not None:
-                    exp_gate_grad_norm = exp_gate_grad.norm(dim=tuple(range(1, exp_gate_grad.ndim)))
+                    exp_gate_grad_norm = torch.linalg.vector_norm(
+                        exp_gate_grad,
+                        dim=tuple(range(1, exp_gate_grad.ndim)),
+                    )
                     exp_gate_grad_norms.append(exp_gate_grad_norm)
                     losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 

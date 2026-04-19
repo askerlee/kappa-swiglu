@@ -550,7 +550,10 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
             exp_gate_grad = layer.mlp.experts.gate_proj.grad
-            exp_gate_grad_norm = exp_gate_grad.norm(dim=tuple(range(1, exp_gate_grad.ndim)))
+            exp_gate_grad_norm = torch.linalg.vector_norm(
+                exp_gate_grad,
+                dim=tuple(range(1, exp_gate_grad.ndim)),
+            )
             exp_gate_grad_norms.append(exp_gate_grad_norm)
             losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
