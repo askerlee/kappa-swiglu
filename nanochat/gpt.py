@@ -858,6 +858,7 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_out_acts_normed = None
         self.use_experts_dyn_grad_scale = bool(getattr(config, 'use_experts_dyn_grad_scale', False))
         self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
+        self.ortho_x_router_wg_coeff = float(getattr(config, 'ortho_x_router_wg_coeff', 1.0))
         self._expert_update_scale = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
@@ -873,6 +874,9 @@ class Qwen3MLPExperts(nn.Module):
 
     def set_use_ortho_x_for_exp_gate(self, enabled):
         self.use_ortho_x_for_exp_gate = bool(enabled)
+
+    def set_ortho_x_router_wg_coeff(self, coeff):
+        self.ortho_x_router_wg_coeff = float(coeff)
 
     def get_param_update_hooks(self):
         hooks = {}
@@ -899,7 +903,12 @@ class Qwen3MLPExperts(nn.Module):
                 torch.as_tensor(0.1, device=router.w_g.weight.device, dtype=router.w_g.weight.dtype),
                 torch.tensor(False, device=router.w_g.weight.device, dtype=torch.bool),
             )
-            gate_input = ortho_subtract(x, router_wg_for_gate.unsqueeze(1), dims=[2])
+            gate_input = ortho_subtract(
+                x,
+                router_wg_for_gate.unsqueeze(1),
+                b_discount=self.ortho_x_router_wg_coeff,
+                dims=[2],
+            )
         gate_out = torch.bmm(gate_input, self.gate_proj)
 
         if self.debug:
@@ -975,6 +984,10 @@ class MOELayer(nn.Module):
     def set_use_ortho_x_for_exp_gate(self, enabled):
         if hasattr(self.experts, 'set_use_ortho_x_for_exp_gate'):
             self.experts.set_use_ortho_x_for_exp_gate(enabled)
+
+    def set_ortho_x_router_wg_coeff(self, coeff):
+        if hasattr(self.experts, 'set_ortho_x_router_wg_coeff'):
+            self.experts.set_ortho_x_router_wg_coeff(coeff)
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -1521,6 +1534,14 @@ class GPT(nn.Module):
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 mlp.set_use_ortho_x_for_exp_gate(enabled)
+
+    def set_ortho_x_router_wg_coeff(self, coeff):
+        coeff = float(coeff)
+        self.config.ortho_x_router_wg_coeff = coeff
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.set_ortho_x_router_wg_coeff(coeff)
 
     def update_aux_free_load_balancing(self):
         for block in self.transformer.h:

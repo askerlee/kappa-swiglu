@@ -169,7 +169,7 @@ parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-loss-target", type=str, default="both", choices=["gate_proj", "c_fc", "both"],
+parser.add_argument("--router-ortho-loss-target", type=str, default="gate_proj", choices=["gate_proj", "c_fc", "both"],
                     help="which expert projection(s) to orthogonalize against router w_g: gate_proj|c_fc|both")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
@@ -183,6 +183,8 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=False,
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj")
+parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
+                    help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -368,6 +370,7 @@ def build_model_meta(depth):
         router_ortho_loss_target=args.router_ortho_loss_target,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
+        ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,

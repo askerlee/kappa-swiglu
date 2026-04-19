@@ -80,6 +80,8 @@ parser.add_argument("--router-ortho-loss-target", type=str, default=None, choice
                     help="which expert projection(s) to orthogonalize against router w_g (default: inherit from saved config of base model)")
 parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=None,
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj (default: inherit from saved config of base model)")
+parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=None,
+                    help="b_discount coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate (default: inherit from saved config of base model)")
 # If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
 # If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
@@ -243,6 +245,18 @@ user_config["use_ortho_x_for_exp_gate"] = args.use_ortho_x_for_exp_gate
 if not use_dummy_wandb:
     wandb_run.config.update(
         {"use_ortho_x_for_exp_gate": args.use_ortho_x_for_exp_gate},
+        allow_val_change=True,
+    )
+if args.ortho_x_router_wg_coeff is None:
+    args.ortho_x_router_wg_coeff = float(getattr(model.config, "ortho_x_router_wg_coeff", 1.0))
+    print0(f"Inherited ortho_x_router_wg_coeff: {args.ortho_x_router_wg_coeff}")
+else:
+    print0(f"Specified ortho_x_router_wg_coeff: {args.ortho_x_router_wg_coeff}")
+model.set_ortho_x_router_wg_coeff(args.ortho_x_router_wg_coeff)
+user_config["ortho_x_router_wg_coeff"] = args.ortho_x_router_wg_coeff
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {"ortho_x_router_wg_coeff": args.ortho_x_router_wg_coeff},
         allow_val_change=True,
     )
 if args.use_aux_free_load_balancing is None:

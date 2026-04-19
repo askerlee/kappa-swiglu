@@ -27,6 +27,7 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection(s) to orthogonalize against router.w_g: gate_proj|c_fc|both
         use_ortho_x_for_exp_gate: bool = False,  # subtract router.w_g from expert gate inputs before gate_proj
+        ortho_x_router_wg_coeff: float = 1.0,  # b_discount coefficient for router.w_g subtraction used by expert gate orthogonalization
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
@@ -91,6 +92,7 @@ class GPTConfig:
             )
         self.router_ortho_loss_target = router_ortho_loss_target
         self.use_ortho_x_for_exp_gate = use_ortho_x_for_exp_gate
+        self.ortho_x_router_wg_coeff = float(ortho_x_router_wg_coeff)
         self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k
