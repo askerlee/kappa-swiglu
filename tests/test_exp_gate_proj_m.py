@@ -36,7 +36,7 @@ def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
     torch.testing.assert_close(actual, expected)
 
 
-def test_exp_gate_proj_m_only_applies_to_highest_two_moe_layers_with_low_rank():
+def test_exp_gate_proj_m_applies_to_all_moe_layers_with_low_rank():
     config = GPTConfig(
         n_layer=6,
         moe_start_layer=2,
@@ -62,7 +62,7 @@ def test_exp_gate_proj_m_only_applies_to_highest_two_moe_layers_with_low_rank():
         if hasattr(layer.mlp, 'experts') and isinstance(layer.mlp.experts, Qwen3MLPExperts)
     ]
 
-    assert observed_ms == [1, 1, 3, 3]
+    assert observed_ms == [3, 3, 3, 3]
     assert observed_ranks == [3, 3, 3, 3]
 
 
