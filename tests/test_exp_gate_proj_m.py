@@ -37,7 +37,7 @@ def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
     torch.testing.assert_close(actual, expected)
 
 
-def test_exp_gate_proj_m_uses_softmax_activation():
+def test_exp_gate_proj_m_uses_sigmoid_activation():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -52,7 +52,8 @@ def test_exp_gate_proj_m_uses_softmax_activation():
     raw_gate_out = torch.randn(config.n_exp, 5, 4 * config.n_embd, config.exp_gate_proj_m)
     gate_out_acts = experts.act_fn(raw_gate_out)
 
-    torch.testing.assert_close(gate_out_acts.sum(dim=-1), torch.ones_like(gate_out_acts[..., 0]))
+    assert torch.all(gate_out_acts >= 0)
+    assert torch.all(gate_out_acts <= 1)
 
 
 def test_exp_gate_proj_m_one_keeps_silu_activation():
