@@ -717,7 +717,7 @@ class Qwen3MLP(nn.Module):
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = nn.Sigmoid() if self.gate_proj_m > 1 else SiLUActivation()
+        self.act_fn = SiLUActivation()
 
     def forward(self, x):
         down_proj = self.c_proj(self.act_fn(self.gate_proj(x)) * self.c_fc(x))
@@ -764,7 +764,7 @@ class Qwen3MLPExperts(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
-        self.act_fn = nn.Sigmoid() if self.gate_proj_m > 1 else SiLUActivation()
+        self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
@@ -838,7 +838,7 @@ class Qwen3MLPExperts(nn.Module):
             return self.get_gate_proj_dense_weight(average_over_m=True)
         return getattr(self, weight_name)
 
-    def _reduce_gate_acts(self, gate_acts):
+    def _reduce_gate_acts(self, gate_acts, gate_logits=None):
         if gate_acts.ndim != 4:
             return gate_acts
         if self.gate_proj_aggr_scheme == 'mean':
@@ -847,10 +847,11 @@ class Qwen3MLPExperts(nn.Module):
             # to preserve variance relative to the single-slice baseline.
             return gate_acts.mean(dim=-1) * (self.gate_proj_m ** 0.5)
         if self.gate_proj_aggr_scheme == 'softmaxsum':
-            # Keep the config name for backward compatibility, but use a
-            # softmax-weighted sum over the m axis instead of softmaxsum.
-            gate_weights = F.softmax(gate_acts, dim=-1)
-            return (gate_weights * gate_acts).sum(dim=-1)
+            assert gate_logits is not None, "gate_logits must be provided for softmaxsum aggregation"
+            # Weight raw branch logits by their magnitude, keep signed competition,
+            # then apply a single SiLU after aggregation.
+            gate_weights = F.softmax(gate_logits.abs(), dim=-1)
+            return self.act_fn((gate_weights * gate_logits).sum(dim=-1))
         raise ValueError(f"Unsupported gate_proj aggregation scheme: {self.gate_proj_aggr_scheme}")
 
     def forward(self, x):
@@ -875,7 +876,7 @@ class Qwen3MLPExperts(nn.Module):
             )
         gate_out_raw = self._compute_gate_out_raw(gate_input)
         gate_out_acts = self.act_fn(gate_out_raw)
-        gate_out_acts = self._reduce_gate_acts(gate_out_acts)
+        gate_out_acts = self._reduce_gate_acts(gate_out_acts, gate_logits=gate_out_raw)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -888,7 +889,7 @@ class Qwen3MLPExperts(nn.Module):
             )
             gate_out_ortho_raw = self._compute_gate_out_raw(x, gate_proj=gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
-            gate_out_ortho_acts = self._reduce_gate_acts(gate_out_ortho_acts)
+            gate_out_ortho_acts = self._reduce_gate_acts(gate_out_ortho_acts, gate_logits=gate_out_ortho_raw)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -898,8 +899,9 @@ class Qwen3MLPExperts(nn.Module):
             else:
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out_acts.device, dtype=gate_out_acts.dtype)
                 gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
-                gate_out_gs = self.act_fn(self._compute_gate_out_raw(gate_input_gs))
-                gate_out_gs = self._reduce_gate_acts(gate_out_gs)
+                gate_out_gs_raw = self._compute_gate_out_raw(gate_input_gs)
+                gate_out_gs = self.act_fn(gate_out_gs_raw)
+                gate_out_gs = self._reduce_gate_acts(gate_out_gs, gate_logits=gate_out_gs_raw)
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
