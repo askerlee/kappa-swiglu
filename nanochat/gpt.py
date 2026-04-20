@@ -271,7 +271,7 @@ def get_moe_layer_indices(config):
     ]
 
 
-def get_layer_exp_gate_proj_m(config, layer_idx):
+def get_layer_exp_gate_proj_m(config, layer_idx, top_expanded_moe_layers=2):
     configured_m = int(getattr(config, 'exp_gate_proj_m', 1))
     if configured_m <= 1:
         return 1
@@ -280,7 +280,7 @@ def get_layer_exp_gate_proj_m(config, layer_idx):
     if layer_idx not in moe_layers:
         return 1
 
-    return configured_m
+    return configured_m if layer_idx in moe_layers[-top_expanded_moe_layers:] else 1
 
 def apply_rotary_emb(x, cos, sin):
     assert x.ndim == 4  # multihead attention
