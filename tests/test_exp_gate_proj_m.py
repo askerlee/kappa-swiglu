@@ -119,14 +119,14 @@ def test_exp_gate_proj_rank_zero_keeps_dense_gate_projection():
     assert not hasattr(experts, 'gate_proj_b')
 
 
-def test_exp_gate_proj_logsumexp_aggregation_matches_expected_output():
+def test_exp_gate_proj_logsumexp_aggregation_uses_softmax_weighted_sum():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         exp_gate_proj_rank=0,
         exp_gate_proj_m=3,
-        exp_gate_proj_aggr_scheme='logsumexp',
+        exp_gate_proj_aggr_scheme='softmaxsum',
         use_experts_gate_output_loss=False,
         debug=False,
     )
@@ -139,7 +139,8 @@ def test_exp_gate_proj_logsumexp_aggregation_matches_expected_output():
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
         raw_gate_out = torch.einsum('ech,ehim->ecim', x, experts.gate_proj)
-        expected_gate_out_acts = torch.logsumexp(experts.act_fn(raw_gate_out), dim=-1) - math.log(config.exp_gate_proj_m)
+        gate_acts = experts.act_fn(raw_gate_out)
+        expected_gate_out_acts = (torch.softmax(gate_acts, dim=-1) * gate_acts).sum(dim=-1)
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 

@@ -237,9 +237,9 @@ def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True,
     # code below is the same as:
     # > z_loss = torch.log(torch.exp(logits).sum(dim=-1)) ** 2.0
     if demean_logits:
-        z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
+        z_loss = torch.softmaxsum(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
     else:
-        z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
+        z_loss = torch.softmaxsum(logits, dim=-1) ** 2.0  # [B, T]
 
     if z_loss_penalize_mean_logits:
         mean_logit = logits.mean(dim=-1)  # [B, T]
@@ -846,10 +846,11 @@ class Qwen3MLPExperts(nn.Module):
             # 1 / sqrt(gate_proj_m). Scale the mean activations by sqrt(gate_proj_m)
             # to preserve variance relative to the single-slice baseline.
             return gate_acts.mean(dim=-1) * (self.gate_proj_m ** 0.5)
-        if self.gate_proj_aggr_scheme == 'logsumexp':
-            # Normalize logsumexp by log(m) so it removes the additive offset and
-            # approaches the mean rather than mean + log(m) at high temperature.
-            return torch.logsumexp(gate_acts, dim=-1) - math.log(gate_acts.size(-1))
+        if self.gate_proj_aggr_scheme == 'softmaxsum':
+            # Keep the config name for backward compatibility, but use a
+            # softmax-weighted sum over the m axis instead of softmaxsum.
+            gate_weights = F.softmax(gate_acts, dim=-1)
+            return (gate_weights * gate_acts).sum(dim=-1)
         raise ValueError(f"Unsupported gate_proj aggregation scheme: {self.gate_proj_aggr_scheme}")
 
     def forward(self, x):
