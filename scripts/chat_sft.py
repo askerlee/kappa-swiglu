@@ -76,8 +76,6 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
-parser.add_argument("--router-ortho-loss-target", type=str, default=None, choices=["gate_proj", "c_fc", "both"],
-                    help="which expert projection(s) to orthogonalize against router w_g (default: inherit from saved config of base model)")
 parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=None,
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj (default: inherit from saved config of base model)")
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=None,
@@ -125,29 +123,11 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale):
             else:
                 router.router_wg_grad_scale = router_wg_grad_scale
 
-def get_router_ortho_subloss_weights(target):
-    if target == "gate_proj":
-        return 1.0, 0.0
-    if target == "c_fc":
-        return 0.0, 1.0
-    return 0.5, 0.5
-
-def combine_router_ortho_sublosses(losses, gate_proj_weight, c_fc_weight):
-    combined_loss = None
+def combine_router_ortho_sublosses(losses):
     gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
-    c_fc_loss = losses.get("router_ortho_loss_c_fc")
-
-    if gate_proj_weight != 0.0 and gate_proj_loss is not None:
-        combined_loss = gate_proj_loss * gate_proj_weight
-    if c_fc_weight != 0.0 and c_fc_loss is not None:
-        c_fc_term = c_fc_loss * c_fc_weight
-        if combined_loss is None:
-            combined_loss = c_fc_term
-        else:
-            combined_loss = combined_loss + c_fc_term
-    if combined_loss is None:
+    if gate_proj_loss is None:
         return 0.0
-    return combined_loss
+    return gate_proj_loss
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -181,15 +161,6 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # NOTE: the optim state of the base model is not loaded here.
 # NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
-if args.router_ortho_loss_target is None:
-    args.router_ortho_loss_target = getattr(model.config, "router_ortho_loss_target", "gate_proj")
-    print0(f"Inherited router_ortho_loss_target: {args.router_ortho_loss_target}")
-else:
-    print0(f"Specified router_ortho_loss_target: {args.router_ortho_loss_target}")
-model.set_router_ortho_loss_target(args.router_ortho_loss_target)
-user_config["router_ortho_loss_target"] = args.router_ortho_loss_target
-if not use_dummy_wandb:
-    wandb_run.config.update({"router_ortho_loss_target": args.router_ortho_loss_target}, allow_val_change=True)
 if args.use_ortho_x_for_exp_gate is None:
     args.use_ortho_x_for_exp_gate = bool(getattr(model.config, "use_ortho_x_for_exp_gate", False))
     print0(f"Inherited use_ortho_x_for_exp_gate: {args.use_ortho_x_for_exp_gate}")
@@ -283,10 +254,7 @@ set_router_wg_grad_scale(
 )
 
 orig_model = model
-router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
-router_ortho_gate_proj_weight, router_ortho_c_fc_weight = get_router_ortho_subloss_weights(
-    args.router_ortho_loss_target
-)
+router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 if args.router_ortho_loss_weight == -1:
@@ -727,11 +695,7 @@ while True:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
         # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-        router_ortho_loss = combine_router_ortho_sublosses(
-            losses,
-            router_ortho_gate_proj_weight,
-            router_ortho_c_fc_weight,
-        )
+        router_ortho_loss = combine_router_ortho_sublosses(losses)
         loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -739,11 +703,7 @@ while True:
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
 
-    losses['router_ortho_loss'] = combine_router_ortho_sublosses(
-        losses,
-        router_ortho_gate_proj_weight,
-        router_ortho_c_fc_weight,
-    )
+    losses['router_ortho_loss'] = combine_router_ortho_sublosses(losses)
 
     if MANAGER.collect_load_balancing_stats:
         collect_grad_stats(model, losses, model.config.moe_start_layer, depth)

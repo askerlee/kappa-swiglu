@@ -16,7 +16,6 @@ class MOEManager:
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
-            "router_ortho_loss_c_fc": [],
             "experts_ortho_loss": [],
             "experts_gate_output_loss": [],
             "projs_diversity_loss": [],
@@ -37,7 +36,6 @@ class MOEManager:
         self._start_frac_names = {
             "router_ortho_loss",
             "router_ortho_loss_gate_proj",
-            "router_ortho_loss_c_fc",
             "experts_ortho_loss",
             "experts_gate_output_loss",
             "projs_diversity_loss",

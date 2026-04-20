@@ -943,7 +943,6 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
-        self.router_ortho_loss_target = getattr(config, 'router_ortho_loss_target', 'gate_proj')
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
         # But the computation is slow, so disabled by default.
@@ -953,9 +952,6 @@ class MOELayer(nn.Module):
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
-
-    def set_router_ortho_loss_target(self, target):
-        self.router_ortho_loss_target = target
 
     def set_use_ortho_x_for_exp_gate(self, enabled):
         if hasattr(self.experts, 'set_use_ortho_x_for_exp_gate'):
@@ -1096,46 +1092,34 @@ class MOELayer(nn.Module):
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
             # new_zeros(()) returns a zero scalar.
             zero = self.experts.c_fc.new_zeros(())
-            sub_losses = {
-                'router_ortho_loss_gate_proj': zero,
-                'router_ortho_loss_c_fc': zero,
-            }
+            sub_losses = {'router_ortho_loss_gate_proj': zero}
             return zero, sub_losses
 
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-        target_names = ['gate_proj', 'c_fc']
-
-        ortho_losses_by_target = {}
-        for target_name in target_names:
-            if hasattr(self.experts, 'get_equivalent_expert_weight'):
-                expert_weights = self.experts.get_equivalent_expert_weight(target_name)
-            else:
-                expert_weights = getattr(self.experts, target_name)
-            # Use cosine instead of unnormalized dot product. Otherwise, the loss
-            # will reduce itself by suppressing the increase of the magnitudes of 
-            # router_weights and expert_weights, which will hurt performance.
-            ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
-            # Weight columns by their current energy (magnitude), but detach() to 
-            # avoid the loss reduce itself by shrinking those magnitudes directly.
-            expert_weight_energy = expert_weights.detach().float().square().sum(dim=1)
-            expert_weight_energy = expert_weight_energy / expert_weight_energy.mean().clamp_min(1e-12)
-            expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
-            ortho_losses_weights = torch.ones_like(ortho_losses_signed)
-            # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
-            ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
-            # NOTE: the ortho loss is summed over all feature columns (intermediate_size dimension) 
-            # and averaged over rows (expert dimension).
-            # Later the ortho losses of different MoE layers are added up.
-            # So the magnitude could be as large as 50~200.
-            ortho_losses_by_target[target_name] = (
-                ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
-            ).sum(dim=1).mean()
-
-        ortho_loss = (ortho_losses_by_target['gate_proj'] + ortho_losses_by_target['c_fc']) / 2
-        sub_losses = {
-            'router_ortho_loss_gate_proj': ortho_losses_by_target['gate_proj'],
-            'router_ortho_loss_c_fc': ortho_losses_by_target['c_fc'],
-        }
+        if hasattr(self.experts, 'get_equivalent_expert_weight'):
+            expert_weights = self.experts.get_equivalent_expert_weight('gate_proj')
+        else:
+            expert_weights = self.experts.gate_proj
+        # Use cosine instead of unnormalized dot product. Otherwise, the loss
+        # will reduce itself by suppressing the increase of the magnitudes of
+        # router_weights and expert_weights, which will hurt performance.
+        ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
+        # Weight columns by their current energy (magnitude), but detach() to
+        # avoid the loss reduce itself by shrinking those magnitudes directly.
+        expert_weight_energy = expert_weights.detach().float().square().sum(dim=1)
+        expert_weight_energy = expert_weight_energy / expert_weight_energy.mean().clamp_min(1e-12)
+        expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
+        ortho_losses_weights = torch.ones_like(ortho_losses_signed)
+        # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
+        ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
+        # NOTE: the ortho loss is summed over all feature columns (intermediate_size dimension)
+        # and averaged over rows (expert dimension).
+        # Later the ortho losses of different MoE layers are added up.
+        # So the magnitude could be as large as 50~200.
+        ortho_loss = (
+            ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
+        ).sum(dim=1).mean()
+        sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
         return ortho_loss, sub_losses
 
     @torch._dynamo.disable
@@ -1505,13 +1489,6 @@ class GPT(nn.Module):
                     bias_update_speed=bias_update_speed,
                 )
 
-    def set_router_ortho_loss_target(self, target):
-        self.config.router_ortho_loss_target = target
-        for block in self.transformer.h:
-            mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                mlp.set_router_ortho_loss_target(target)
-
     def set_use_ortho_x_for_exp_gate(self, enabled):
         enabled = bool(enabled)
         self.config.use_ortho_x_for_exp_gate = enabled
@@ -1616,7 +1593,7 @@ class GPT(nn.Module):
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
-        router_ortho_sub_loss_names = ('router_ortho_loss_gate_proj', 'router_ortho_loss_c_fc')
+        router_ortho_sub_loss_names = ('router_ortho_loss_gate_proj',)
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"

@@ -169,13 +169,9 @@ parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-loss-target", type=str, default="gate_proj", choices=["gate_proj", "c_fc", "both"],
-                    help="which expert projection(s) to orthogonalize against router w_g: gate_proj|c_fc|both")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
-parser.add_argument("--router-ortho-both-switch-target", type=str2bool, nargs='?', const=True, default=False,
-                    help="when --router-ortho-loss-target=both, use router_ortho_is_on to alternate between gate_proj and c_fc sub-losses instead of using on/off gating; forces --router-ortho-on-prob=0.5")
 parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
 parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
@@ -256,15 +252,6 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 args = parser.parse_args()
 if args.debug:
     args.compile = False
-
-if args.router_ortho_both_switch_target:
-    if args.router_ortho_loss_target != "both":
-        raise ValueError("--router-ortho-both-switch-target requires --router-ortho-loss-target=both")
-    if not args.use_router_ortho_blockwise:
-        raise ValueError("--router-ortho-both-switch-target requires --use-router-ortho-blockwise")
-    if args.router_ortho_on_prob != 0.5:
-        print("Overriding --router-ortho-on-prob to 0.5 because --router-ortho-both-switch-target is enabled.")
-        args.router_ortho_on_prob = 0.5
 
 if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
@@ -371,7 +358,6 @@ def build_model_meta(depth):
         aux_loss_weight=args.aux_loss_weight,
         use_full_router_probs_for_aux_loss=args.use_full_router_probs_for_aux_loss,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
-        router_ortho_loss_target=args.router_ortho_loss_target,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
@@ -455,7 +441,6 @@ if resuming:
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
     model.load_state_dict(model_data, strict=True, assign=True)
-    model.set_router_ortho_loss_target(args.router_ortho_loss_target)
     set_router_wg_grad_scale(model, args.router_wg_grad_scale)
     del model_data # free up this memory after the copy
 
@@ -537,7 +522,7 @@ def disable_fp8(model):
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 router_ortho_loss_name = "router_ortho_loss"
-router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj", "router_ortho_loss_c_fc")
+router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
 
 if args.compile:
     model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
@@ -716,33 +701,11 @@ def get_router_wg_grad_scale(base_scale, target_scale, it, num_anneal_iterations
     anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
     return target_scale + (base_scale - target_scale) * (1.0 - anneal_progress)
 
-def get_router_ortho_subloss_weights(target, use_switch_target=False, router_ortho_is_on=1.0):
-    if use_switch_target:
-        if router_ortho_is_on > 0.0:
-            return 1.0, 0.0
-        return 0.0, 1.0
-    if target == "gate_proj":
-        return 1.0, 0.0
-    if target == "c_fc":
-        return 0.0, 1.0
-    return 0.5, 0.5
-
-def combine_router_ortho_sublosses(losses, gate_proj_weight, c_fc_weight):
-    combined_loss = None
+def combine_router_ortho_sublosses(losses):
     gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
-    c_fc_loss = losses.get("router_ortho_loss_c_fc")
-
-    if gate_proj_weight != 0.0 and gate_proj_loss is not None:
-        combined_loss = gate_proj_loss * gate_proj_weight
-    if c_fc_weight != 0.0 and c_fc_loss is not None:
-        c_fc_term = c_fc_loss * c_fc_weight
-        if combined_loss is None:
-            combined_loss = c_fc_term
-        else:
-            combined_loss = combined_loss + c_fc_term
-    if combined_loss is None:
+    if gate_proj_loss is None:
         return 0.0
-    return combined_loss
+    return gate_proj_loss
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
@@ -1003,20 +966,6 @@ while True:
     if router_ortho_blockwise_active and router_ortho_is_on > 0.0 and args.router_ortho_blockwise_scale_preserve and args.router_ortho_on_prob < 1.0:
         router_ortho_loss_on_scale = 1.0 / args.router_ortho_on_prob
     router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
-    use_router_ortho_switch_target = False
-    # If router_ortho_both_switch_target, then if router_ortho_is_on, 
-    # we apply the gate_proj loss, otherwise we apply the c_fc loss,
-    # so that in effect it switches between these two.
-    # During warmup we disable switch-target behavior and use the regular
-    # combined router_ortho_loss instead.
-    if args.router_ortho_both_switch_target and router_ortho_blockwise_active:
-        use_router_ortho_switch_target = True
-        router_ortho_effective_loss_weight = router_ortho_loss_weight
-    router_ortho_gate_proj_weight, router_ortho_c_fc_weight = get_router_ortho_subloss_weights(
-        args.router_ortho_loss_target,
-        use_switch_target=use_router_ortho_switch_target,
-        router_ortho_is_on=router_ortho_is_on,
-    )
 
     router_wg_grad_scale = get_router_wg_grad_scale(
         args.router_wg_grad_scale,
@@ -1255,7 +1204,6 @@ while True:
             'router_z_loss': 0.0,
             router_ortho_loss_name: 0.0,
             'router_ortho_loss_gate_proj': 0.0,
-            'router_ortho_loss_c_fc': 0.0,
             'experts_ortho_loss': 0.0,
             'experts_gate_output_loss': 0.0,
             'projs_diversity_loss': 0.0,
@@ -1275,11 +1223,7 @@ while True:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-            router_ortho_loss = combine_router_ortho_sublosses(
-                micro_losses,
-                router_ortho_gate_proj_weight,
-                router_ortho_c_fc_weight,
-            )
+            router_ortho_loss = combine_router_ortho_sublosses(micro_losses)
             loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -1288,11 +1232,7 @@ while True:
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
 
         losses = average_step_losses(step_losses, grad_accum_steps)
-        losses[router_ortho_loss_name] = combine_router_ortho_sublosses(
-            losses,
-            router_ortho_gate_proj_weight,
-            router_ortho_c_fc_weight,
-        )
+        losses[router_ortho_loss_name] = combine_router_ortho_sublosses(losses)
 
         if MANAGER.collect_load_balancing_stats:
             collect_grad_stats(model, losses, args.moe_start_layer, args.depth)

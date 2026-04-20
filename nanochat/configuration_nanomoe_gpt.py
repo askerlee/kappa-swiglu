@@ -25,7 +25,7 @@ class GPTConfig:
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
-        router_ortho_loss_target: str = "gate_proj",  # which expert projection(s) to orthogonalize against router.w_g: gate_proj|c_fc|both
+        router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_ortho_x_for_exp_gate: bool = False,  # subtract router.w_g from expert gate inputs before gate_proj
         ortho_x_router_wg_coeff: float = 1.0,  # b_discount coefficient for router.w_g subtraction used by expert gate orthogonalization
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
@@ -83,7 +83,7 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_router_ortho_loss = use_router_ortho_loss
-        valid_router_ortho_loss_targets = { "gate_proj", "c_fc", "both" }
+        valid_router_ortho_loss_targets = {"gate_proj"}
         if router_ortho_loss_target not in valid_router_ortho_loss_targets:
             raise ValueError(
                 "router_ortho_loss_target must be one of "
