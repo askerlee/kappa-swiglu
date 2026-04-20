@@ -237,9 +237,9 @@ def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True,
     # code below is the same as:
     # > z_loss = torch.log(torch.exp(logits).sum(dim=-1)) ** 2.0
     if demean_logits:
-        z_loss = torch.softmaxsum(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
+        z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
     else:
-        z_loss = torch.softmaxsum(logits, dim=-1) ** 2.0  # [B, T]
+        z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
 
     if z_loss_penalize_mean_logits:
         mean_logit = logits.mean(dim=-1)  # [B, T]

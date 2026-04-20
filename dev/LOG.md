@@ -672,7 +672,7 @@ Ported multi-token prediction from modded-nanogpt. Instead of predicting just th
 
 ### Implementation
 
-- Instead of calling the loss `n_predict` times, uses a fancy batched computation using `unfold` + `gather` + cross-entropy decomposition (`CE = softmaxsum - logits[target]`)
+- Instead of calling the loss `n_predict` times, uses a fancy batched computation using `unfold` + `gather` + cross-entropy decomposition (`CE = logsumexp - logits[target]`)
 - Schedule anneals from 3-token to 1-token prediction:
   - 0-33%: `[1.0, 0.5, 0.25→0]` (3rd token fades)
   - 33-67%: `[1.0, 0.5→0]` (2nd token fades)

@@ -190,7 +190,7 @@ parser.add_argument("--exp-gate-proj-rank", type=int, default=0,
 parser.add_argument("--exp-gate-proj-m", type=int, default=1,
                     help="extra averaged dimension m for expert gate_proj on all MoE layers")
 parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="softmaxsum", choices=["mean", "softmaxsum"],
-                    help="how to combine the expert gate activation m axis: mean or softmax-weighted sum (legacy option name: softmaxsum)")
+                    help="how to combine the expert gate activation m axis: mean or softmax-weighted sum")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
