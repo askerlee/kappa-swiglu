@@ -740,7 +740,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_rank > 0:
             if self.gate_proj_m > 1:
                 self.gate_proj_a = nn.Parameter(
-                    torch.empty(self.n_exp, self.hidden_size, self.gate_proj_rank, self.gate_proj_m)
+                    torch.empty(self.n_exp, self.hidden_size, self.gate_proj_rank)
                 )
                 self.gate_proj_b = nn.Parameter(
                     torch.empty(self.n_exp, self.gate_proj_rank, self.intermediate_size, self.gate_proj_m)
@@ -796,7 +796,7 @@ class Qwen3MLPExperts(nn.Module):
     def get_gate_proj_dense_weight(self, average_over_m=False):
         if self.gate_proj_rank > 0:
             if self.gate_proj_m > 1:
-                gate_proj_weight = torch.einsum('ehrm,erim->ehim', self.gate_proj_a, self.gate_proj_b)
+                gate_proj_weight = torch.einsum('ehr,erim->ehim', self.gate_proj_a, self.gate_proj_b)
             else:
                 gate_proj_weight = torch.bmm(self.gate_proj_a, self.gate_proj_b)
         else:
@@ -812,8 +812,8 @@ class Qwen3MLPExperts(nn.Module):
             return torch.bmm(gate_input, gate_proj)
         if self.gate_proj_rank > 0:
             if self.gate_proj_m > 1:
-                gate_hidden = torch.einsum('ech,ehrm->ecrm', gate_input, self.gate_proj_a)
-                return torch.einsum('ecrm,erim->ecim', gate_hidden, self.gate_proj_b)
+                gate_hidden = torch.einsum('ech,ehr->ecr', gate_input, self.gate_proj_a)
+                return torch.einsum('ecr,erim->ecim', gate_hidden, self.gate_proj_b)
             gate_hidden = torch.bmm(gate_input, self.gate_proj_a)
             return torch.bmm(gate_hidden, self.gate_proj_b)
         if self.gate_proj_m > 1:
