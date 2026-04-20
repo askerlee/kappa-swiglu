@@ -717,7 +717,7 @@ class Qwen3MLP(nn.Module):
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = SiLUActivation()
+        self.act_fn = nn.Softmax(dim=-1) if self.gate_proj_m > 1 else SiLUActivation()
 
     def forward(self, x):
         down_proj = self.c_proj(self.act_fn(self.gate_proj(x)) * self.c_fc(x))

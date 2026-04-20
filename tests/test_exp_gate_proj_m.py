@@ -1,8 +1,9 @@
+import math
+
 import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLPExperts
-import math
 
 def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
     torch.manual_seed(0)
@@ -34,6 +35,39 @@ def test_exp_gate_proj_rank_and_m_factorize_gate_projection_before_fc_gating():
 
     actual = experts(x)
     torch.testing.assert_close(actual, expected)
+
+
+def test_exp_gate_proj_m_uses_softmax_activation():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        exp_gate_proj_rank=0,
+        exp_gate_proj_m=3,
+        use_experts_gate_output_loss=False,
+        debug=False,
+    )
+
+    experts = Qwen3MLPExperts(config)
+
+    raw_gate_out = torch.randn(config.n_exp, 5, 4 * config.n_embd, config.exp_gate_proj_m)
+    gate_out_acts = experts.act_fn(raw_gate_out)
+
+    torch.testing.assert_close(gate_out_acts.sum(dim=-1), torch.ones_like(gate_out_acts[..., 0]))
+
+
+def test_exp_gate_proj_m_one_keeps_silu_activation():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        exp_gate_proj_rank=0,
+        exp_gate_proj_m=1,
+        use_experts_gate_output_loss=False,
+        debug=False,
+    )
+
+    experts = Qwen3MLPExperts(config)
+
+    assert isinstance(experts.act_fn, type(Qwen3MLPExperts(GPTConfig(n_exp=2, n_embd=4, exp_gate_proj_m=1)).act_fn))
 
 
 def test_exp_gate_proj_m_applies_to_all_moe_layers_with_low_rank():
