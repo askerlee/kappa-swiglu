@@ -217,6 +217,7 @@ parser.add_argument("--target-param-data-ratio", type=float, default=10, help="c
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
+parser.add_argument("--max-auto-grad-accum-steps", type=int, default=32, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for the Muon optimizer (for weights)")
@@ -264,6 +265,8 @@ if args.exp_gate_proj_m < 1:
     raise ValueError("--exp-gate-proj-m must be >= 1")
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
+if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
+    raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
@@ -552,6 +555,8 @@ print0(f"Estimated FLOPs per token: {num_flops_per_token:e}")
 get_scaling_params = lambda m: m.num_scaling_params()['transformer_matrices'] + m.num_scaling_params()['lm_head']
 num_scaling_params = get_scaling_params(model)
 target_tokens = int(args.target_param_data_ratio * num_scaling_params)
+tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
+world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
 
 # Auto-compute optimal batch size based on Power Lines paper (Bopt ∝ D^0.383), ref: https://arxiv.org/abs/2505.13738
 total_batch_size = args.total_batch_size
@@ -563,6 +568,15 @@ if total_batch_size == -1:
     batch_size_ratio = target_tokens / D_REF
     total_batch_size = 2 ** round(math.log2(B_REF * batch_size_ratio ** 0.383)) # also clamp to power of 2
     print0(f"Auto-computed optimal batch size: {total_batch_size:,} tokens")
+    if args.max_auto_grad_accum_steps != -1:
+        max_auto_total_batch_size = world_tokens_per_fwdbwd * args.max_auto_grad_accum_steps
+        if total_batch_size > max_auto_total_batch_size:
+            print0(
+                "Auto-computed total_batch_size would require too many gradient accumulation steps; "
+                f"capping from {total_batch_size:,} to {max_auto_total_batch_size:,} "
+                f"to respect --max-auto-grad-accum-steps={args.max_auto_grad_accum_steps}."
+            )
+            total_batch_size = max_auto_total_batch_size
 
 # Calculate number of iterations. Either it is given, or from target flops, or from target data:param ratio (in that order)
 assert args.num_iterations > 0 or args.target_param_data_ratio > 0 or args.target_flops > 0
@@ -588,9 +602,6 @@ print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 # -----------------------------------------------------------------------------
 # Optimizer / data / training length related hyperparameters
 # figure out the needed gradient accumulation to reach the desired total batch size
-tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
-world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
-
 if total_batch_size % world_tokens_per_fwdbwd != 0:
     if args.total_batch_size == -1:
         # Auto batch size might not be divisible by world_tokens_per_fwdbwd.
@@ -711,6 +722,11 @@ def combine_router_ortho_sublosses(losses):
     if gate_proj_loss is None:
         return 0.0
     return gate_proj_loss
+
+def scalar_loss_to_item(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().item()
+    return float(value)
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
@@ -1302,12 +1318,12 @@ while True:
             "mfu": mfu,
             "epoch": epoch,
         }
-        log_data[f"train/{router_ortho_loss_name}_step"] = losses[router_ortho_loss_name].detach().item()
+        log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
             if sub_loss is not None:
-                log_data[f"train/{sub_loss_name}_step"] = sub_loss.detach().item()
+                log_data[f"train/{sub_loss_name}_step"] = scalar_loss_to_item(sub_loss)
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

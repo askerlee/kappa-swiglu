@@ -489,6 +489,11 @@ def get_router_ortho_loss_weight(progress, base_weight):
     # Linear to zero over the course of training
     return base_weight * (1 - progress)
 
+def scalar_loss_to_item(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().item()
+    return float(value)
+
 def collect_grad_stats(model, losses, moe_layer_indices):
     router_grad_norms = []
     router_grad_self_alignments = []
@@ -768,11 +773,11 @@ while True:
             "train/skipped_overlong_conversations": train_skipped_conversations,
             "train/skipped_overlong_fraction": discard_fraction,
         }
-        log_data[f"train/router_ortho_loss_step"] = losses['router_ortho_loss'].detach().item()
+        log_data[f"train/router_ortho_loss_step"] = scalar_loss_to_item(losses['router_ortho_loss'])
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
             if sub_loss is not None:
-                log_data[f"train/{sub_loss_name}_step"] = sub_loss.detach().item()
+                log_data[f"train/{sub_loss_name}_step"] = scalar_loss_to_item(sub_loss)
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:
