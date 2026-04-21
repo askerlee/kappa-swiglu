@@ -2,7 +2,7 @@
 #PBS -N base_train
 #PBS -q normal
 #PBS -P 11610002
-#PBS -l select=1:ngpus=2
+#PBS -l select=1:ngpus=1
 #PBS -l walltime=24:00:00
 
 export PYTHONUNBUFFERED=1
