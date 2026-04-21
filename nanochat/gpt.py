@@ -264,11 +264,15 @@ def has_ve(layer_idx, n_layer):
 def get_moe_layer_indices(config):
     if config.n_exp <= 1:
         return []
-    return [
+    num_moe_layers = int(getattr(config, 'num_moe_layers', -1))
+    moe_layers = [
         layer_idx
         for layer_idx in range(config.n_layer)
         if (layer_idx >= config.moe_start_layer) and ((layer_idx + 1) % config.stride == 0)
     ]
+    if num_moe_layers >= 0:
+        return moe_layers[:num_moe_layers]
+    return moe_layers
 
 
 def get_layer_exp_gate_proj_m(config, layer_idx, top_expanded_moe_layers=2):
@@ -1251,14 +1255,15 @@ class GPT(nn.Module):
         if padded_vocab_size != config.vocab_size:
             print0(f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency")
 
-        if config.n_exp == 1:
+        moe_layer_indices = set(get_moe_layer_indices(config))
+        if not moe_layer_indices:
             # create normal transformer blocks
             blocks = nn.ModuleList([Block(config, layer_idx) for layer_idx in range(config.n_layer)])
         else:
-            # create transformer blocks, placing an MoE block every <stride> layers
+            # create transformer blocks, placing MoE blocks at the configured layer indices
             blocks = []
             for layer_idx in range(config.n_layer):
-                use_moe = (layer_idx >= config.moe_start_layer) and ((layer_idx + 1) % config.stride == 0)
+                use_moe = layer_idx in moe_layer_indices
                 blocks.append(Block(config, layer_idx, use_moe=use_moe))
             blocks = nn.ModuleList(blocks)
 
@@ -1710,6 +1715,8 @@ class GPT(nn.Module):
         exp_gate_grad_norms = []
         expert_utilities = losses.get('expert_utilities', None)
         selected_scores = losses.get('selected_scores', None)
+        moe_layer_indices = get_moe_layer_indices(self.config)
+        moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
 
         for loss in losses_to_debug:
             if loss is not None and isinstance(loss, torch.Tensor):
@@ -1717,7 +1724,7 @@ class GPT(nn.Module):
             else:
                 breakpoint()
 
-        for i in range(self.config.moe_start_layer, self.config.n_layer):
+        for i in moe_layer_indices:
             layer = self.transformer.h[i]
             if hasattr(layer.mlp, 'experts'):
                 # [n_exp, hidden_size]
@@ -1756,7 +1763,7 @@ class GPT(nn.Module):
 
                     if expert_utilities is not None:
                         # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
-                        exp_utilities = expert_utilities[i - self.config.moe_start_layer]  # [n_exp]
+                        exp_utilities = expert_utilities[moe_layer_to_stats_idx[i]]  # [n_exp]
                         half_experts = exp_utilities.shape[0] // 2
                         top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                         bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
@@ -1778,7 +1785,7 @@ class GPT(nn.Module):
 
                         if selected_scores is not None:
                             # selected_scores: Tensor of shape (num_moe_layers, n_exp)
-                            layer_selected_scores = selected_scores[i - self.config.moe_start_layer]  # [n_exp]
+                            layer_selected_scores = selected_scores[moe_layer_to_stats_idx[i]]  # [n_exp]
                             top_selected_scores    = layer_selected_scores[top_indices].mean().item()
                             bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                             losses[f'selected_scores_top_{i}']    = top_selected_scores

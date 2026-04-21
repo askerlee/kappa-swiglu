@@ -27,7 +27,7 @@ import re
 import wandb
 import torch
 
-from nanochat.gpt import GPT
+from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -162,12 +162,13 @@ parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["ro
 # Model architecture
 parser.add_argument("--depth", type=int, default=8, help="depth of the Transformer model")
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
+parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of MoE layers to instantiate from --moe-start-layer onward (-1 = all eligible layers)")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
 parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight for the Switch-style router auxiliary load-balancing loss")
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
-# router ortho loss is around 2-4 (if the loss is enabled). So * weight = 0.0002-0.0004.
+# router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
@@ -261,6 +262,8 @@ if args.exp_gate_proj_rank < 0:
     raise ValueError("--exp-gate-proj-rank must be >= 0")
 if args.exp_gate_proj_m < 1:
     raise ValueError("--exp-gate-proj-m must be >= 1")
+if args.num_moe_layers < -1:
+    raise ValueError("--num-moe-layers must be >= -1")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
@@ -352,6 +355,7 @@ def build_model_meta(depth):
     config = GPTConfig(
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, moe_start_layer=args.moe_start_layer,
+        num_moe_layers=args.num_moe_layers,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
@@ -396,6 +400,7 @@ def set_router_wg_grad_scale(model, router_wg_grad_scale):
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
+moe_layer_indices = get_moe_layer_indices(model_config)
 model_config_kwargs = vars(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
 model.to_empty(device=device) # 2) All tensors get storage on target device but with uninitialized (garbage) data
@@ -762,7 +767,7 @@ def average_step_losses(step_losses, grad_accum_steps):
             averaged_losses[key] = value / grad_accum_steps
     return averaged_losses
 
-def collect_grad_stats(model, losses, moe_start_layer, n_layer):
+def collect_grad_stats(model, losses, moe_layer_indices):
     router_grad_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
@@ -772,10 +777,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     selected_scores = losses.get('selected_scores', None)
     router_wg_grad_dyn_scales = MANAGER.aggregate("router_wg_grad_dyn_scales")
     MANAGER.reset("router_wg_grad_dyn_scales")
-    num_moe_layers = sum(
-        1 for i in range(moe_start_layer, n_layer)
-        if hasattr(model.transformer.h[i].mlp, 'experts')
-    )
+    moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
+    num_moe_layers = len(moe_layer_indices)
     if router_wg_grad_dyn_scales is not None and num_moe_layers > 0:
         if router_wg_grad_dyn_scales.shape[0] % num_moe_layers == 0:
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.view(
@@ -787,7 +790,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.flip(0)
         losses['router_wg_grad_dyn_scales'] = router_wg_grad_dyn_scales.detach()
 
-    for i in range(moe_start_layer, n_layer):
+    for i in moe_layer_indices:
         layer = model.transformer.h[i]
         if hasattr(layer.mlp, 'experts'):
             # [n_exp, hidden_size]
@@ -833,7 +836,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                 if expert_utilities is not None:
                     # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
-                    exp_utilities = expert_utilities[i - moe_start_layer]  # [n_exp]
+                    exp_utilities = expert_utilities[moe_layer_to_stats_idx[i]]  # [n_exp]
                     half_experts = exp_utilities.shape[0] // 2
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
@@ -860,7 +863,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                     if selected_scores is not None:
                         # selected_scores: Tensor of shape (num_moe_layers, n_exp)
-                        layer_selected_scores = selected_scores[i - moe_start_layer]  # [n_exp]
+                        layer_selected_scores = selected_scores[moe_layer_to_stats_idx[i]]  # [n_exp]
                         top_selected_scores    = layer_selected_scores[top_indices].mean().item()
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
@@ -868,7 +871,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                     if router_wg_grad_dyn_scales is not None and \
                        router_wg_grad_dyn_scales.shape[0] == expert_utilities.shape[0]:
-                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[i - moe_start_layer]
+                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[moe_layer_to_stats_idx[i]]
                         top_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[top_indices].mean().item()
                         bottom_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[bottom_indices].mean().item()
                         losses[f'router_wg_grad_dyn_scale_top_{i}'] = top_router_wg_grad_dyn_scale
@@ -1235,7 +1238,7 @@ while True:
         losses[router_ortho_loss_name] = combine_router_ortho_sublosses(losses)
 
         if MANAGER.collect_load_balancing_stats:
-            collect_grad_stats(model, losses, args.moe_start_layer, args.depth)
+            collect_grad_stats(model, losses, moe_layer_indices)
         
         # step the optimizer
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
@@ -1312,9 +1315,10 @@ while True:
             if len(drop_rates) >= 2:
                 log_data["inspect/drop_rate_1_step"] = drop_rates[1]
         expert_utilities = losses['expert_utilities']
-        for i in range(args.moe_start_layer, args.depth):
+        moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
+        for i in moe_layer_indices:
             if expert_utilities is not None:
-                layer_expert_utilities = expert_utilities[i - args.moe_start_layer]
+                layer_expert_utilities = expert_utilities[moe_layer_to_stats_idx[i]]
                 log_data.update({f"inspect/expert_utility_min_{i}": layer_expert_utilities.min().item()})
                 log_data.update({f"inspect/expert_utility_max_{i}": layer_expert_utilities.max().item()})
                 log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})

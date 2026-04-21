@@ -10,7 +10,7 @@ import logging
 import torch
 
 from nanochat.common import get_base_dir
-from nanochat.gpt import GPT, get_layer_exp_gate_proj_m
+from nanochat.gpt import GPT, get_layer_exp_gate_proj_m, get_moe_layer_indices
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import setup_default_logging
@@ -44,6 +44,8 @@ def _patch_missing_config_keys(model_config_kwargs):
             model_config_kwargs["exp_gate_proj_aggr_scheme"] = model_config_kwargs.pop("exp_gate_proj_aggregation")
         else:
             model_config_kwargs["exp_gate_proj_aggr_scheme"] = "mean"
+    if "num_moe_layers" not in model_config_kwargs:
+        model_config_kwargs["num_moe_layers"] = -1
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
@@ -106,10 +108,7 @@ def _patch_missing_keys(model_data, model_config):
         model_data["x0_lambdas"] = torch.zeros(n_layer)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
     if model_config.n_exp > 1:
-        for layer_idx in range(model_config.n_layer):
-            use_moe = (layer_idx >= model_config.moe_start_layer) and ((layer_idx + 1) % model_config.stride == 0)
-            if not use_moe:
-                continue
+        for layer_idx in get_moe_layer_indices(model_config):
             gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"
             gate_proj_a_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_a"
             gate_proj_b_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_b"

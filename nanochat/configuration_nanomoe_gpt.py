@@ -50,6 +50,7 @@ class GPTConfig:
         min_capacity: int = 4,  # minimum batch size to send to any single expert
         stride: int = 1,  # one in every stride layers are converted to an MoE
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
+        num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
         use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
         switch_tfm_init_scale: float = 1.0,
         router_use_full_prec: bool = False,  # use float32 precision in the router
@@ -109,6 +110,9 @@ class GPTConfig:
         self.min_capacity = min_capacity
         self.stride = stride
         self.moe_start_layer = moe_start_layer
+        if int(num_moe_layers) < -1:
+            raise ValueError(f"num_moe_layers must be >= -1, got {num_moe_layers}")
+        self.num_moe_layers = int(num_moe_layers)
         self.use_switch_tfm_init = use_switch_tfm_init
         self.switch_tfm_init_scale = switch_tfm_init_scale
         self.router_use_full_prec = router_use_full_prec

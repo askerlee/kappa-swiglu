@@ -24,6 +24,7 @@ from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.checkpoint_manager import load_model
+from nanochat.gpt import get_moe_layer_indices
 from nanochat.manager import MANAGER
 import torch.distributed as dist
 
@@ -257,6 +258,7 @@ orig_model = model
 router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
+moe_layer_indices = get_moe_layer_indices(model.config)
 if args.router_ortho_loss_weight == -1:
     # model.config.router_ortho_loss_weight is the weight used in base training.
     args.router_ortho_loss_weight = model.config.router_ortho_loss_weight * args.router_ortho_loss_weight_scale
@@ -487,7 +489,7 @@ def get_router_ortho_loss_weight(progress, base_weight):
     # Linear to zero over the course of training
     return base_weight * (1 - progress)
 
-def collect_grad_stats(model, losses, moe_start_layer, n_layer):
+def collect_grad_stats(model, losses, moe_layer_indices):
     router_grad_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
@@ -497,10 +499,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     selected_scores = losses.get('selected_scores', None)
     router_wg_grad_dyn_scales = MANAGER.aggregate("router_wg_grad_dyn_scales")
     MANAGER.reset("router_wg_grad_dyn_scales")
-    num_moe_layers = sum(
-        1 for i in range(moe_start_layer, n_layer)
-        if hasattr(model.transformer.h[i].mlp, 'experts')
-    )
+    moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
+    num_moe_layers = len(moe_layer_indices)
     if router_wg_grad_dyn_scales is not None and num_moe_layers > 0:
         if router_wg_grad_dyn_scales.shape[0] % num_moe_layers == 0:
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.view(
@@ -509,7 +509,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.flip(0)
         losses['router_wg_grad_dyn_scales'] = router_wg_grad_dyn_scales.detach()
 
-    for i in range(moe_start_layer, n_layer):
+    for i in moe_layer_indices:
         layer = model.transformer.h[i]
         if hasattr(layer.mlp, 'experts'):
             # [n_exp, hidden_size]
@@ -555,7 +555,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                 if expert_utilities is not None:
                     # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
-                    exp_utilities = expert_utilities[i - moe_start_layer]  # [n_exp]
+                    exp_utilities = expert_utilities[moe_layer_to_stats_idx[i]]  # [n_exp]
                     half_experts = exp_utilities.shape[0] // 2
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
@@ -582,7 +582,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                     if selected_scores is not None:
                         # selected_scores: Tensor of shape (num_moe_layers, n_exp)
-                        layer_selected_scores = selected_scores[i - moe_start_layer]  # [n_exp]
+                        layer_selected_scores = selected_scores[moe_layer_to_stats_idx[i]]  # [n_exp]
                         top_selected_scores    = layer_selected_scores[top_indices].mean().item()
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
@@ -590,7 +590,7 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                     if router_wg_grad_dyn_scales is not None and \
                        router_wg_grad_dyn_scales.shape[0] == expert_utilities.shape[0]:
-                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[i - moe_start_layer]
+                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[moe_layer_to_stats_idx[i]]
                         top_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[top_indices].mean().item()
                         bottom_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[bottom_indices].mean().item()
                         losses[f'router_wg_grad_dyn_scale_top_{i}'] = top_router_wg_grad_dyn_scale
@@ -667,6 +667,8 @@ while True:
                     "n_embd": model.config.n_embd,
                     "window_pattern": model.config.window_pattern,
                     "n_exp": model.config.n_exp,
+                    "moe_start_layer": model.config.moe_start_layer,
+                    "num_moe_layers": getattr(model.config, "num_moe_layers", -1),
                     "moe_top_k": model.config.moe_top_k,
                     "use_aux_loss": model.config.use_aux_loss,
                     "use_aux_free_load_balancing": model.config.use_aux_free_load_balancing,
@@ -706,7 +708,7 @@ while True:
     losses['router_ortho_loss'] = combine_router_ortho_sublosses(losses)
 
     if MANAGER.collect_load_balancing_stats:
-        collect_grad_stats(model, losses, model.config.moe_start_layer, depth)
+        collect_grad_stats(model, losses, moe_layer_indices)
 
     # step the optimizer
     lrm = get_lr_multiplier(progress, args.lr_base_scale)
@@ -778,9 +780,10 @@ while True:
             if len(drop_rates) >= 2:
                 log_data["inspect/drop_rate_1_step"] = drop_rates[1]
         expert_utilities = losses['expert_utilities']
-        for i in range(model.config.moe_start_layer, depth):
+        moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
+        for i in moe_layer_indices:
             if expert_utilities is not None:
-                layer_expert_utilities = expert_utilities[i - model.config.moe_start_layer]
+                layer_expert_utilities = expert_utilities[moe_layer_to_stats_idx[i]]
                 log_data[f"inspect/expert_utility_min_{i}"] = layer_expert_utilities.min().item()
                 log_data[f"inspect/expert_utility_max_{i}"] = layer_expert_utilities.max().item()
                 log_data[f"inspect/expert_utility_mean_{i}"] = layer_expert_utilities.mean().item()
