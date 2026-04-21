@@ -1,0 +1,15 @@
+#!/bin/bash
+#PBS -N base_train4u
+#PBS -q normal
+#PBS -P 11610002
+#PBS -l select=1:ngpus=2
+#PBS -l walltime=24:00:00
+
+export PYTHONUNBUFFERED=1
+export NANOCHAT_BASE_DIR=output
+export BASE_TRAIN_EXTRA_ARGS="$@"
+
+cd "$PBS_O_WORKDIR" || exit 1
+exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
+
+torchrun --standalone --nproc_per_node=4 -m scripts.base_train --save-every 8889 --model-tag "$PBS_JOBID" "$@"
