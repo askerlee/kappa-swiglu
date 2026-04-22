@@ -220,7 +220,8 @@ parser.add_argument("--total-batch-size", type=int, default=-1, help="total batc
 parser.add_argument("--max-auto-grad-accum-steps", type=int, default=32, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
-parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay-dense", type=float, default=0.2, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay-moe", type=float, default=0.05, help="cautious weight decay for MoE Transformer layers in the Muon optimizer (for weights)")
 parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.1,
                     help="fraction of Muon weight decay to apply to low-rank expert gate factors gate_proj_a/gate_proj_b")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
@@ -637,9 +638,17 @@ if batch_ratio != 1.0:
     print0(f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,} (reference: {reference_batch_size:,})")
 
 # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2 (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
-weight_decay_scaled = args.weight_decay * (12 / args.depth)**2
+weight_decay_dense_scaled = args.weight_decay_dense * (12 / args.depth)**2
+weight_decay_moe_scaled = args.weight_decay_moe * (12 / args.depth)**2
 if args.depth != 12:
-    print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {args.depth}")
+    print0(
+        f"Scaling dense weight decay from {args.weight_decay_dense:.6f} to {weight_decay_dense_scaled:.6f} "
+        f"for depth {args.depth}"
+    )
+    print0(
+        f"Scaling MoE weight decay from {args.weight_decay_moe:.6f} to {weight_decay_moe_scaled:.6f} "
+        f"for depth {args.depth}"
+    )
 
 # -----------------------------------------------------------------------------
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
@@ -649,7 +658,8 @@ optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr * batch_lr_scale,
     embedding_lr=args.embedding_lr * batch_lr_scale,
     matrix_lr=args.matrix_lr * batch_lr_scale,
-    weight_decay=weight_decay_scaled,
+    weight_decay_dense=weight_decay_dense_scaled,
+    weight_decay_moe=weight_decay_moe_scaled,
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
@@ -701,8 +711,8 @@ def get_muon_momentum(it):
     return momentum
 
 # Weight decay scheduler for Muon optimizer (linear to zero over the course of training)
-def get_weight_decay(it, weight_decay_scaled, num_iterations):
-    return weight_decay_scaled * (1 - it / num_iterations)
+def get_weight_decay(base_weight_decay, it, num_iterations):
+    return base_weight_decay * (1 - it / num_iterations)
 
 def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations, floor_frac=0.01):
     if num_anneal_iterations <= 0:
@@ -1261,12 +1271,11 @@ while True:
                                 args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
-        muon_weight_decay = get_weight_decay(step, weight_decay_scaled, num_iterations)
         for group in optimizer.param_groups:
             group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':
                 group["momentum"] = muon_momentum
-                group["weight_decay"] = muon_weight_decay
+                group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
         orig_model.update_aux_free_load_balancing()
         optimizer.step()
         model.zero_grad(set_to_none=True)

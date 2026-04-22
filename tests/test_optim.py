@@ -125,7 +125,8 @@ def test_setup_optimizer_uses_reduced_weight_decay_for_low_rank_gate_factors():
 
     optimizer = model.setup_optimizer(
         matrix_lr=0.01,
-        weight_decay=0.2,
+        weight_decay_dense=0.2,
+        weight_decay_moe=0.2,
         exp_gate_proj_weight_decay_frac=0.25,
     )
 
