@@ -186,7 +186,7 @@ parser.add_argument("--exp-gate-proj-rank", type=int, default=0,
                     help="low-rank factorization rank for expert gate_proj; 0 keeps a dense gate_proj")
 parser.add_argument("--exp-gate-proj-m", type=int, default=1,
                     help="extra averaged dimension m for expert gate_proj on all MoE layers")
-parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="softmaxsum", choices=["mean", "softmaxsum"],
+parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="mean", choices=["mean", "softmaxsum"],
                     help="how to combine the expert gate activation m axis: mean or SiLU(sum softmax(abs(logits)) * logits)")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
@@ -220,8 +220,8 @@ parser.add_argument("--total-batch-size", type=int, default=-1, help="total batc
 parser.add_argument("--max-auto-grad-accum-steps", type=int, default=32, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
-parser.add_argument("--weight-decay-dense", type=float, default=0.2, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
-parser.add_argument("--weight-decay-moe", type=float, default=0.05, help="cautious weight decay for MoE Transformer layers in the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay-dense", type=float, default=0.05, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay-moe",   type=float, default=0.05, help="cautious weight decay for MoE Transformer layers in the Muon optimizer (for weights)")
 parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.1,
                     help="fraction of Muon weight decay to apply to low-rank expert gate factors gate_proj_a/gate_proj_b")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
