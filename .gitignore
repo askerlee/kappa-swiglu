@@ -23,3 +23,10 @@ slurm-*.err
 
 tmp/*
 .codex/*
+node_modules
+package*json
+base_train*.e*
+base_train*.o*
+pbs*.err
+pbs*.out
+*debug.log
