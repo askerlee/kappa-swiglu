@@ -190,6 +190,7 @@ parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="mean", cho
                     help="how to combine the expert gate activation m axis: mean or SiLU(sum softmax(abs(logits)) * logits)")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
+parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, help="weight for expert gate projection diversity loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-6, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -375,6 +376,7 @@ def build_model_meta(depth):
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
+        projs_diversity_loss_weight=args.projs_diversity_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         router_wg_grad_scale=args.router_wg_grad_scale,
