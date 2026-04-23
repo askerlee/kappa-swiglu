@@ -793,11 +793,24 @@ def average_step_losses(step_losses, grad_accum_steps):
             averaged_losses[key] = value / grad_accum_steps
     return averaged_losses
 
-def collect_grad_stats(model, losses, moe_layer_indices):
+def collect_weight_grad_stats(model, losses, moe_layer_indices):
+    def compute_row_diversity_score(weight):
+        # weight: [n_exp, n_rows, row_dim]
+        _, n_rows, _ = weight.shape
+        if n_rows < 2:
+            return weight.new_zeros(weight.shape[0])
+        weight = weight.float()
+        weight = weight / weight.norm(dim=2, keepdim=True).clamp_min(1e-12)
+        cosine = torch.bmm(weight, weight.transpose(1, 2))
+        offdiag_sum = cosine.sum(dim=(1, 2)) - torch.diagonal(cosine, dim1=-2, dim2=-1).sum(dim=1)
+        return offdiag_sum / (n_rows * (n_rows - 1))
+
     router_grad_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
     router_weight_exp_cfc_alignments = []
+    gate_proj_diversity_scores = []
+    c_fc_diversity_scores = []
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
@@ -834,8 +847,15 @@ def collect_grad_stats(model, losses, moe_layer_indices):
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
                 exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                gate_proj_diversity_score = compute_row_diversity_score(exp_gate_weight)
+                gate_proj_diversity_scores.append(gate_proj_diversity_score)
+                losses[f'gate_proj_diversity_score_{i}'] = gate_proj_diversity_score.mean().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
-                exp_cfc_mean_weight  = layer.mlp.experts.c_fc.mean(dim=2)  # [n_exp, hidden_size]
+                exp_cfc_weight = layer.mlp.experts.get_equivalent_expert_weight('c_fc')
+                c_fc_diversity_score = compute_row_diversity_score(exp_cfc_weight)
+                c_fc_diversity_scores.append(c_fc_diversity_score)
+                losses[f'c_fc_diversity_score_{i}'] = c_fc_diversity_score.mean().item()
+                exp_cfc_mean_weight  = exp_cfc_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                 # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
@@ -911,6 +931,10 @@ def collect_grad_stats(model, losses, moe_layer_indices):
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
     router_weight_exp_cfc_alignments = torch.stack(router_weight_exp_cfc_alignments, dim=0) if router_weight_exp_cfc_alignments else None
     losses['router_weight_exp_cfc_alignments'] = router_weight_exp_cfc_alignments
+    gate_proj_diversity_scores = torch.stack(gate_proj_diversity_scores, dim=0) if gate_proj_diversity_scores else None
+    losses['gate_proj_diversity_scores'] = gate_proj_diversity_scores
+    c_fc_diversity_scores = torch.stack(c_fc_diversity_scores, dim=0) if c_fc_diversity_scores else None
+    losses['c_fc_diversity_scores'] = c_fc_diversity_scores
     exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
     losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
@@ -1264,7 +1288,7 @@ while True:
         losses[router_ortho_loss_name] = combine_router_ortho_sublosses(losses)
 
         if MANAGER.collect_load_balancing_stats:
-            collect_grad_stats(model, losses, moe_layer_indices)
+            collect_weight_grad_stats(model, losses, moe_layer_indices)
         
         # step the optimizer
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
@@ -1347,6 +1371,10 @@ while True:
                 log_data.update({f"inspect/expert_utility_min_{i}": layer_expert_utilities.min().item()})
                 log_data.update({f"inspect/expert_utility_max_{i}": layer_expert_utilities.max().item()})
                 log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})
+            if f'gate_proj_diversity_score_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_diversity_score_{i}": losses[f'gate_proj_diversity_score_{i}']})
+            if f'c_fc_diversity_score_{i}' in losses:
+                log_data.update({f"inspect/c_fc_diversity_score_{i}": losses[f'c_fc_diversity_score_{i}']})
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
             if f'router_weight_exp_cfc_alignment_{i}' in losses:

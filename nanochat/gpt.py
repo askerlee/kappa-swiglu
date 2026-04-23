@@ -1723,7 +1723,7 @@ class GPT(nn.Module):
 
         return loss, losses
 
-    # Revised from collect_grad_stats().
+    # Revised from collect_weight_grad_stats().
     def debug_losses(self, losses, losses_to_debug=[]):
         router_grad_norms = []
         router_grad_self_alignments = []
