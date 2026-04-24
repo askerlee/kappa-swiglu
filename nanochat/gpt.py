@@ -125,7 +125,10 @@ class SoftcapInPlace(torch.autograd.Function):
         (output,) = ctx.saved_tensors
         if ctx.needs_input_grad[0]:
             grad_input = grad_output
-            grad_input.mul_(1.0 - (output * output) / (ctx.softcap * ctx.softcap))
+            output.mul_(output)
+            output.div_(ctx.softcap * ctx.softcap)
+            output.neg_().add_(1.0)
+            grad_input.mul_(output)
         else:
             grad_input = None
         return grad_input, None
