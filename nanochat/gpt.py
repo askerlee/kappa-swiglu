@@ -133,6 +133,56 @@ class SoftcapInPlace(torch.autograd.Function):
             grad_input = None
         return grad_input, None
 
+
+def cross_entropy_chunked(logits, targets, ignore_index=-1, reduction='mean', chunk_rows=2048):
+    flat_logits = logits.reshape(-1, logits.size(-1))
+    flat_targets = targets.reshape(-1)
+    if flat_logits.size(0) <= chunk_rows:
+        return F.cross_entropy(flat_logits, flat_targets, ignore_index=ignore_index, reduction=reduction)
+
+    if reduction == 'none':
+        loss_chunks = []
+        for start in range(0, flat_logits.size(0), chunk_rows):
+            end = min(start + chunk_rows, flat_logits.size(0))
+            loss_chunks.append(
+                F.cross_entropy(
+                    flat_logits[start:end],
+                    flat_targets[start:end],
+                    ignore_index=ignore_index,
+                    reduction='none',
+                )
+            )
+        return torch.cat(loss_chunks, dim=0)
+
+    if reduction == 'sum':
+        total_loss = flat_logits.new_zeros(())
+        for start in range(0, flat_logits.size(0), chunk_rows):
+            end = min(start + chunk_rows, flat_logits.size(0))
+            total_loss = total_loss + F.cross_entropy(
+                flat_logits[start:end],
+                flat_targets[start:end],
+                ignore_index=ignore_index,
+                reduction='sum',
+            )
+        return total_loss
+
+    if reduction == 'mean':
+        total_loss = flat_logits.new_zeros(())
+        total_weight = flat_targets.ne(ignore_index).sum()
+        if total_weight.item() == 0:
+            return total_loss
+        for start in range(0, flat_logits.size(0), chunk_rows):
+            end = min(start + chunk_rows, flat_logits.size(0))
+            total_loss = total_loss + F.cross_entropy(
+                flat_logits[start:end],
+                flat_targets[start:end],
+                ignore_index=ignore_index,
+                reduction='sum',
+            )
+        return total_loss / total_weight
+
+    raise ValueError(f"Unsupported loss reduction: {reduction}")
+
 # NOTE: alpha is only applied to grad_left, the left leaf node
 class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -1558,7 +1608,7 @@ class GPT(nn.Module):
         
         if targets is not None:
             # Compute loss when targets are provided
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
+            loss = cross_entropy_chunked(logits, targets, ignore_index=-1, reduction=loss_reduction)
             losses['ntp_loss'] = loss.detach()
 
             # add the auxiliary load balancing loss and router z loss to the main loss
