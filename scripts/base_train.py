@@ -180,6 +180,14 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument(
+    "--remove-gate-proj-row-mean-component",
+    type=str2bool,
+    nargs='?',
+    const=True,
+    default=False,
+    help="after each optimizer step, subtract the per-row mean from expert gate_proj rows",
+)
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, help="weight for expert gate projection diversity loss")
@@ -688,6 +696,15 @@ def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
         return value.detach().item()
     return float(value)
+
+def remove_gate_proj_row_mean_component(model, moe_layer_indices):
+    with torch.no_grad():
+        for layer_idx in moe_layer_indices:
+            layer = model.transformer.h[layer_idx]
+            if not hasattr(layer.mlp, 'experts'):
+                continue
+            gate_proj = layer.mlp.experts.gate_proj
+            gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
@@ -1275,6 +1292,10 @@ while True:
         synchronize()
         t1 = time.time()
         dt = t1 - t0
+
+        if args.remove_gate_proj_row_mean_component:
+            remove_gate_proj_row_mean_component(orig_model, moe_layer_indices)
+
     # -------------------------------------------------------------------------
 
     # logging (CPU action only)
