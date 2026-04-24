@@ -107,6 +107,29 @@ class ScaleGrad(torch.autograd.Function):
             grad_output2 = None
         return grad_output2, None, None
 
+
+class SoftcapInPlace(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_, softcap):
+        softcap = float(softcap)
+        input_.div_(softcap)
+        input_.tanh_()
+        input_.mul_(softcap)
+        ctx.softcap = softcap
+        ctx.mark_dirty(input_)
+        ctx.save_for_backward(input_)
+        return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        (output,) = ctx.saved_tensors
+        if ctx.needs_input_grad[0]:
+            tanh_output = output / ctx.softcap
+            grad_input = grad_output * (1 - tanh_output * tanh_output)
+        else:
+            grad_input = None
+        return grad_input, None
+
 # NOTE: alpha is only applied to grad_left, the left leaf node
 class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -1502,9 +1525,7 @@ class GPT(nn.Module):
         logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
         logits = logits[..., :self.config.vocab_size] # slice to remove padding
         logits = logits.float() # switch to fp32 for logit softcap and loss computation
-        logits.div_(softcap)
-        logits.tanh_()
-        logits = logits * softcap # keep backward valid; tanh output cannot be mutated in place
+        logits = SoftcapInPlace.apply(logits, softcap)
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
