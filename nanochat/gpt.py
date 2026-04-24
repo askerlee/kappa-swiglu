@@ -722,9 +722,14 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
+        if self.use_gate_proj_bias:
+            self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
+        else:
+            self.gate_proj_bias = None
         self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -778,6 +783,8 @@ class Qwen3MLPExperts(nn.Module):
             )
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
+        if self.gate_proj_bias is not None:
+            gate_out_acts = gate_out_acts + self.gate_proj_bias.unsqueeze(1)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -788,6 +795,8 @@ class Qwen3MLPExperts(nn.Module):
             )
             gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
+            if self.gate_proj_bias is not None:
+                gate_out_ortho_acts = gate_out_ortho_acts + self.gate_proj_bias.unsqueeze(1)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -1213,6 +1222,8 @@ class GPT(nn.Module):
                 experts = block.mlp.experts
                 if isinstance(experts, Qwen3MLPExperts):
                     torch.nn.init.uniform_(experts.gate_proj, -s, s)
+                    if experts.gate_proj_bias is not None:
+                        torch.nn.init.zeros_(experts.gate_proj_bias)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
                 else:

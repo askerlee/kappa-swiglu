@@ -180,6 +180,8 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=False,
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj")
+parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+                    help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
                     help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
@@ -357,6 +359,7 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
+        use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
