@@ -134,7 +134,6 @@ class SoftcapInPlace(torch.autograd.Function):
         return grad_input, None
 
 
-@torch._dynamo.disable
 def cross_entropy_chunked(logits, targets, ignore_index=-1, reduction='mean', chunk_rows=2048):
     flat_logits = logits.reshape(-1, logits.size(-1))
     flat_targets = targets.reshape(-1)
