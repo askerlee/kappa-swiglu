@@ -425,6 +425,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         return offdiag_sum / (n_rows * (n_rows - 1))
 
     router_grad_norms = []
+    router_row_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
     gate_proj_diversity_scores = []
@@ -465,6 +466,9 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                router_row_norm = router_weight.norm(dim=1)
+                router_row_norms.append(router_row_norm)
+                losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
                 gate_proj_diversity_score = compute_row_diversity_score(exp_gate_weight)
                 gate_proj_diversity_scores.append(gate_proj_diversity_score)
@@ -514,6 +518,11 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     losses[f'router_grad_norm_top_{i}']    = top_router_grad_norm
                     losses[f'router_grad_norm_bottom_{i}'] = bottom_router_grad_norm
 
+                    top_router_row_norm = router_row_norm[top_indices].mean().item()
+                    bottom_router_row_norm = router_row_norm[bottom_indices].mean().item()
+                    losses[f'router_row_norm_top_{i}'] = top_router_row_norm
+                    losses[f'router_row_norm_bottom_{i}'] = bottom_router_row_norm
+
                     if selected_scores is not None:
                         # selected_scores: Tensor of shape (num_moe_layers, n_exp)
                         layer_selected_scores = selected_scores[moe_layer_to_stats_idx[i]]  # [n_exp]
@@ -532,6 +541,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
+    router_row_norms = torch.stack(router_row_norms, dim=0) if router_row_norms else None
+    losses['router_row_norms'] = router_row_norms
     router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
     losses['router_grad_self_alignments'] = router_grad_self_alignments
     router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0) if router_weight_exp_gate_alignments else None
@@ -721,6 +732,8 @@ while True:
                 log_data[f"inspect/expert_utility_min_{i}"] = layer_expert_utilities.min().item()
                 log_data[f"inspect/expert_utility_max_{i}"] = layer_expert_utilities.max().item()
                 log_data[f"inspect/expert_utility_mean_{i}"] = layer_expert_utilities.mean().item()
+            if f'router_row_norm_{i}' in losses:
+                log_data[f"inspect/router_row_norm_{i}"] = losses[f'router_row_norm_{i}']
             if f'gate_proj_diversity_score_{i}' in losses:
                 log_data[f"inspect/gate_proj_diversity_score_{i}"] = losses[f'gate_proj_diversity_score_{i}']
             if f'c_fc_diversity_score_{i}' in losses:
@@ -729,6 +742,10 @@ while True:
                 log_data[f"inspect/router_grad_norm_top_{i}"] = losses[f'router_grad_norm_top_{i}']
             if f'router_grad_norm_bottom_{i}' in losses:
                 log_data[f"inspect/router_grad_norm_bottom_{i}"] = losses[f'router_grad_norm_bottom_{i}']
+            if f'router_row_norm_top_{i}' in losses:
+                log_data[f"inspect/router_row_norm_top_{i}"] = losses[f'router_row_norm_top_{i}']
+            if f'router_row_norm_bottom_{i}' in losses:
+                log_data[f"inspect/router_row_norm_bottom_{i}"] = losses[f'router_row_norm_bottom_{i}']
             if f'router_grad_self_alignment_top_{i}' in losses:
                 log_data[f"inspect/router_grad_self_alignment_top_{i}"] = losses[f'router_grad_self_alignment_top_{i}']
             if f'router_grad_self_alignment_bottom_{i}' in losses:
