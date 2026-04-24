@@ -1504,7 +1504,7 @@ class GPT(nn.Module):
         logits = logits.float() # switch to fp32 for logit softcap and loss computation
         logits.div_(softcap)
         logits.tanh_()
-        logits.mul_(softcap) # squash the logits without another full-size temporary
+        logits = logits * softcap # keep backward valid; tanh output cannot be mutated in place
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
