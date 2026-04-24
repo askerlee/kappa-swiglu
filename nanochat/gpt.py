@@ -124,11 +124,8 @@ class SoftcapInPlace(torch.autograd.Function):
     def backward(ctx, grad_output):  # pragma: no cover
         (output,) = ctx.saved_tensors
         if ctx.needs_input_grad[0]:
-            grad_input = torch.empty_like(grad_output)
-            torch.mul(output, output, out=grad_input)
-            grad_input.div_(ctx.softcap * ctx.softcap)
-            grad_input.neg_().add_(1.0)
-            grad_input.mul_(grad_output)
+            grad_input = grad_output
+            grad_input.mul_(1.0 - (output * output) / (ctx.softcap * ctx.softcap))
         else:
             grad_input = None
         return grad_input, None
