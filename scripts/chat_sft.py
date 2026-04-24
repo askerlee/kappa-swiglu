@@ -452,7 +452,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     router_grad_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
-    router_weight_exp_cfc_alignments = []
     gate_proj_diversity_scores = []
     c_fc_diversity_scores = []
     exp_gate_grad_norms = []
@@ -500,7 +499,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 c_fc_diversity_score = compute_row_diversity_score(exp_cfc_weight)
                 c_fc_diversity_scores.append(c_fc_diversity_score)
                 losses[f'c_fc_diversity_score_{i}'] = c_fc_diversity_score.mean().item()
-                exp_cfc_mean_weight  = exp_cfc_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                 # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
@@ -519,12 +517,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 mean_rw_ew_alignment = rw_ew_alignment.mean().item()
                 losses[f'router_weight_exp_gate_alignment_{i}'] = mean_rw_ew_alignment
 
-                rw_cfc_alignment = (exp_cfc_mean_weight * router_weight).sum(dim=1) / \
-                    (router_weight.norm(dim=1) * (exp_cfc_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
-                router_weight_exp_cfc_alignments.append(rw_cfc_alignment)
-                mean_rw_cfc_alignment = rw_cfc_alignment.mean().item()
-                losses[f'router_weight_exp_cfc_alignment_{i}'] = mean_rw_cfc_alignment
-
                 if expert_utilities is not None:
                     # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
                     exp_utilities = expert_utilities[moe_layer_to_stats_idx[i]]  # [n_exp]
@@ -541,11 +533,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     bottom_rw_ew_alignment = rw_ew_alignment[bottom_indices].mean().item()
                     losses[f'router_weight_exp_gate_alignment_top_{i}']    = top_rw_ew_alignment
                     losses[f'router_weight_exp_gate_alignment_bottom_{i}'] = bottom_rw_ew_alignment
-
-                    top_rw_cfc_alignment    = rw_cfc_alignment[top_indices].mean().item()
-                    bottom_rw_cfc_alignment = rw_cfc_alignment[bottom_indices].mean().item()
-                    losses[f'router_weight_exp_cfc_alignment_top_{i}']    = top_rw_cfc_alignment
-                    losses[f'router_weight_exp_cfc_alignment_bottom_{i}'] = bottom_rw_cfc_alignment
 
                     top_router_grad_norm    = router_grad_norm[top_indices].mean().item()
                     bottom_router_grad_norm = router_grad_norm[bottom_indices].mean().item()
@@ -574,8 +561,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     losses['router_grad_self_alignments'] = router_grad_self_alignments
     router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0) if router_weight_exp_gate_alignments else None
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
-    router_weight_exp_cfc_alignments = torch.stack(router_weight_exp_cfc_alignments, dim=0) if router_weight_exp_cfc_alignments else None
-    losses['router_weight_exp_cfc_alignments'] = router_weight_exp_cfc_alignments
     gate_proj_diversity_scores = torch.stack(gate_proj_diversity_scores, dim=0) if gate_proj_diversity_scores else None
     losses['gate_proj_diversity_scores'] = gate_proj_diversity_scores
     c_fc_diversity_scores = torch.stack(c_fc_diversity_scores, dim=0) if c_fc_diversity_scores else None
@@ -776,16 +761,10 @@ while True:
                 log_data[f"inspect/router_grad_self_alignment_bottom_{i}"] = losses[f'router_grad_self_alignment_bottom_{i}']
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data[f"inspect/router_weight_exp_gate_alignment_{i}"] = losses[f'router_weight_exp_gate_alignment_{i}']
-            if f'router_weight_exp_cfc_alignment_{i}' in losses:
-                log_data[f"inspect/router_weight_exp_cfc_alignment_{i}"] = losses[f'router_weight_exp_cfc_alignment_{i}']
             if f'router_weight_exp_gate_alignment_top_{i}' in losses:
                 log_data[f"inspect/router_weight_exp_gate_alignment_top_{i}"] = losses[f'router_weight_exp_gate_alignment_top_{i}']
             if f'router_weight_exp_gate_alignment_bottom_{i}' in losses:
                 log_data[f"inspect/router_weight_exp_gate_alignment_bottom_{i}"] = losses[f'router_weight_exp_gate_alignment_bottom_{i}']
-            if f'router_weight_exp_cfc_alignment_top_{i}' in losses:
-                log_data[f"inspect/router_weight_exp_cfc_alignment_top_{i}"] = losses[f'router_weight_exp_cfc_alignment_top_{i}']
-            if f'router_weight_exp_cfc_alignment_bottom_{i}' in losses:
-                log_data[f"inspect/router_weight_exp_cfc_alignment_bottom_{i}"] = losses[f'router_weight_exp_cfc_alignment_bottom_{i}']
             if f'selected_scores_top_{i}' in losses:
                 log_data[f"inspect/selected_scores_top_{i}"] = losses[f'selected_scores_top_{i}']
             if f'selected_scores_bottom_{i}' in losses:
