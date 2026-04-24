@@ -170,6 +170,7 @@ parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
 parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
@@ -241,6 +242,8 @@ if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
 if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
+if args.router_ortho_loss_warmup_iterations < 0:
+    raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
@@ -671,18 +674,20 @@ def get_muon_momentum(it):
 def get_weight_decay(base_weight_decay, it, num_iterations):
     return base_weight_decay * (1 - it / num_iterations)
 
-def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations, floor_frac=0.01):
-    if num_anneal_iterations <= 0:
-        return base_weight
-    progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
-    # Anneal router_ortho_loss_weight from base_weight to a small floor over the anneal horizon.
-    return base_weight * (floor_frac + (1.0 - floor_frac) * (1.0 - progress))
+def get_router_ortho_loss_weight(base_weight, it, num_warmup_iterations=0, num_anneal_iterations=-1, floor_frac=0.01):
+    warmup_weight = base_weight
+    if num_warmup_iterations > 0:
+        warmup_progress = min(max(it, 0), num_warmup_iterations) / num_warmup_iterations
+        warmup_weight = base_weight * warmup_progress
 
-def combine_router_ortho_sublosses(losses):
-    gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
-    if gate_proj_loss is None:
-        return 0.0
-    return gate_proj_loss
+    if num_anneal_iterations <= 0:
+        return warmup_weight
+
+    anneal_step = max(it - num_warmup_iterations, 0)
+    anneal_progress = min(anneal_step, num_anneal_iterations) / num_anneal_iterations
+    # Warm up router_ortho_loss_weight to base_weight, then anneal it to a small floor.
+    anneal_multiplier = floor_frac + (1.0 - floor_frac) * (1.0 - anneal_progress)
+    return warmup_weight * anneal_multiplier
 
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
@@ -971,7 +976,8 @@ while True:
     router_ortho_loss_weight = get_router_ortho_loss_weight(
         args.router_ortho_loss_weight,
         step,
-        router_ortho_num_anneal_iterations,
+        num_warmup_iterations=args.router_ortho_loss_warmup_iterations,
+        num_anneal_iterations=router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
     router_ortho_blockwise_active = False
@@ -1243,7 +1249,9 @@ while True:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-            router_ortho_loss = combine_router_ortho_sublosses(micro_losses)
+            router_ortho_loss = micro_losses.get("router_ortho_loss_gate_proj")
+            if router_ortho_loss is None:
+                router_ortho_loss = 0.0
             loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -1252,7 +1260,9 @@ while True:
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
 
         losses = average_step_losses(step_losses, grad_accum_steps)
-        losses[router_ortho_loss_name] = combine_router_ortho_sublosses(losses)
+        losses[router_ortho_loss_name] = losses.get("router_ortho_loss_gate_proj")
+        if losses[router_ortho_loss_name] is None:
+            losses[router_ortho_loss_name] = 0.0
 
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)
