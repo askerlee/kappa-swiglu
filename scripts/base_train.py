@@ -186,16 +186,6 @@ parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, h
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-6, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
-# How to set --router-wg-grad-scale? Maybe it should be set proportional to --moe-top-k,
-# since --moe-top-k determines how dilluted the router wg gradients are across experts?
-# If --moe-top-k == 4, then each row of router wg weight receives gradients scaled down by 1/4
-# (the softmax weights) on average, so we suggest scaling wg grad by 
-# 4 (actual moe_top_k) / 2 (default moe_top_k) * 2.0 (default router_wg_grad_scale) = 4.
-parser.add_argument("--router-wg-grad-scale", type=float, default=1.0, help="scaling factor for gradients to router w_g weights only. This does not affect gradients flowing back into router inputs.")
-parser.add_argument("--router-wg-grad-scale-anneal-iterations", type=int, default=-1, 
-                    help="anneal router w_g grad scale over this many iterations (-1 disables)")
-parser.add_argument("--router-wg-grad-scale-anneal-target", type=float, default=1.0,
-                    help="final router w_g grad scale reached after annealing completes")
 parser.add_argument("--z-loss-demean-logits", type=str2bool, nargs='?', const=True, default=True, help="use logits-demeaned router z loss")
 parser.add_argument("--z-loss-penalize-mean-logits", type=str2bool, nargs='?', const=True, default=True, help="penalize mean logits in router z loss")
 parser.add_argument("--aspect-ratio", type=int, default=96, help="model_dim = depth * aspect_ratio")
@@ -361,7 +351,6 @@ def build_model_meta(depth):
         projs_diversity_loss_weight=args.projs_diversity_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
-        router_wg_grad_scale=args.router_wg_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
@@ -372,19 +361,6 @@ def build_model_meta(depth):
         model_meta = GPT(config)
     return model_meta
 
-
-def set_router_wg_grad_scale(model, router_wg_grad_scale):
-    router_wg_grad_scale = float(router_wg_grad_scale)
-    model.config.router_wg_grad_scale = router_wg_grad_scale
-    for layer in model.transformer.h:
-        mlp = getattr(layer, "mlp", None)
-        router = getattr(mlp, "router", None)
-        if router is not None:
-            if hasattr(router, "set_router_wg_grad_scale"):
-                router.set_router_wg_grad_scale(router_wg_grad_scale)
-            else:
-                router.router_wg_grad_scale = router_wg_grad_scale
-
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
@@ -393,7 +369,6 @@ model_config_kwargs = vars(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
 model.to_empty(device=device) # 2) All tensors get storage on target device but with uninitialized (garbage) data
 model.init_weights() # 3) All tensors get initialized
-set_router_wg_grad_scale(model, args.router_wg_grad_scale)
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
 base_dir = get_base_dir()
@@ -434,7 +409,6 @@ if resuming:
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
     model.load_state_dict(model_data, strict=True, assign=True)
-    set_router_wg_grad_scale(model, args.router_wg_grad_scale)
     del model_data # free up this memory after the copy
 
 # -----------------------------------------------------------------------------
@@ -703,12 +677,6 @@ def get_router_ortho_loss_weight(base_weight, it, num_anneal_iterations, floor_f
     progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
     # Anneal router_ortho_loss_weight from base_weight to a small floor over the anneal horizon.
     return base_weight * (floor_frac + (1.0 - floor_frac) * (1.0 - progress))
-
-def get_router_wg_grad_scale(base_scale, target_scale, it, num_anneal_iterations):
-    if num_anneal_iterations <= 0 or base_scale == target_scale:
-        return base_scale
-    anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
-    return target_scale + (base_scale - target_scale) * (1.0 - anneal_progress)
 
 def combine_router_ortho_sublosses(losses):
     gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
@@ -1027,14 +995,6 @@ while True:
         router_ortho_loss_on_scale = 1.0 / args.router_ortho_on_prob
     router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
 
-    router_wg_grad_scale = get_router_wg_grad_scale(
-        args.router_wg_grad_scale,
-        args.router_wg_grad_scale_anneal_target,
-        step,
-        args.router_wg_grad_scale_anneal_iterations,
-    )
-    set_router_wg_grad_scale(orig_model, router_wg_grad_scale)
-
     # once in a while: evaluate the val bpb (all ranks participate)
     if (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
         model.eval()
@@ -1352,7 +1312,6 @@ while True:
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
             "lrm": lrm,
-            "router_wg_grad_scale": router_wg_grad_scale,
             "dt": dt,
             "tok_per_sec": tok_per_sec,
             "mfu": mfu,

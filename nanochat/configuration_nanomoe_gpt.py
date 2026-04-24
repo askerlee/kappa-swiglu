@@ -34,7 +34,6 @@ class GPTConfig:
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
         router_z_loss_weight: float = 1e-5,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
-        router_wg_grad_scale: float = 1.0,  # scale gradients for router w_g weights without affecting router inputs.
         router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
@@ -94,7 +93,6 @@ class GPTConfig:
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
-        self.router_wg_grad_scale = router_wg_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_ortho_loss_weight = experts_ortho_loss_weight

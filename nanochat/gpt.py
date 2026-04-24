@@ -416,20 +416,8 @@ class Router(nn.Module):
             torch.zeros(self.n_exp, dtype=torch.float32),
             persistent=False,
         )
-        self.router_wg_grad_scale = float(getattr(config, 'router_wg_grad_scale', 1.0))
-        # persistent=False means this buffer is part of the module at runtime, but it is not included in the module’s state_dict.
-        self.register_buffer(
-            '_router_wg_grad_scale_tensor',
-            torch.tensor(self.router_wg_grad_scale, dtype=torch.float32),
-            persistent=False,
-        )
         if self.use_aux_loss and self.use_aux_free_load_balancing:
             raise ValueError("use_aux_loss and use_aux_free_load_balancing are mutually exclusive")
-
-    def set_router_wg_grad_scale(self, router_wg_grad_scale):
-        router_wg_grad_scale = float(router_wg_grad_scale)
-        self.router_wg_grad_scale = router_wg_grad_scale
-        self._router_wg_grad_scale_tensor.fill_(router_wg_grad_scale)
 
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
@@ -489,17 +477,7 @@ class Router(nn.Module):
 
             # 1. GET ROUTING LOGITS
             # ---------------------
-            router_weight = self.w_g.weight
-            if self.training:
-                router_weight = ScaleGrad.apply(
-                    router_weight,
-                    self._router_wg_grad_scale_tensor.to(
-                        device=router_weight.device,
-                        dtype=router_weight.dtype,
-                    ),
-                    torch.tensor(False, device=router_weight.device, dtype=torch.bool),
-                )
-            logits_wg = F.linear(x_flat, router_weight)  # [B*T, n_exp]
+            logits_wg = F.linear(x_flat, self.w_g.weight)  # [B*T, n_exp]
             noise = None
 
             if self.training and self.use_noisy_top_k:
@@ -523,7 +501,7 @@ class Router(nn.Module):
                     else:
                         input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
-                            logits_wg, x_flat, router_weight, input_alpha_t
+                            logits_wg, x_flat, self.w_g.weight, input_alpha_t
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 

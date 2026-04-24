@@ -82,9 +82,6 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0,
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
                     help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
                          "Only effective when --router-ortho-loss-weight is not specified.")
-parser.add_argument("--router-wg-grad-scale", type=float, default=-1,
-                    help="scaling factor for gradients to router w_g weights only (-1.0 = inherit from saved config of base model). "
-                         "This does not affect gradients flowing back into router inputs.")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
 parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=None, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities (default: inherit from saved config of base model)")
@@ -104,21 +101,6 @@ if args.train_mixture_repeats < 1:
 user_config = vars(args).copy()
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
-
-
-def set_router_wg_grad_scale(model, router_wg_grad_scale):
-    router_wg_grad_scale = float(router_wg_grad_scale)
-    model.config.router_wg_grad_scale = router_wg_grad_scale
-    for layer in model.transformer.h:
-        mlp = getattr(layer, "mlp", None)
-        router = getattr(mlp, "router", None)
-        if router is None:
-            continue
-        else:
-            if hasattr(router, "set_router_wg_grad_scale"):
-                router.set_router_wg_grad_scale(router_wg_grad_scale)
-            else:
-                router.router_wg_grad_scale = router_wg_grad_scale
 
 def combine_router_ortho_sublosses(losses):
     gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
@@ -205,11 +187,6 @@ if not use_dummy_wandb:
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and args.device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device-batch-size to this script?")
-if args.router_wg_grad_scale == -1:
-    args.router_wg_grad_scale = model.config.router_wg_grad_scale
-    print0(f"Inherited router_wg_grad_scale: {args.router_wg_grad_scale}")
-else:
-    print0(f"Specified router_wg_grad_scale: {args.router_wg_grad_scale}")
 if router_z_loss_weight_was_specified:
     model.config.router_z_loss_weight = args.router_z_loss_weight
     print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
@@ -219,12 +196,6 @@ else:
 user_config["router_z_loss_weight"] = args.router_z_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
-
-# Set the runtime router_wg_grad_scale before training starts.
-set_router_wg_grad_scale(
-    model,
-    args.router_wg_grad_scale,
-)
 
 orig_model = model
 router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
@@ -679,7 +650,6 @@ while True:
                     "use_aux_free_load_balancing": model.config.use_aux_free_load_balancing,
                     "aux_free_load_balancing_bias_update_speed": model.config.aux_free_load_balancing_bias_update_speed,
                     "use_full_router_probs_for_aux_loss": model.config.use_full_router_probs_for_aux_loss,
-                    "router_wg_grad_scale": model.config.router_wg_grad_scale,
                 },
                 "user_config": user_config, # inputs to the training script
             }
