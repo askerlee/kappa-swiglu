@@ -110,7 +110,7 @@ def test_muon_chunk_size_one_updates_all_params():
         assert not torch.allclose(param, param_before)
 
 
-def test_setup_optimizer_uses_reduced_weight_decay_for_low_rank_gate_factors():
+def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     config = GPTConfig(
         n_layer=3,
         moe_start_layer=1,
@@ -118,8 +118,6 @@ def test_setup_optimizer_uses_reduced_weight_decay_for_low_rank_gate_factors():
         n_exp=2,
         n_embd=8,
         n_head=2,
-        exp_gate_proj_rank=3,
-        exp_gate_proj_m=2,
     )
     model = GPT(config)
 
@@ -127,28 +125,29 @@ def test_setup_optimizer_uses_reduced_weight_decay_for_low_rank_gate_factors():
         matrix_lr=0.01,
         weight_decay_dense=0.2,
         weight_decay_moe=0.2,
-        exp_gate_proj_weight_decay_frac=0.25,
     )
 
-    gate_factor_params = set()
+    moe_params = set()
+    dense_params = set()
     for block in model.transformer.h:
-        experts = getattr(getattr(block, 'mlp', None), 'experts', None)
-        if experts is not None and hasattr(experts, 'gate_proj_a'):
-            gate_factor_params.add(experts.gate_proj_a)
-            gate_factor_params.add(experts.gate_proj_b)
+        params = set(block.parameters())
+        if hasattr(block, 'mlp') and block.mlp.__class__.__name__ == 'MOELayer':
+            moe_params.update(params)
+        else:
+            dense_params.update(params)
 
-    gate_factor_groups = []
+    moe_muon_groups = []
     other_muon_groups = []
     for group in optimizer.param_groups:
         if group.get('kind') != 'muon':
             continue
         params = set(group['params'])
-        if params and params.issubset(gate_factor_params):
-            gate_factor_groups.append(group)
+        if params and params.issubset(moe_params):
+            moe_muon_groups.append(group)
         else:
             other_muon_groups.append(group)
 
-    assert gate_factor_groups
+    assert moe_muon_groups
     assert other_muon_groups
-    assert all(group['weight_decay'] == 0.05 for group in gate_factor_groups)
+    assert all(group['weight_decay'] == 0.2 for group in moe_muon_groups)
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)

@@ -535,7 +535,11 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             router_grad_norm = router_gate_grad.norm(dim=1)
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
-            exp_gate_grad_norm = layer.mlp.experts.get_gate_proj_grad_norm()
+            exp_gate_grad = layer.mlp.experts.gate_proj.grad
+            exp_gate_grad_norm = None if exp_gate_grad is None else torch.linalg.vector_norm(
+                exp_gate_grad,
+                dim=tuple(range(1, exp_gate_grad.ndim)),
+            )
             if exp_gate_grad_norm is not None:
                 exp_gate_grad_norms.append(exp_gate_grad_norm)
                 losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
@@ -544,12 +548,12 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                exp_gate_weight = layer.mlp.experts.gate_proj
                 gate_proj_diversity_score = compute_row_diversity_score(exp_gate_weight)
                 gate_proj_diversity_scores.append(gate_proj_diversity_score)
                 losses[f'gate_proj_diversity_score_{i}'] = gate_proj_diversity_score.mean().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
-                exp_cfc_weight = layer.mlp.experts.get_equivalent_expert_weight('c_fc')
+                exp_cfc_weight = layer.mlp.experts.c_fc
                 c_fc_diversity_score = compute_row_diversity_score(exp_cfc_weight)
                 c_fc_diversity_scores.append(c_fc_diversity_score)
                 losses[f'c_fc_diversity_score_{i}'] = c_fc_diversity_score.mean().item()

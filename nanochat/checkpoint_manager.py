@@ -10,7 +10,7 @@ import logging
 import torch
 
 from nanochat.common import get_base_dir
-from nanochat.gpt import GPT, get_layer_exp_gate_proj_m, get_moe_layer_indices
+from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import setup_default_logging
@@ -32,72 +32,11 @@ def _patch_missing_config_keys(model_config_kwargs):
         model_config_kwargs["use_aux_free_load_balancing"] = False
     if "aux_free_load_balancing_bias_update_speed" not in model_config_kwargs:
         model_config_kwargs["aux_free_load_balancing_bias_update_speed"] = 1e-3
-    if "exp_gate_proj_rank" not in model_config_kwargs:
-        model_config_kwargs["exp_gate_proj_rank"] = 0
-    if "exp_gate_proj_m" not in model_config_kwargs:
-        if "qwen3_gate_proj_m" in model_config_kwargs:
-            model_config_kwargs["exp_gate_proj_m"] = model_config_kwargs.pop("qwen3_gate_proj_m")
-        else:
-            model_config_kwargs["exp_gate_proj_m"] = 1
-    if "exp_gate_proj_aggr_scheme" not in model_config_kwargs:
-        if "exp_gate_proj_aggregation" in model_config_kwargs:
-            model_config_kwargs["exp_gate_proj_aggr_scheme"] = model_config_kwargs.pop("exp_gate_proj_aggregation")
-        else:
-            model_config_kwargs["exp_gate_proj_aggr_scheme"] = "mean"
     if "num_moe_layers" not in model_config_kwargs:
         model_config_kwargs["num_moe_layers"] = -1
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
-    def get_dense_gate_proj(gate_proj, gate_proj_a, gate_proj_b):
-        if gate_proj is not None:
-            return gate_proj
-        if gate_proj_a is not None and gate_proj_b is not None:
-            if gate_proj_a.ndim == 4:
-                return torch.einsum('ehrm,erim->ehim', gate_proj_a, gate_proj_b)
-            return torch.bmm(gate_proj_a, gate_proj_b)
-        return None
-
-    def adapt_dense_gate_proj_to_target_m(gate_proj, target_m):
-        if gate_proj.ndim == 3:
-            if target_m == 1:
-                return gate_proj
-            gate_proj = gate_proj.unsqueeze(-1)
-            return gate_proj.expand(*gate_proj.shape[:-1], target_m).clone()
-        if gate_proj.ndim == 4:
-            if gate_proj.shape[-1] == target_m:
-                return gate_proj
-            gate_proj_base = gate_proj.mean(dim=-1, keepdim=True)
-            if target_m == 1:
-                return gate_proj_base.squeeze(-1)
-            return gate_proj_base.expand(*gate_proj_base.shape[:-1], target_m).clone()
-        raise ValueError(f"Unsupported gate_proj ndim: {gate_proj.ndim}")
-
-    def factorize_gate_proj(dense_gate_proj, target_rank):
-        target_rank = min(int(target_rank), dense_gate_proj.shape[1], dense_gate_proj.shape[2])
-        if dense_gate_proj.ndim == 3:
-            dense_fp32 = dense_gate_proj.float()
-            u, s, vh = torch.linalg.svd(dense_fp32, full_matrices=False)
-            u = u[:, :, :target_rank]
-            s = s[:, :target_rank]
-            vh = vh[:, :target_rank, :]
-            sqrt_s = s.sqrt()
-            gate_proj_a = u * sqrt_s.unsqueeze(1)
-            gate_proj_b = sqrt_s.unsqueeze(-1) * vh
-            return gate_proj_a.to(dtype=dense_gate_proj.dtype), gate_proj_b.to(dtype=dense_gate_proj.dtype)
-
-        dense_fp32 = dense_gate_proj.permute(0, 3, 1, 2).reshape(-1, dense_gate_proj.shape[1], dense_gate_proj.shape[2]).float()
-        u, s, vh = torch.linalg.svd(dense_fp32, full_matrices=False)
-        u = u[:, :, :target_rank]
-        s = s[:, :target_rank]
-        vh = vh[:, :target_rank, :]
-        sqrt_s = s.sqrt()
-        gate_proj_a = u * sqrt_s.unsqueeze(1)
-        gate_proj_b = sqrt_s.unsqueeze(-1) * vh
-        gate_proj_a = gate_proj_a.reshape(dense_gate_proj.shape[0], dense_gate_proj.shape[3], dense_gate_proj.shape[1], target_rank).permute(0, 2, 3, 1)
-        gate_proj_b = gate_proj_b.reshape(dense_gate_proj.shape[0], dense_gate_proj.shape[3], target_rank, dense_gate_proj.shape[2]).permute(0, 2, 3, 1)
-        return gate_proj_a.to(dtype=dense_gate_proj.dtype), gate_proj_b.to(dtype=dense_gate_proj.dtype)
-
     n_layer = model_config.n_layer
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
@@ -113,35 +52,12 @@ def _patch_missing_keys(model_data, model_config):
             gate_proj_a_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_a"
             gate_proj_b_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_b"
             gate_proj = model_data.get(gate_proj_key)
-            gate_proj_a = model_data.get(gate_proj_a_key)
-            gate_proj_b = model_data.get(gate_proj_b_key)
-            target_rank = int(getattr(model_config, "exp_gate_proj_rank", 0))
-            target_m = get_layer_exp_gate_proj_m(model_config, layer_idx)
-            dense_gate_proj = get_dense_gate_proj(gate_proj, gate_proj_a, gate_proj_b)
-            if dense_gate_proj is not None:
-                dense_gate_proj = adapt_dense_gate_proj_to_target_m(dense_gate_proj, target_m)
-
-            if target_rank > 0:
-                if dense_gate_proj is not None:
-                    factored_a, factored_b = factorize_gate_proj(dense_gate_proj, target_rank)
-                    model_data[gate_proj_a_key] = factored_a
-                    model_data[gate_proj_b_key] = factored_b
-                    log0(
-                        f"Factorizing {gate_proj_key} into low-rank gate_proj_a/gate_proj_b "
-                        f"with rank {factored_a.shape[-2] if factored_a.ndim == 4 else factored_a.shape[-1]} "
-                        f"and m={target_m} for layer {layer_idx}"
-                    )
-                model_data.pop(gate_proj_key, None)
-            else:
-                if dense_gate_proj is not None:
-                    model_data[gate_proj_key] = dense_gate_proj
-                    if gate_proj is None or gate_proj.shape != dense_gate_proj.shape:
-                        log0(
-                            f"Converting {gate_proj_key} to dense shape {tuple(dense_gate_proj.shape)} "
-                            f"with m={target_m} for layer {layer_idx}"
-                        )
-                model_data.pop(gate_proj_a_key, None)
-                model_data.pop(gate_proj_b_key, None)
+            if gate_proj is not None and gate_proj.ndim != 3:
+                raise ValueError(
+                    f"Expected {gate_proj_key} to be a 3D dense tensor, got shape {tuple(gate_proj.shape)}"
+                )
+            model_data.pop(gate_proj_a_key, None)
+            model_data.pop(gate_proj_b_key, None)
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)

@@ -274,18 +274,6 @@ def get_moe_layer_indices(config):
         return moe_layers[:num_moe_layers]
     return moe_layers
 
-
-def get_layer_exp_gate_proj_m(config, layer_idx, top_expanded_moe_layers=2):
-    configured_m = int(getattr(config, 'exp_gate_proj_m', 1))
-    if configured_m <= 1:
-        return 1
-
-    moe_layers = get_moe_layer_indices(config)
-    if layer_idx not in moe_layers:
-        return 1
-
-    return configured_m if layer_idx in moe_layers[-top_expanded_moe_layers:] else 1
-
 def apply_rotary_emb(x, cos, sin):
     assert x.ndim == 4  # multihead attention
     d = x.shape[3] // 2
@@ -728,43 +716,15 @@ class Qwen3MLP(nn.Module):
         return down_proj
 
 class Qwen3MLPExperts(nn.Module):
-    def __init__(self, config, gate_proj_rank=None, gate_proj_m=None):
+    def __init__(self, config):
         super().__init__()
         self.debug = config.debug
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        if gate_proj_rank is None:
-            gate_proj_rank = getattr(config, 'exp_gate_proj_rank', 0)
-        self.gate_proj_rank = int(gate_proj_rank)
-        if gate_proj_m is None:
-            gate_proj_m = getattr(config, 'exp_gate_proj_m', 1)
-        self.gate_proj_m = int(gate_proj_m)
-
-        if self.gate_proj_rank > 0:
-            if self.gate_proj_m > 1:
-                self.gate_proj_a = nn.Parameter(
-                    torch.empty(self.n_exp, self.hidden_size, self.gate_proj_rank)
-                )
-                self.gate_proj_b = nn.Parameter(
-                    torch.empty(self.n_exp, self.gate_proj_rank, self.intermediate_size, self.gate_proj_m)
-                )
-            else:
-                self.gate_proj_a = nn.Parameter(
-                    torch.empty(self.n_exp, self.hidden_size, self.gate_proj_rank)
-                )
-                self.gate_proj_b = nn.Parameter(
-                    torch.empty(self.n_exp, self.gate_proj_rank, self.intermediate_size)
-                )
-        else:
-            if self.gate_proj_m > 1:
-                self.gate_proj = nn.Parameter(
-                    torch.empty(self.n_exp, self.hidden_size, self.intermediate_size, self.gate_proj_m)
-                )
-            else:
-                self.gate_proj = nn.Parameter(
-                    torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
-                )
+        self.gate_proj = nn.Parameter(
+            torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
+        )
         self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -778,7 +738,6 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_out_acts_normed = None
         self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
         self.ortho_x_router_wg_coeff = float(getattr(config, 'ortho_x_router_wg_coeff', 1.0))
-        self.gate_proj_aggr_scheme = getattr(config, 'exp_gate_proj_aggr_scheme', 'mean')
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -797,70 +756,9 @@ class Qwen3MLPExperts(nn.Module):
     def set_ortho_x_router_wg_coeff(self, coeff):
         self.ortho_x_router_wg_coeff = float(coeff)
 
-    def get_gate_proj_dense_weight(self, average_over_m=False):
-        if self.gate_proj_rank > 0:
-            if self.gate_proj_m > 1:
-                gate_proj_weight = torch.einsum('ehr,erim->ehim', self.gate_proj_a, self.gate_proj_b)
-            else:
-                gate_proj_weight = torch.bmm(self.gate_proj_a, self.gate_proj_b)
-        else:
-            gate_proj_weight = self.gate_proj
-        if average_over_m and gate_proj_weight.ndim == 4:
-            return gate_proj_weight.mean(dim=-1)
-        return gate_proj_weight
-
-    def _compute_gate_out_raw(self, gate_input, gate_proj=None):
-        if gate_proj is not None:
-            if gate_proj.ndim == 4:
-                return torch.einsum('ech,ehim->ecim', gate_input, gate_proj)
-            return torch.bmm(gate_input, gate_proj)
-        if self.gate_proj_rank > 0:
-            if self.gate_proj_m > 1:
-                gate_hidden = torch.einsum('ech,ehr->ecr', gate_input, self.gate_proj_a)
-                return torch.einsum('ecr,erim->ecim', gate_hidden, self.gate_proj_b)
-            gate_hidden = torch.bmm(gate_input, self.gate_proj_a)
-            return torch.bmm(gate_hidden, self.gate_proj_b)
-        if self.gate_proj_m > 1:
-            return torch.einsum('ech,ehim->ecim', gate_input, self.gate_proj)
-        return torch.bmm(gate_input, self.gate_proj)
-
-    def get_gate_proj_grad_norm(self):
-        grad_norm_sq = None
-        param_names = ('gate_proj_a', 'gate_proj_b') if self.gate_proj_rank > 0 else ('gate_proj',)
-        for param_name in param_names:
-            grad = getattr(self, param_name).grad
-            if grad is None:
-                continue
-            grad_norm = torch.linalg.vector_norm(grad, dim=tuple(range(1, grad.ndim)))
-            grad_norm_sq = grad_norm.square() if grad_norm_sq is None else grad_norm_sq + grad_norm.square()
-        if grad_norm_sq is None:
-            return None
-        return grad_norm_sq.sqrt()
-
-    def get_equivalent_expert_weight(self, weight_name):
-        if weight_name == 'gate_proj':
-            return self.get_gate_proj_dense_weight(average_over_m=True)
-        return getattr(self, weight_name)
-
-    def _reduce_gate_acts(self, gate_acts, gate_logits=None):
-        if gate_acts.ndim != 4:
-            return gate_acts
-        if self.gate_proj_aggr_scheme == 'mean':
-            # After averaging gate_proj_m activations, the std is scaled down by
-            # 1 / sqrt(gate_proj_m). Scale the mean activations by sqrt(gate_proj_m)
-            # to preserve variance relative to the single-slice baseline.
-            return gate_acts.mean(dim=-1) * (self.gate_proj_m ** 0.5)
-        if self.gate_proj_aggr_scheme == 'softmaxsum':
-            assert gate_logits is not None, "gate_logits must be provided for softmaxsum aggregation"
-            # Weight raw branch logits by their magnitude, keep signed competition,
-            # then apply a single SiLU after aggregation.
-            gate_weights = F.softmax(gate_logits.abs(), dim=-1)
-            return self.act_fn((gate_weights * gate_logits).sum(dim=-1))
-        raise ValueError(f"Unsupported gate_proj aggregation scheme: {self.gate_proj_aggr_scheme}")
-
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
-        # gate_out_raw: [n_exp, capacity, intermediate_size] or [n_exp, capacity, intermediate_size, gate_proj_m]
+        # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
 
@@ -878,22 +776,18 @@ class Qwen3MLPExperts(nn.Module):
                 b_discount=self.ortho_x_router_wg_coeff,
                 dims=[2],
             )
-        gate_out_raw = self._compute_gate_out_raw(gate_input)
+        gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
-        gate_out_acts = self._reduce_gate_acts(gate_out_acts, gate_logits=gate_out_raw)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
-            if self.gate_proj_m > 1:
-                router_weight_for_gate = router_weight_for_gate.unsqueeze(-1)
             gate_proj_ortho = ortho_subtract(
-                self.get_gate_proj_dense_weight(average_over_m=False),
+                self.gate_proj,
                 router_weight_for_gate,
                 dims=[1],
             )
-            gate_out_ortho_raw = self._compute_gate_out_raw(x, gate_proj=gate_proj_ortho)
+            gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
-            gate_out_ortho_acts = self._reduce_gate_acts(gate_out_ortho_acts, gate_logits=gate_out_ortho_raw)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -903,9 +797,8 @@ class Qwen3MLPExperts(nn.Module):
             else:
                 alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out_acts.device, dtype=gate_out_acts.dtype)
                 gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
-                gate_out_gs_raw = self._compute_gate_out_raw(gate_input_gs)
+                gate_out_gs_raw = torch.bmm(gate_input_gs, self.gate_proj)
                 gate_out_gs = self.act_fn(gate_out_gs_raw)
-                gate_out_gs = self._reduce_gate_acts(gate_out_gs, gate_logits=gate_out_gs_raw)
 
             # gate_out_gs: [n_exp, capacity, intermediate_size]
             # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
@@ -933,10 +826,7 @@ class MOELayer(nn.Module):
         self.router = Router(config)
         self.debug = config.debug
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
-            self.experts = Qwen3MLPExperts(
-                config,
-                gate_proj_m=get_layer_exp_gate_proj_m(config, layer_idx),
-            )
+            self.experts = Qwen3MLPExperts(config)
             self.use_qwen3_moe_mlp = True
             self.experts.set_router(self.router)
         else:
@@ -1100,10 +990,7 @@ class MOELayer(nn.Module):
             return zero, sub_losses
 
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-        if hasattr(self.experts, 'get_equivalent_expert_weight'):
-            expert_weights = self.experts.get_equivalent_expert_weight('gate_proj')
-        else:
-            expert_weights = self.experts.gate_proj
+        expert_weights = self.experts.gate_proj
         # Use cosine instead of unnormalized dot product. Otherwise, the loss
         # will reduce itself by suppressing the increase of the magnitudes of
         # router_weights and expert_weights, which will hurt performance.
@@ -1176,10 +1063,7 @@ class MOELayer(nn.Module):
 
         for proj_name in ('gate_proj', 'c_fc'):
             # G: [n_exp, n_embd, intermediate_size]
-            if hasattr(self.experts, 'get_equivalent_expert_weight'):
-                G = self.experts.get_equivalent_expert_weight(proj_name)
-            else:
-                G = getattr(self.experts, proj_name)
+            G = getattr(self.experts, proj_name)
             # Row-normalize: normalize each row vector over intermediate_size
             G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
             E, D, F = G.size()  # n_exp, n_embd, intermediate_size
@@ -1328,18 +1212,7 @@ class GPT(nn.Module):
             elif isinstance(block.mlp, MOELayer):
                 experts = block.mlp.experts
                 if isinstance(experts, Qwen3MLPExperts):
-                    if experts.gate_proj_rank > 0:
-                        # X \sim U(-a, a) \quad\Rightarrow\quad \mathrm{Var}(X) = \frac{a^2}{3}
-                        gate_proj_rank_scale = 3**0.5 * experts.gate_proj_rank**-0.5
-                        # \mathrm{Var}(W_{ij}) \approx \sum_{k=1}^r \mathrm{Var}(A_{ik}B_{kj})
-                        # \approx r \cdot \frac{1}{n_{embd}} \cdot \frac{1}{r}
-                        # then for W = AB,                
-                        # \mathrm{Var}(W_{ij}) \approx \sum_{k=1}^r \mathrm{Var}(A_{ik}B_{kj})
-                        # \approx r \cdot \frac{1}{n_{embd}} \cdot \frac{1}{r} = \frac{1}{n_{embd}}
-                        torch.nn.init.uniform_(experts.gate_proj_a, -s, s)
-                        torch.nn.init.uniform_(experts.gate_proj_b, -gate_proj_rank_scale, gate_proj_rank_scale)
-                    else:
-                        torch.nn.init.uniform_(experts.gate_proj, -s, s)
+                    torch.nn.init.uniform_(experts.gate_proj, -s, s)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
                 else:
@@ -1518,34 +1391,26 @@ class GPT(nn.Module):
 
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
                         weight_decay_dense=0.0, weight_decay_moe=0.0,
-                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
-                        exp_gate_proj_weight_decay_frac=0.1):
+                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
         # Separate out all parameters into groups
         dense_matrix_params = []
         moe_matrix_params = []
-        gate_factor_param_ids = set()
         for block in self.transformer.h:
             block_params = list(block.parameters())
             mlp = getattr(block, 'mlp', None)
-            experts = getattr(mlp, 'experts', None)
-            if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_rank > 0:
-                gate_factor_param_ids.add(id(experts.gate_proj_a))
-                gate_factor_param_ids.add(id(experts.gate_proj_b))
             if isinstance(mlp, MOELayer):
                 moe_matrix_params.extend(block_params)
             else:
                 dense_matrix_params.extend(block_params)
-        gate_factor_params = [param for param in moe_matrix_params if id(param) in gate_factor_param_ids]
-        moe_matrix_params = [param for param in moe_matrix_params if id(param) not in gate_factor_param_ids]
         value_embeds_params = list(self.value_embeds.parameters())
         embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        assert len(list(self.parameters())) == len(dense_matrix_params) + len(moe_matrix_params) + len(gate_factor_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params)
+        assert len(list(self.parameters())) == len(dense_matrix_params) + len(moe_matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params)
 
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (tuned for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -1571,12 +1436,6 @@ class GPT(nn.Module):
         # Muon groups (matrix params, grouped by shape for stacking)
         muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"Muon LR scaling: {muon_lr_scaling}")
-        gate_factor_weight_decay = weight_decay_moe * float(exp_gate_proj_weight_decay_frac)
-        if gate_factor_params and gate_factor_weight_decay != weight_decay_moe:
-            print0(
-                f"Using reduced weight decay {gate_factor_weight_decay:.6f} for expert gate factors "
-                f"(fraction {float(exp_gate_proj_weight_decay_frac):.4f} of MoE weight decay)"
-            )
         for shape in sorted({p.shape for p in dense_matrix_params}):
             group_params = [p for p in dense_matrix_params if p.shape == shape]
             param_groups.append(dict(
@@ -1590,14 +1449,6 @@ class GPT(nn.Module):
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay_moe,
-                chunk_size=2,
-                match_rms_adamw=muon_match_rms_adamw,
-            ))
-        for shape in sorted({p.shape for p in gate_factor_params}):
-            group_params = [p for p in gate_factor_params if p.shape == shape]
-            param_groups.append(dict(
-                kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=gate_factor_weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
@@ -1748,7 +1599,11 @@ class GPT(nn.Module):
                 router_grad_norm = router_gate_grad.norm(dim=1)
                 router_grad_norms.append(router_grad_norm)
                 losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
-                exp_gate_grad_norm = layer.mlp.experts.get_gate_proj_grad_norm()
+                exp_gate_grad = layer.mlp.experts.gate_proj.grad
+                exp_gate_grad_norm = None if exp_gate_grad is None else torch.linalg.vector_norm(
+                    exp_gate_grad,
+                    dim=tuple(range(1, exp_gate_grad.ndim)),
+                )
                 if exp_gate_grad_norm is not None:
                     exp_gate_grad_norms.append(exp_gate_grad_norm)
                     losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
@@ -1757,7 +1612,7 @@ class GPT(nn.Module):
                 # Compute router expert - gate weight alignment
                 with torch.no_grad():
                     router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                    exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                    exp_gate_weight = layer.mlp.experts.gate_proj
                     exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                     # Compute the cosine similarity between router weights and router weight grads.
                     # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),

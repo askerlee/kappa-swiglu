@@ -417,33 +417,24 @@ def test_validate_checkpoint_file_sizes_raises_on_large_size_mismatch(tmp_path):
         )
 
 
-def test_patch_missing_keys_factorizes_dense_gate_proj_when_rank_enabled():
+def test_patch_missing_keys_removes_legacy_gate_proj_factors():
     config = GPTConfig(
         n_layer=1,
         moe_start_layer=0,
         stride=1,
         n_exp=2,
         n_embd=4,
-        exp_gate_proj_rank=2,
-        exp_gate_proj_m=3,
     )
 
-    gate_proj_a = torch.randn(2, 4, 2, 3)
-    gate_proj_b = torch.randn(2, 2, 16, 3)
-    dense_gate_proj = torch.einsum('ehrm,erim->ehim', gate_proj_a, gate_proj_b)
+    dense_gate_proj = torch.randn(2, 4, 16)
     model_data = {
-        "transformer.h.0.mlp.experts.gate_proj": dense_gate_proj.clone(),
+        "transformer.h.0.mlp.experts.gate_proj": dense_gate_proj,
+        "transformer.h.0.mlp.experts.gate_proj_a": torch.randn(2, 4, 2),
+        "transformer.h.0.mlp.experts.gate_proj_b": torch.randn(2, 2, 16),
     }
 
     _patch_missing_keys(model_data, config)
 
-    assert "transformer.h.0.mlp.experts.gate_proj" not in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_a" in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_b" in model_data
-
-    reconstructed = torch.einsum(
-        'ehrm,erim->ehim',
-        model_data["transformer.h.0.mlp.experts.gate_proj_a"],
-        model_data["transformer.h.0.mlp.experts.gate_proj_b"],
-    )
-    torch.testing.assert_close(reconstructed, dense_gate_proj, atol=1e-5, rtol=1e-5)
+    assert torch.equal(model_data["transformer.h.0.mlp.experts.gate_proj"], dense_gate_proj)
+    assert "transformer.h.0.mlp.experts.gate_proj_a" not in model_data
+    assert "transformer.h.0.mlp.experts.gate_proj_b" not in model_data

@@ -182,12 +182,6 @@ parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', cons
                     help="subtract each expert's router w_g row from expert gate inputs before gate_proj")
 parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=1.0,
                     help="coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate")
-parser.add_argument("--exp-gate-proj-rank", type=int, default=0,
-                    help="low-rank factorization rank for expert gate_proj; 0 keeps a dense gate_proj")
-parser.add_argument("--exp-gate-proj-m", type=int, default=1,
-                    help="extra averaged dimension m for expert gate_proj on all MoE layers")
-parser.add_argument("--exp-gate-proj-aggr-scheme", type=str, default="mean", choices=["mean", "softmaxsum"],
-                    help="how to combine the expert gate activation m axis: mean or SiLU(sum softmax(abs(logits)) * logits)")
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, help="weight for expert gate projection diversity loss")
@@ -223,8 +217,6 @@ parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning ra
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay-dense", type=float, default=0.05, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
 parser.add_argument("--weight-decay-moe",   type=float, default=0.05, help="cautious weight decay for MoE Transformer layers in the Muon optimizer (for weights)")
-parser.add_argument("--exp-gate-proj-weight-decay-frac", type=float, default=0.1,
-                    help="fraction of Muon weight decay to apply to low-rank expert gate factors gate_proj_a/gate_proj_b")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
@@ -261,10 +253,6 @@ if args.router_ortho_block_size <= 0:
     raise ValueError("--router-ortho-block-size must be > 0")
 if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
-if args.exp_gate_proj_rank < 0:
-    raise ValueError("--exp-gate-proj-rank must be >= 0")
-if args.exp_gate_proj_m < 1:
-    raise ValueError("--exp-gate-proj-m must be >= 1")
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
@@ -370,9 +358,6 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_ortho_x_for_exp_gate=args.use_ortho_x_for_exp_gate,
         ortho_x_router_wg_coeff=args.ortho_x_router_wg_coeff,
-        exp_gate_proj_rank=args.exp_gate_proj_rank,
-        exp_gate_proj_m=args.exp_gate_proj_m,
-        exp_gate_proj_aggr_scheme=args.exp_gate_proj_aggr_scheme,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
@@ -665,7 +650,6 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
-    exp_gate_proj_weight_decay_frac=args.exp_gate_proj_weight_decay_frac,
 )
 
 if resuming and load_optimizer_state:
@@ -851,7 +835,11 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             router_grad_norm = router_gate_grad.norm(dim=1)
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
-            exp_gate_grad_norm = layer.mlp.experts.get_gate_proj_grad_norm()
+            exp_gate_grad = layer.mlp.experts.gate_proj.grad
+            exp_gate_grad_norm = None if exp_gate_grad is None else torch.linalg.vector_norm(
+                exp_gate_grad,
+                dim=tuple(range(1, exp_gate_grad.ndim)),
+            )
             if exp_gate_grad_norm is not None:
                 exp_gate_grad_norms.append(exp_gate_grad_norm)
                 losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
@@ -860,7 +848,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                exp_gate_weight = layer.mlp.experts.get_equivalent_expert_weight('gate_proj')
+                exp_gate_weight = layer.mlp.experts.gate_proj
                 gate_proj_diversity_score = compute_row_diversity_score(exp_gate_weight)
                 gate_proj_diversity_scores.append(gate_proj_diversity_score)
                 losses[f'gate_proj_diversity_score_{i}'] = gate_proj_diversity_score.mean().item()
@@ -868,7 +856,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
-                exp_cfc_weight = layer.mlp.experts.get_equivalent_expert_weight('c_fc')
+                exp_cfc_weight = layer.mlp.experts.c_fc
                 c_fc_diversity_score = compute_row_diversity_score(exp_cfc_weight)
                 c_fc_diversity_scores.append(c_fc_diversity_score)
                 losses[f'c_fc_diversity_score_{i}'] = c_fc_diversity_score.mean().item()
