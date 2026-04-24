@@ -84,7 +84,6 @@ parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
                          "Only effective when --router-ortho-loss-weight is not specified.")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
-parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=None, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities (default: inherit from saved config of base model)")
 
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
@@ -158,30 +157,6 @@ user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
 if not use_dummy_wandb:
     wandb_run.config.update(
         {"use_aux_free_load_balancing": args.use_aux_free_load_balancing},
-        allow_val_change=True,
-    )
-if args.use_full_router_probs_for_aux_loss is None:
-    args.use_full_router_probs_for_aux_loss = bool(
-        getattr(model.config, "use_full_router_probs_for_aux_loss", True)
-    )
-    print0(
-        "Inherited use_full_router_probs_for_aux_loss: "
-        f"{args.use_full_router_probs_for_aux_loss}"
-    )
-else:
-    print0(
-        "Specified use_full_router_probs_for_aux_loss: "
-        f"{args.use_full_router_probs_for_aux_loss}"
-    )
-if model.config.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
-    print0("Forcing use_full_router_probs_for_aux_loss=True because the loaded model has moe_top_k=1.")
-    args.use_full_router_probs_for_aux_loss = True
-
-model.config.use_full_router_probs_for_aux_loss = args.use_full_router_probs_for_aux_loss
-user_config["use_full_router_probs_for_aux_loss"] = args.use_full_router_probs_for_aux_loss
-if not use_dummy_wandb:
-    wandb_run.config.update(
-        {"use_full_router_probs_for_aux_loss": args.use_full_router_probs_for_aux_loss},
         allow_val_change=True,
     )
 pretrain_batch_size = meta.get("device_batch_size", None)
@@ -634,7 +609,6 @@ while True:
                     "use_aux_loss": model.config.use_aux_loss,
                     "use_aux_free_load_balancing": model.config.use_aux_free_load_balancing,
                     "aux_free_load_balancing_bias_update_speed": model.config.aux_free_load_balancing_bias_update_speed,
-                    "use_full_router_probs_for_aux_loss": model.config.use_full_router_probs_for_aux_loss,
                 },
                 "user_config": user_config, # inputs to the training script
             }

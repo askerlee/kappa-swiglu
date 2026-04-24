@@ -167,7 +167,6 @@ parser.add_argument("--n-exp", type=int, default=64, help="number of experts per
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
 parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight for the Switch-style router auxiliary load-balancing loss")
-parser.add_argument("--use-full-router-probs-for-aux-loss", type=str2bool, nargs='?', const=True, default=True, help="compute router auxiliary load-balancing loss from a full softmax over all experts instead of sparse top-k probabilities")
 # router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
@@ -250,9 +249,6 @@ if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
-if args.moe_top_k == 1 and not args.use_aux_free_load_balancing and not args.use_full_router_probs_for_aux_loss:
-    print("Forcing --use-full-router-probs-for-aux-loss=True because --moe-top-k=1.")
-    args.use_full_router_probs_for_aux_loss = True
 
 user_config = vars(args).copy()  # for logging
 milestones = parse_milestones_arg(args.milestones)
@@ -344,7 +340,6 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        use_full_router_probs_for_aux_loss=args.use_full_router_probs_for_aux_loss,
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,

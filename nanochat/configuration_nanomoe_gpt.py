@@ -20,7 +20,6 @@ class GPTConfig:
         use_aux_loss: bool = True,  # apply auxiliary loss (from Switch Transformer) in router
         use_aux_free_load_balancing: bool = False,  # use DeepSeekV3 auxiliary-loss-free load balancing via expert-selection bias updates
         aux_free_load_balancing_bias_update_speed: float = 1e-3,  # DeepSeekV3 expert-bias update coefficient
-        use_full_router_probs_for_aux_loss: bool = True,  # compute aux loss from a full softmax over experts instead of sparse top-k probabilities
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
@@ -74,7 +73,6 @@ class GPTConfig:
         self.use_aux_loss = use_aux_loss
         self.use_aux_free_load_balancing = use_aux_free_load_balancing
         self.aux_free_load_balancing_bias_update_speed = aux_free_load_balancing_bias_update_speed
-        self.use_full_router_probs_for_aux_loss = use_full_router_probs_for_aux_loss
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
