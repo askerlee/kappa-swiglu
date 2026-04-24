@@ -26,9 +26,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
-        use_ortho_x_for_exp_gate: bool = False,  # subtract router.w_g from expert gate inputs before gate_proj
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to expert gate activations after gate_proj and SiLU
-        ortho_x_router_wg_coeff: float = 1.0,  # b_discount coefficient for router.w_g subtraction used by expert gate orthogonalization
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = False,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
@@ -89,9 +87,7 @@ class GPTConfig:
                 f"{sorted(valid_router_ortho_loss_targets)}, got {router_ortho_loss_target!r}"
             )
         self.router_ortho_loss_target = router_ortho_loss_target
-        self.use_ortho_x_for_exp_gate = use_ortho_x_for_exp_gate
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
-        self.ortho_x_router_wg_coeff = float(ortho_x_router_wg_coeff)
         self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k

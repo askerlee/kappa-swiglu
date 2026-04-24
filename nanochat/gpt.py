@@ -767,8 +767,6 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
         self.gate_out_acts_normed = None
-        self.use_ortho_x_for_exp_gate = bool(getattr(config, 'use_ortho_x_for_exp_gate', False))
-        self.ortho_x_router_wg_coeff = float(getattr(config, 'ortho_x_router_wg_coeff', 1.0))
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -781,32 +779,12 @@ class Qwen3MLPExperts(nn.Module):
         assert router is not None, "Router reference is no longer valid"
         return router
 
-    def set_use_ortho_x_for_exp_gate(self, enabled):
-        self.use_ortho_x_for_exp_gate = bool(enabled)
-
-    def set_ortho_x_router_wg_coeff(self, coeff):
-        self.ortho_x_router_wg_coeff = float(coeff)
-
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
-        router = self._get_router() if (self.use_ortho_x_for_exp_gate or self.debug) else None
-
-        if not self.use_ortho_x_for_exp_gate:
-            gate_input = x
-        else:
-            router_wg_for_gate = ScaleGrad.apply(
-                router.w_g.weight,
-                torch.as_tensor(0.1, device=router.w_g.weight.device, dtype=router.w_g.weight.dtype),
-                torch.tensor(False, device=router.w_g.weight.device, dtype=torch.bool),
-            )
-            gate_input = ortho_subtract(
-                x,
-                router_wg_for_gate.unsqueeze(1),
-                b_discount=self.ortho_x_router_wg_coeff,
-                dims=[2],
-            )
+        router = self._get_router() if self.debug else None
+        gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
         if self.gate_proj_bias is not None:
@@ -881,14 +859,6 @@ class MOELayer(nn.Module):
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
-
-    def set_use_ortho_x_for_exp_gate(self, enabled):
-        if hasattr(self.experts, 'set_use_ortho_x_for_exp_gate'):
-            self.experts.set_use_ortho_x_for_exp_gate(enabled)
-
-    def set_ortho_x_router_wg_coeff(self, coeff):
-        if hasattr(self.experts, 'set_ortho_x_router_wg_coeff'):
-            self.experts.set_ortho_x_router_wg_coeff(coeff)
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, expert_inputs):
@@ -1403,22 +1373,6 @@ class GPT(nn.Module):
                     enabled,
                     bias_update_speed=bias_update_speed,
                 )
-
-    def set_use_ortho_x_for_exp_gate(self, enabled):
-        enabled = bool(enabled)
-        self.config.use_ortho_x_for_exp_gate = enabled
-        for block in self.transformer.h:
-            mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                mlp.set_use_ortho_x_for_exp_gate(enabled)
-
-    def set_ortho_x_router_wg_coeff(self, coeff):
-        coeff = float(coeff)
-        self.config.ortho_x_router_wg_coeff = coeff
-        for block in self.transformer.h:
-            mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                mlp.set_ortho_x_router_wg_coeff(coeff)
 
     def update_aux_free_load_balancing(self):
         for block in self.transformer.h:

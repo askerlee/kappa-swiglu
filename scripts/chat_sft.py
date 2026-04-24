@@ -77,10 +77,6 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
                     help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
-parser.add_argument("--use-ortho-x-for-exp-gate", type=str2bool, nargs='?', const=True, default=None,
-                    help="subtract each expert's router w_g row from expert gate inputs before gate_proj (default: inherit from saved config of base model)")
-parser.add_argument("--ortho-x-router-wg-coeff", type=float, default=None,
-                    help="b_discount coefficient for router w_g subtraction used by --use-ortho-x-for-exp-gate (default: inherit from saved config of base model)")
 # If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
 # If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
 parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
@@ -162,30 +158,6 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # NOTE: the optim state of the base model is not loaded here.
 # NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
-if args.use_ortho_x_for_exp_gate is None:
-    args.use_ortho_x_for_exp_gate = bool(getattr(model.config, "use_ortho_x_for_exp_gate", False))
-    print0(f"Inherited use_ortho_x_for_exp_gate: {args.use_ortho_x_for_exp_gate}")
-else:
-    print0(f"Specified use_ortho_x_for_exp_gate: {args.use_ortho_x_for_exp_gate}")
-model.set_use_ortho_x_for_exp_gate(args.use_ortho_x_for_exp_gate)
-user_config["use_ortho_x_for_exp_gate"] = args.use_ortho_x_for_exp_gate
-if not use_dummy_wandb:
-    wandb_run.config.update(
-        {"use_ortho_x_for_exp_gate": args.use_ortho_x_for_exp_gate},
-        allow_val_change=True,
-    )
-if args.ortho_x_router_wg_coeff is None:
-    args.ortho_x_router_wg_coeff = float(getattr(model.config, "ortho_x_router_wg_coeff", 1.0))
-    print0(f"Inherited ortho_x_router_wg_coeff: {args.ortho_x_router_wg_coeff}")
-else:
-    print0(f"Specified ortho_x_router_wg_coeff: {args.ortho_x_router_wg_coeff}")
-model.set_ortho_x_router_wg_coeff(args.ortho_x_router_wg_coeff)
-user_config["ortho_x_router_wg_coeff"] = args.ortho_x_router_wg_coeff
-if not use_dummy_wandb:
-    wandb_run.config.update(
-        {"ortho_x_router_wg_coeff": args.ortho_x_router_wg_coeff},
-        allow_val_change=True,
-    )
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)
