@@ -1502,7 +1502,9 @@ class GPT(nn.Module):
         logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
         logits = logits[..., :self.config.vocab_size] # slice to remove padding
         logits = logits.float() # switch to fp32 for logit softcap and loss computation
-        logits = softcap * torch.tanh(logits / softcap) # squash the logits
+        logits.div_(softcap)
+        logits.tanh_()
+        logits.mul_(softcap) # squash the logits without another full-size temporary
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
