@@ -169,8 +169,6 @@ def cross_entropy_chunked(logits, targets, ignore_index=-1, reduction='mean', ch
     if reduction == 'mean':
         total_loss = flat_logits.new_zeros(())
         total_weight = flat_targets.ne(ignore_index).sum()
-        if total_weight.item() == 0:
-            return total_loss
         for start in range(0, flat_logits.size(0), chunk_rows):
             end = min(start + chunk_rows, flat_logits.size(0))
             total_loss = total_loss + F.cross_entropy(
@@ -179,6 +177,7 @@ def cross_entropy_chunked(logits, targets, ignore_index=-1, reduction='mean', ch
                 ignore_index=ignore_index,
                 reduction='sum',
             )
+        total_weight = total_weight.to(dtype=total_loss.dtype).clamp_min(1)
         return total_loss / total_weight
 
     raise ValueError(f"Unsupported loss reduction: {reduction}")
