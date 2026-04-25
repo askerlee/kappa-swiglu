@@ -31,7 +31,7 @@ from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import delete_checkpoint_step, delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND, ALLOW_FA4_TRAINING
@@ -1098,6 +1098,8 @@ while True:
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
         expected_optimizer_ranks = range(ddp_world_size)
+        checkpoint_save_failed = False
+        checkpoint_save_error = ""
         delete_old_ckpts_failed = False
         delete_old_ckpts_error = ""
         comparison_step = None
@@ -1171,24 +1173,30 @@ while True:
                     else:
                         delete_old_checkpoints(checkpoint_dir, step, keep_steps=keep_checkpoint_steps)
             except ValueError as exc:
-                delete_old_ckpts_failed = True
-                delete_old_ckpts_error = str(exc)
-                print0(delete_old_ckpts_error)
+                checkpoint_save_failed = True
+                checkpoint_save_error = str(exc)
+                print0(
+                    f"{checkpoint_save_error} Removing checkpoint files for step {step:06d} and continuing training."
+                )
         if ddp:
-            delete_status = torch.tensor(
-                [1 if delete_old_ckpts_failed else 0],
+            checkpoint_save_status = torch.tensor(
+                [1 if checkpoint_save_failed else 0],
                 device=device,
                 dtype=torch.int32,
             )
-            torch.distributed.broadcast(delete_status, src=0)
-            delete_old_ckpts_failed = bool(delete_status.item())
+            torch.distributed.broadcast(checkpoint_save_status, src=0)
+            checkpoint_save_failed = bool(checkpoint_save_status.item())
+        if checkpoint_save_failed:
+            delete_checkpoint_step(checkpoint_dir, step)
+            if ddp:
+                torch.distributed.barrier()
         if delete_old_ckpts_failed:
             if master_process:
                 raise ValueError(delete_old_ckpts_error)
             raise RuntimeError(
-                f"Checkpoint file size validation failed on rank 0 at step {step}. See rank 0 logs for details."
+                f"Checkpoint deletion failed on rank 0 at step {step}. See rank 0 logs for details."
             )
-        if master_process and pending_milestones:
+        if master_process and (not checkpoint_save_failed) and pending_milestones:
             hit_milestones = [m for m in pending_milestones if step >= m]
             if hit_milestones:
                 print0(f"Milestone(s) hit at step {step}: {hit_milestones}")

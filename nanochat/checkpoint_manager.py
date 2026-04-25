@@ -449,6 +449,33 @@ def validate_checkpoint_file_sizes(
     return comparison_step
 
 
+def delete_checkpoint_step(checkpoint_dir, step):
+    if not os.path.isdir(checkpoint_dir):
+        return []
+
+    deleted_paths = []
+    for entry in os.scandir(checkpoint_dir):
+        if not entry.is_file():
+            continue
+        checkpoint_step = _checkpoint_step_from_filename(entry.name)
+        if checkpoint_step != step:
+            continue
+        try:
+            os.remove(entry.path)
+        except FileNotFoundError:
+            continue
+        deleted_paths.append(entry.path)
+
+    if deleted_paths:
+        logger.warning(
+            "Deleted %d checkpoint file(s) for failed step %06d",
+            len(deleted_paths),
+            step,
+        )
+
+    return sorted(deleted_paths)
+
+
 def delete_old_checkpoints(checkpoint_dir, step, keep_steps=None):
     if not os.path.isdir(checkpoint_dir):
         return []
