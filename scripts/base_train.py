@@ -223,7 +223,7 @@ parser.add_argument("--target-param-data-ratio", type=float, default=10, help="c
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
-parser.add_argument("--max-auto-grad-accum-steps", type=int, default=32, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
+parser.add_argument("--max-auto-grad-accum-steps", type=int, default=64, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay-dense", type=float, default=0.05, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
