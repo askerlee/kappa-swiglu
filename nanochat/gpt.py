@@ -861,12 +861,6 @@ class MOELayer(nn.Module):
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
-    @torch._dynamo.disable
-    def _count_valid_tokens_per_expert(self, flat_rank, exp_capacity, flat_top_k_indices):
-        valid_mask = flat_rank < exp_capacity
-        valid_expert_indices = flat_top_k_indices[valid_mask]
-        return torch.bincount(valid_expert_indices, minlength=self.n_exp)
-
     def forward(self, x: torch.Tensor):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
@@ -911,24 +905,6 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
-        
-        '''
-        if self.training and self.use_aux_loss:
-            num_valid_tokens_per_expert = self._count_valid_tokens_per_expert(
-                flat_rank,
-                exp_capacity,
-                flat_top_k_indices,
-            )
-            gated_aux_loss, expert_mean_act_ratios = self.compute_gated_aux_loss(
-                self.router.expert_probs,
-                self.router.top_k_indices,
-                self.experts.gate_out_acts_normed,
-                num_valid_tokens_per_expert,
-            )
-            MANAGER.add("gated_aux_loss", gated_aux_loss)
-            print0("expert_mean_act_ratios:")
-            print0(expert_mean_act_ratios)
-        '''
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -996,46 +972,6 @@ class MOELayer(nn.Module):
         ).sum(dim=1).mean()
         sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
         return ortho_loss, sub_losses
-
-    @torch._dynamo.disable
-    def compute_gated_aux_loss(
-        self,
-        expert_probs: torch.Tensor,
-        indices: torch.Tensor,
-        expert_gate_out_acts_normed: torch.Tensor,
-        num_valid_tokens_per_expert: torch.Tensor,
-    ):
-        """
-        Computes latent auxiliary loss
-        """
-
-        # equation (5): compute ratio of tokens allocated to each expert
-        # total number of tokens is defined as total tokens in batch * k
-        # (k = 1) for the Switch Transformer
-        with torch.no_grad():
-            one_hot_indices = F.one_hot(indices, num_classes=self.n_exp)  # [B, T, k, n_exp]
-            one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)  # [B, T, n_exp] (sum over k dimension)
-            tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
-
-        # equation (6): compute ratio of router probability allocated to each expert
-        # expert_probs: [B, T, n_exp]. prob_per_expert: [n_exp].
-        prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
-        # expert_gate_out_acts_normed: [n_exp, capacity, intermediate_size]
-        # num_valid_tokens_per_expert: [n_exp], counts only routed tokens that were within capacity.
-        # Average over valid expert slots only; empty capacity slots are zero-padded and must not dilute the mean.
-        abs_act_per_slot = expert_gate_out_acts_normed.abs().mean(dim=-1) # [n_exp, capacity]
-        valid_counts = num_valid_tokens_per_expert.to(dtype=expert_gate_out_acts_normed.dtype)
-        expert_mean_abs_acts = abs_act_per_slot.sum(dim=1) / valid_counts.clamp_min(1)
-        mean_abs_act_across_experts = abs_act_per_slot.sum() / valid_counts.sum().clamp_min(1)
-        expert_mean_act_ratios = expert_mean_abs_acts / mean_abs_act_across_experts  # [n_exp]
-        # Apply expert_mean_act_ratios to prob_per_expert.
-        prob_per_expert_adj = prob_per_expert * expert_mean_act_ratios
-        # Renormalize the adjusted prob_per_expert to sum to 1.
-        prob_per_expert_adj = prob_per_expert_adj / prob_per_expert_adj.sum()
-        # equation (4): take a scaled dot product between prob/token allocation vectors
-        # multiply the result by the number of experts
-        gated_aux_loss = self.n_exp * torch.sum(prob_per_expert_adj * tokens_per_expert)
-        return gated_aux_loss, expert_mean_act_ratios
                 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
@@ -1501,7 +1437,6 @@ class GPT(nn.Module):
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
-                   'gated_aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0,
@@ -1543,9 +1478,6 @@ class GPT(nn.Module):
                 loss += self.config.aux_loss_weight * aux_loss
                 losses['aux_loss'] = aux_loss.detach() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 MANAGER.reset("aux_loss")
-                # gated_aux_loss is not for optimization but only for visualization.
-                losses['gated_aux_loss'] = MANAGER.aggregate("gated_aux_loss")
-                MANAGER.reset("gated_aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
                 # router_z_loss_weight: default 1e-5.

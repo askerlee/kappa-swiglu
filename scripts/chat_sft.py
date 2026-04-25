@@ -433,17 +433,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
-    router_wg_grad_dyn_scales = MANAGER.aggregate("router_wg_grad_dyn_scales")
-    MANAGER.reset("router_wg_grad_dyn_scales")
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
-    num_moe_layers = len(moe_layer_indices)
-    if router_wg_grad_dyn_scales is not None and num_moe_layers > 0:
-        if router_wg_grad_dyn_scales.shape[0] % num_moe_layers == 0:
-            router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.view(
-                -1, num_moe_layers, router_wg_grad_dyn_scales.shape[1]
-            ).mean(dim=0)
-            router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.flip(0)
-        losses['router_wg_grad_dyn_scales'] = router_wg_grad_dyn_scales.detach()
 
     for i in moe_layer_indices:
         layer = model.transformer.h[i]
@@ -530,14 +520,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
-
-                    if router_wg_grad_dyn_scales is not None and \
-                       router_wg_grad_dyn_scales.shape[0] == expert_utilities.shape[0]:
-                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[moe_layer_to_stats_idx[i]]
-                        top_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[top_indices].mean().item()
-                        bottom_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[bottom_indices].mean().item()
-                        losses[f'router_wg_grad_dyn_scale_top_{i}'] = top_router_wg_grad_dyn_scale
-                        losses[f'router_wg_grad_dyn_scale_bottom_{i}'] = bottom_router_wg_grad_dyn_scale
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
@@ -699,7 +681,6 @@ while True:
             "total_training_time": total_training_time,
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
-            "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
@@ -760,10 +741,6 @@ while True:
                 log_data[f"inspect/selected_scores_top_{i}"] = losses[f'selected_scores_top_{i}']
             if f'selected_scores_bottom_{i}' in losses:
                 log_data[f"inspect/selected_scores_bottom_{i}"] = losses[f'selected_scores_bottom_{i}']
-            if f'router_wg_grad_dyn_scale_top_{i}' in losses:
-                log_data[f"inspect/router_wg_grad_dyn_scale_top_{i}"] = losses[f'router_wg_grad_dyn_scale_top_{i}']
-            if f'router_wg_grad_dyn_scale_bottom_{i}' in losses:
-                log_data[f"inspect/router_wg_grad_dyn_scale_bottom_{i}"] = losses[f'router_wg_grad_dyn_scale_bottom_{i}']
         wandb_run.log(log_data, step=step)
 
 # print a few more stats

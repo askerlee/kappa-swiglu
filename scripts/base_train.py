@@ -268,6 +268,9 @@ if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
+elif args.num_moe_layers == 0:
+    args.router_ortho_loss_weight = 0
+    print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.use_aux_free_load_balancing:
@@ -844,20 +847,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
-    router_wg_grad_dyn_scales = MANAGER.aggregate("router_wg_grad_dyn_scales")
-    MANAGER.reset("router_wg_grad_dyn_scales")
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
-    num_moe_layers = len(moe_layer_indices)
-    if router_wg_grad_dyn_scales is not None and num_moe_layers > 0:
-        if router_wg_grad_dyn_scales.shape[0] % num_moe_layers == 0:
-            router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.view(
-                -1, num_moe_layers, router_wg_grad_dyn_scales.shape[1]
-            ).mean(dim=0)
-            # router_wg_grad_dyn_scales are collected during backward, where the layer order
-            # is from higher to lower. Therefore we flip the tensor to be from lower to higher,
-            # same as other quantities.
-            router_wg_grad_dyn_scales = router_wg_grad_dyn_scales.flip(0)
-        losses['router_wg_grad_dyn_scales'] = router_wg_grad_dyn_scales.detach()
 
     for i in moe_layer_indices:
         layer = model.transformer.h[i]
@@ -950,14 +940,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
-
-                    if router_wg_grad_dyn_scales is not None and \
-                       router_wg_grad_dyn_scales.shape[0] == expert_utilities.shape[0]:
-                        layer_router_wg_grad_dyn_scale = router_wg_grad_dyn_scales[moe_layer_to_stats_idx[i]]
-                        top_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[top_indices].mean().item()
-                        bottom_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[bottom_indices].mean().item()
-                        losses[f'router_wg_grad_dyn_scale_top_{i}'] = top_router_wg_grad_dyn_scale
-                        losses[f'router_wg_grad_dyn_scale_bottom_{i}'] = bottom_router_wg_grad_dyn_scale
 
     for i in get_dense_gate_proj_bias_stat_layer_indices(model):
         layer = model.transformer.h[i]
@@ -1316,7 +1298,6 @@ while True:
         losses = {
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
-            'gated_aux_loss': 0.0,
             'router_z_loss': 0.0,
             router_ortho_loss_name: 0.0,
             'router_ortho_loss_gate_proj': 0.0,
@@ -1424,7 +1405,6 @@ while True:
             "total_training_time": total_training_time,
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
-            "train/gated_aux_loss_step":   losses['gated_aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
@@ -1491,10 +1471,6 @@ while True:
                 log_data.update({f"inspect/selected_scores_top_{i}": losses[f'selected_scores_top_{i}']})
             if f'selected_scores_bottom_{i}' in losses:
                 log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
-            if f'router_wg_grad_dyn_scale_top_{i}' in losses:
-                log_data.update({f"inspect/router_wg_grad_dyn_scale_top_{i}": losses[f'router_wg_grad_dyn_scale_top_{i}']})
-            if f'router_wg_grad_dyn_scale_bottom_{i}' in losses:
-                log_data.update({f"inspect/router_wg_grad_dyn_scale_bottom_{i}": losses[f'router_wg_grad_dyn_scale_bottom_{i}']})
 
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:

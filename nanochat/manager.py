@@ -12,14 +12,12 @@ class MOEManager:
         self.collect_backward_stats = False
         self._values = {
             "aux_loss": [],
-            "gated_aux_loss": [],
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
             "experts_ortho_loss": [],
             "experts_gate_output_loss": [],
             "projs_diversity_loss": [],
-            "router_wg_grad_dyn_scales": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
@@ -29,8 +27,6 @@ class MOEManager:
         self._drop_rate_size = 0
         self._expert_utilities_buffer = None
         self._expert_utilities_size = 0
-        self._router_wg_grad_dyn_scales_buffer = None
-        self._router_wg_grad_dyn_scales_size = 0
         self._selected_scores_buffer = None
         self._selected_scores_size = 0
         self._start_frac_names = {
@@ -42,8 +38,7 @@ class MOEManager:
         }
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
-                                     "selected_scores",
-                                     "router_wg_grad_dyn_scales"])
+                                     "selected_scores"])
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
@@ -54,9 +49,6 @@ class MOEManager:
             return
         if name == "selected_scores":
             self._selected_scores_size = 0
-            return
-        if name == "router_wg_grad_dyn_scales":
-            self._router_wg_grad_dyn_scales_size = 0
             return
         self._values[name] = []
 
@@ -98,18 +90,6 @@ class MOEManager:
                 self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
                 self._selected_scores_size = new_size
             return
-        if name == "router_wg_grad_dyn_scales":
-            with torch.inference_mode(False):
-                if self._router_wg_grad_dyn_scales_buffer is None:
-                    self._router_wg_grad_dyn_scales_buffer = torch.empty(
-                        (self._tensor_var_capacity, value.shape[0]),
-                        device=value.device,
-                        dtype=value.dtype,
-                    )
-                new_size = self._router_wg_grad_dyn_scales_size + 1
-                self._router_wg_grad_dyn_scales_buffer[self._router_wg_grad_dyn_scales_size:new_size].copy_(value)
-                self._router_wg_grad_dyn_scales_size = new_size
-            return
         self._values[name].append(value)
 
     def aggregate(self, name):
@@ -136,11 +116,6 @@ class MOEManager:
             if self._selected_scores_buffer is None or self._selected_scores_size == 0:
                 return None
             values = self._selected_scores_buffer[:self._selected_scores_size]
-            return values
-        elif name == "router_wg_grad_dyn_scales":
-            if self._router_wg_grad_dyn_scales_buffer is None or self._router_wg_grad_dyn_scales_size == 0:
-                return None
-            values = self._router_wg_grad_dyn_scales_buffer[:self._router_wg_grad_dyn_scales_size]
             return values
         else:
             return sum(values)
