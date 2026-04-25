@@ -953,6 +953,11 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         mlp = getattr(layer, 'mlp', None)
         if hasattr(mlp, 'experts'):
             continue
+        gate_proj_weight = getattr(mlp.gate_proj, 'weight', None)
+        if gate_proj_weight is not None:
+            dense_gate_proj_weight = gate_proj_weight.transpose(0, 1).unsqueeze(0)
+            gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(dense_gate_proj_weight)
+            losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
         gate_proj_bias = getattr(mlp, 'gate_proj_bias', None)
         if gate_proj_bias is not None:
             losses[f'exp_gate_proj_bias_mean_{i}'] = gate_proj_bias.mean().float().item()
@@ -1453,6 +1458,8 @@ while True:
                 log_data.update({f"inspect/router_wg_grad_dyn_scale_bottom_{i}": losses[f'router_wg_grad_dyn_scale_bottom_{i}']})
 
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
+            if f'gate_proj_row_mean_component_ratio_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
             if f'exp_gate_proj_bias_mean_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
                         
