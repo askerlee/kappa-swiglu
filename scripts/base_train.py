@@ -701,9 +701,15 @@ def remove_gate_proj_row_mean_component(model):
     with torch.no_grad():
         for layer in model.transformer.h:
             if hasattr(layer.mlp, 'experts'):
+                # gate_proj is a tensor: [n_exp, in_features, out_features]
+                # = [n_exp, hidden_size, intermediate_size].
+                # We should average across the out_features dimension, so dim=2.
                 gate_proj = layer.mlp.experts.gate_proj
                 gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
             else:
+                # Weight matrix shape: [out_features, in_features] 
+                # = [intermediate_size, hidden_size]
+                # We should average across the out_features dimension, so dim=0.
                 gate_proj = layer.mlp.gate_proj.weight
                 gate_proj.sub_(gate_proj.mean(dim=0, keepdim=True))
 
@@ -761,6 +767,18 @@ def average_step_losses(step_losses, grad_accum_steps):
         else:
             averaged_losses[key] = value / grad_accum_steps
     return averaged_losses
+
+def get_dense_gate_proj_bias_stat_layer_indices(model):
+    config = model.config
+    if int(getattr(config, 'num_moe_layers', -1)) != 0:
+        return []
+    stride = max(1, int(getattr(config, 'moe_layer_stride', 1)))
+    start_layer = max(0, int(getattr(config, 'moe_start_layer', 0)))
+    return [
+        layer_idx
+        for layer_idx in range(start_layer, len(model.transformer.h))
+        if (layer_idx + 1) % stride == 0
+    ][:2]
 
 def collect_weight_grad_stats(model, losses, moe_layer_indices):
     def compute_row_diversity_score(weight):
@@ -909,6 +927,15 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         bottom_router_wg_grad_dyn_scale = layer_router_wg_grad_dyn_scale[bottom_indices].mean().item()
                         losses[f'router_wg_grad_dyn_scale_top_{i}'] = top_router_wg_grad_dyn_scale
                         losses[f'router_wg_grad_dyn_scale_bottom_{i}'] = bottom_router_wg_grad_dyn_scale
+
+    for i in get_dense_gate_proj_bias_stat_layer_indices(model):
+        layer = model.transformer.h[i]
+        mlp = getattr(layer, 'mlp', None)
+        if hasattr(mlp, 'experts'):
+            continue
+        gate_proj_bias = getattr(mlp, 'gate_proj_bias', None)
+        if gate_proj_bias is not None:
+            losses[f'exp_gate_proj_bias_mean_{i}'] = gate_proj_bias.mean().float().item()
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
@@ -1396,6 +1423,10 @@ while True:
                 log_data.update({f"inspect/router_wg_grad_dyn_scale_top_{i}": losses[f'router_wg_grad_dyn_scale_top_{i}']})
             if f'router_wg_grad_dyn_scale_bottom_{i}' in losses:
                 log_data.update({f"inspect/router_wg_grad_dyn_scale_bottom_{i}": losses[f'router_wg_grad_dyn_scale_bottom_{i}']})
+
+        for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
+            if f'exp_gate_proj_bias_mean_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
                         
         wandb_run.log(log_data, step=step)
 

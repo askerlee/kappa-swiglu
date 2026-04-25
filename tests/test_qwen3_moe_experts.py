@@ -148,7 +148,7 @@ def test_all_moe_layers_use_dense_gate_projection():
     config = GPTConfig(
         n_layer=6,
         moe_start_layer=2,
-        stride=1,
+        moe_layer_stride=1,
         n_exp=2,
         n_embd=8,
         n_head=2,

@@ -421,7 +421,7 @@ def test_patch_missing_keys_removes_legacy_gate_proj_factors():
     config = GPTConfig(
         n_layer=1,
         moe_start_layer=0,
-        stride=1,
+        moe_layer_stride=1,
         n_exp=2,
         n_embd=4,
     )

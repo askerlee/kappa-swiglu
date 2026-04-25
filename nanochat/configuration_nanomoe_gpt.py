@@ -45,7 +45,7 @@ class GPTConfig:
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
-        stride: int = 1,  # one in every stride layers are converted to an MoE
+        moe_layer_stride: int = 1,  # one in every stride layers are converted to an MoE
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
         use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
@@ -96,10 +96,13 @@ class GPTConfig:
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight
+        legacy_stride = kwargs.pop('stride', None)
+        if legacy_stride is not None:
+            moe_layer_stride = legacy_stride
         self.train_capacity = train_capacity
         self.eval_capacity = eval_capacity
         self.min_capacity = min_capacity
-        self.stride = stride
+        self.moe_layer_stride = moe_layer_stride
         self.moe_start_layer = moe_start_layer
         if int(num_moe_layers) < -1:
             raise ValueError(f"num_moe_layers must be >= -1, got {num_moe_layers}")

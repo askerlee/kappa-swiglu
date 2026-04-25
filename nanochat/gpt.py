@@ -291,10 +291,11 @@ def get_moe_layer_indices(config):
     if config.n_exp <= 1:
         return []
     num_moe_layers = int(getattr(config, 'num_moe_layers', -1))
+    moe_layer_stride = int(getattr(config, 'moe_layer_stride', 1))
     moe_layers = [
         layer_idx
         for layer_idx in range(config.n_layer)
-        if (layer_idx >= config.moe_start_layer) and ((layer_idx + 1) % config.stride == 0)
+        if (layer_idx >= config.moe_start_layer) and ((layer_idx + 1) % moe_layer_stride == 0)
     ]
     if num_moe_layers >= 0:
         return moe_layers[:num_moe_layers]

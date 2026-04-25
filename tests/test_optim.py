@@ -114,7 +114,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     config = GPTConfig(
         n_layer=3,
         moe_start_layer=1,
-        stride=1,
+        moe_layer_stride=1,
         n_exp=2,
         n_embd=8,
         n_head=2,
@@ -157,7 +157,7 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
-        stride=1,
+        moe_layer_stride=1,
         n_exp=2,
         n_embd=8,
         n_head=2,
