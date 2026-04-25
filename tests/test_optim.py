@@ -151,3 +151,51 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert other_muon_groups
     assert all(group['weight_decay'] == 0.2 for group in moe_muon_groups)
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
+
+
+def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
+    config = GPTConfig(
+        n_layer=4,
+        moe_start_layer=1,
+        stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_exp_gate_proj_bias=True,
+    )
+    model = GPT(config)
+
+    optimizer = model.setup_optimizer(
+        matrix_lr=0.01,
+        weight_decay_dense=0.0,
+        weight_decay_moe=0.0,
+    )
+
+    dense_gate_bias = []
+    moe_gate_bias = []
+    for block in model.transformer.h:
+        mlp = getattr(block, 'mlp', None)
+        if hasattr(mlp, 'gate_proj_bias') and mlp.gate_proj_bias is not None:
+            dense_gate_bias.append(mlp.gate_proj_bias)
+        if hasattr(mlp, 'experts') and getattr(mlp.experts, 'gate_proj_bias', None) is not None:
+            moe_gate_bias.append(mlp.experts.gate_proj_bias)
+
+    muon_params = {
+        param
+        for group in optimizer.param_groups
+        if group.get('kind') == 'muon'
+        for param in group['params']
+    }
+    adamw_params = {
+        param
+        for group in optimizer.param_groups
+        if group.get('kind') == 'adamw'
+        for param in group['params']
+    }
+
+    assert dense_gate_bias
+    assert moe_gate_bias
+    assert all(param not in muon_params for param in dense_gate_bias)
+    assert all(param not in muon_params for param in moe_gate_bias)
+    assert all(param in adamw_params for param in dense_gate_bias)
+    assert all(param in adamw_params for param in moe_gate_bias)

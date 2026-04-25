@@ -704,8 +704,8 @@ def remove_gate_proj_row_mean_component(model):
                 gate_proj = layer.mlp.experts.gate_proj
                 gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
             else:
-                gate_proj = layer.mlp.gate_proj
-                gate_proj.sub_(gate_proj.mean(dim=1, keepdim=True))
+                gate_proj = layer.mlp.gate_proj.weight
+                gate_proj.sub_(gate_proj.mean(dim=0, keepdim=True))
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
