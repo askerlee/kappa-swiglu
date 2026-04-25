@@ -1579,12 +1579,8 @@ class GPT(nn.Module):
                 MANAGER.reset("experts_gate_output_loss")
 
             dense_gate_proj_bias_l2_loss, exp_gate_proj_bias_l2_loss = self.compute_gate_proj_bias_l2_losses()
-            if self.config.dense_gate_proj_bias_l2_loss_weight != 0:
-                loss += self.config.dense_gate_proj_bias_l2_loss_weight * dense_gate_proj_bias_l2_loss
-            if self.config.exp_gate_proj_bias_l2_loss_weight != 0:
-                loss += self.config.exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
-            losses['dense_gate_proj_bias_l2_loss'] = dense_gate_proj_bias_l2_loss.detach()
-            losses['exp_gate_proj_bias_l2_loss'] = exp_gate_proj_bias_l2_loss.detach()
+            losses['dense_gate_proj_bias_l2_loss'] = dense_gate_proj_bias_l2_loss
+            losses['exp_gate_proj_bias_l2_loss'] = exp_gate_proj_bias_l2_loss
         else:
             # inference: just return the logits directly
             return logits
