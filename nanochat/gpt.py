@@ -1372,20 +1372,29 @@ class GPT(nn.Module):
 
         # Separate out all parameters into groups
         dense_matrix_params = []
+        dense_nonmatrix_params = []
         moe_matrix_params = []
+        moe_nonmatrix_params = []
         for block in self.transformer.h:
-            block_params = list(block.parameters())
             mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                moe_matrix_params.extend(block_params)
-            else:
-                dense_matrix_params.extend(block_params)
+            target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
+            target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
+            for name, param in block.named_parameters():
+                if name.endswith('bias') or param.ndim < 2:
+                    target_nonmatrix_params.append(param)
+                else:
+                    target_matrix_params.append(param)
         value_embeds_params = list(self.value_embeds.parameters())
         embedding_params = list(self.transformer.wte.parameters())
         lm_head_params = list(self.lm_head.parameters())
         resid_params = [self.resid_lambdas]
         x0_params = [self.x0_lambdas]
-        assert len(list(self.parameters())) == len(dense_matrix_params) + len(moe_matrix_params) + len(embedding_params) + len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params)
+        assert len(list(self.parameters())) == (
+            len(dense_matrix_params) + len(dense_nonmatrix_params) +
+            len(moe_matrix_params) + len(moe_nonmatrix_params) +
+            len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
+            len(resid_params) + len(x0_params)
+        )
 
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (tuned for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -1401,6 +1410,9 @@ class GPT(nn.Module):
         )
         param_groups.append(
             dict(kind='adamw', params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+        )
+        param_groups.append(
+            dict(kind='adamw', params=dense_nonmatrix_params + moe_nonmatrix_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
         param_groups.append(
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
