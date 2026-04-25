@@ -124,8 +124,8 @@ def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_an
         num_moe_layers=1,
         moe_layer_stride=1,
         n_exp=2,
-        n_embd=8,
-        n_head=2,
+        n_embd=32,
+        n_head=4,
         use_exp_gate_proj_bias=True,
         use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.0,
@@ -140,8 +140,8 @@ def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_an
         num_moe_layers=1,
         moe_layer_stride=1,
         n_exp=2,
-        n_embd=8,
-        n_head=2,
+        n_embd=32,
+        n_head=4,
         use_exp_gate_proj_bias=True,
         use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.7,
@@ -154,6 +154,9 @@ def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_an
     penalized_model.load_state_dict(deepcopy(base_model.state_dict()))
 
     with torch.no_grad():
+        penalized_model.transformer.h[0].mlp.gate_proj_bias.zero_()
+        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.zero_()
+        penalized_model.transformer.h[2].mlp.gate_proj_bias.zero_()
         penalized_model.transformer.h[0].mlp.gate_proj_bias.fill_(2.0)
         penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(3.0)
         base_model.load_state_dict(deepcopy(penalized_model.state_dict()))
@@ -164,11 +167,11 @@ def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_an
     base_loss, base_losses = base_model(idx, targets)
     penalized_loss, penalized_losses = penalized_model(idx, targets)
 
-    assert penalized_losses['dense_gate_proj_bias_l2_loss'].item() == 4.0
+    assert penalized_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
-    expected_delta = 0.3 * 4.0 + 0.7 * 9.0
+    expected_delta = 0.3 * 2.0 + 0.7 * 9.0
     torch.testing.assert_close(penalized_loss - base_loss, torch.tensor(expected_delta, dtype=penalized_loss.dtype))
-    assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 4.0
+    assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
 
 
