@@ -64,6 +64,7 @@ def test_dense_qwen3_gate_projection_bias_is_added_after_activation_when_enabled
         n_exp=1,
         n_embd=4,
         use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
         debug=False,
     )
     mlp = Qwen3MLP(config)
@@ -87,6 +88,7 @@ def test_dense_qwen3_gate_projection_bias_has_expected_shape_when_enabled():
         n_exp=1,
         n_embd=4,
         use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
         debug=False,
     )
 
@@ -95,6 +97,20 @@ def test_dense_qwen3_gate_projection_bias_has_expected_shape_when_enabled():
     assert mlp.gate_proj_bias is not None
     assert mlp.gate_proj_bias.ndim == 1
     assert mlp.gate_proj_bias.shape == (4 * config.n_embd,)
+
+
+def test_dense_qwen3_gate_projection_bias_stays_disabled_without_dense_flag():
+    config = GPTConfig(
+        n_exp=1,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=False,
+        debug=False,
+    )
+
+    mlp = Qwen3MLP(config)
+
+    assert mlp.gate_proj_bias is None
 
 
 def test_dense_gate_projection_has_expected_shape():

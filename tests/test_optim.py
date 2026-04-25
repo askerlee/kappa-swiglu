@@ -162,6 +162,7 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
         n_embd=8,
         n_head=2,
         use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
     )
     model = GPT(config)
 

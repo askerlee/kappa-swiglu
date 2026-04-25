@@ -701,7 +701,7 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
+        self.use_gate_proj_bias = bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         if self.use_gate_proj_bias:
             self.gate_proj_bias = nn.Parameter(torch.empty(self.intermediate_size))

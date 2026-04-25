@@ -180,13 +180,23 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+                    help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
 parser.add_argument(
-    "--remove-gate-proj-row-mean-component",
+    "--remove-exp-gate-proj-row-mean-comp",
     type=str2bool,
     nargs='?',
     const=True,
     default=False,
     help="after each optimizer step, subtract the per-row mean from expert gate_proj rows",
+)
+parser.add_argument(
+    "--remove-dense-gate-proj-row-mean-comp",
+    type=str2bool,
+    nargs='?',
+    const=True,
+    default=False,
+    help="after each optimizer step, subtract the per-row mean from dense gate_proj rows",
 )
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
@@ -351,6 +361,7 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        use_dense_gate_proj_bias=args.use_dense_gate_proj_bias,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
@@ -697,16 +708,20 @@ def scalar_loss_to_item(value):
         return value.detach().item()
     return float(value)
 
-def remove_gate_proj_row_mean_component(model):
+def remove_gate_proj_row_mean_component(model, remove_exp_gate_proj_row_mean_comp=False, remove_dense_gate_proj_row_mean_comp=False):
     with torch.no_grad():
         for layer in model.transformer.h:
             if hasattr(layer.mlp, 'experts'):
+                if not remove_exp_gate_proj_row_mean_comp:
+                    continue
                 # gate_proj is a tensor: [n_exp, in_features, out_features]
                 # = [n_exp, hidden_size, intermediate_size].
                 # We should average across the out_features dimension, so dim=2.
                 gate_proj = layer.mlp.experts.gate_proj
                 gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
             else:
+                if not remove_dense_gate_proj_row_mean_comp:
+                    continue
                 # Weight matrix shape: [out_features, in_features] 
                 # = [intermediate_size, hidden_size]
                 # We should average across the out_features dimension, so dim=0.
@@ -1321,8 +1336,12 @@ while True:
         t1 = time.time()
         dt = t1 - t0
 
-        if args.remove_gate_proj_row_mean_component:
-            remove_gate_proj_row_mean_component(orig_model)
+        if args.remove_exp_gate_proj_row_mean_comp or args.remove_dense_gate_proj_row_mean_comp:
+            remove_gate_proj_row_mean_component(
+                orig_model,
+                remove_exp_gate_proj_row_mean_comp=args.remove_exp_gate_proj_row_mean_comp,
+                remove_dense_gate_proj_row_mean_comp=args.remove_dense_gate_proj_row_mean_comp,
+            )
 
     # -------------------------------------------------------------------------
 
