@@ -182,9 +182,9 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-3, help="weight for MoE gate_proj_bias L2 loss")
+parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 # The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
-parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-3, help="weight for dense gate_proj_bias L2 loss")
+parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument(
     "--remove-exp-gate-proj-row-mean-comp",
     type=str2bool,
