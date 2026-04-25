@@ -25,7 +25,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
-        use_exp_gate_proj_bias: bool = False,  # add a learnable bias to expert gate activations after gate_proj and SiLU
+        use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 gate activations after gate_proj and SiLU
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = False,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,

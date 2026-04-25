@@ -697,14 +697,15 @@ def scalar_loss_to_item(value):
         return value.detach().item()
     return float(value)
 
-def remove_gate_proj_row_mean_component(model, moe_layer_indices):
+def remove_gate_proj_row_mean_component(model):
     with torch.no_grad():
-        for layer_idx in moe_layer_indices:
-            layer = model.transformer.h[layer_idx]
-            if not hasattr(layer.mlp, 'experts'):
-                continue
-            gate_proj = layer.mlp.experts.gate_proj
-            gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
+        for layer in model.transformer.h:
+            if hasattr(layer.mlp, 'experts'):
+                gate_proj = layer.mlp.experts.gate_proj
+                gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
+            else:
+                gate_proj = layer.mlp.gate_proj
+                gate_proj.sub_(gate_proj.mean(dim=1, keepdim=True))
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
@@ -1294,7 +1295,7 @@ while True:
         dt = t1 - t0
 
         if args.remove_gate_proj_row_mean_component:
-            remove_gate_proj_row_mean_component(orig_model, moe_layer_indices)
+            remove_gate_proj_row_mean_component(orig_model)
 
     # -------------------------------------------------------------------------
 

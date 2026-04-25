@@ -1,7 +1,7 @@
 import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, Qwen3MLPExperts
+from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -56,6 +56,45 @@ def test_gate_projection_bias_is_added_after_activation_when_enabled():
 
     actual = experts(x)
     torch.testing.assert_close(actual, expected)
+
+
+def test_dense_qwen3_gate_projection_bias_is_added_after_activation_when_enabled():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=1,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    mlp = Qwen3MLP(config)
+
+    x = torch.randn(5, config.n_embd)
+
+    with torch.no_grad():
+        mlp.gate_proj.weight.copy_(torch.randn_like(mlp.gate_proj.weight))
+        mlp.gate_proj_bias.copy_(torch.randn_like(mlp.gate_proj_bias))
+        mlp.c_fc.weight.copy_(torch.randn_like(mlp.c_fc.weight))
+        mlp.c_proj.weight.copy_(torch.randn_like(mlp.c_proj.weight))
+        gate_out = mlp.act_fn(mlp.gate_proj(x)) + mlp.gate_proj_bias
+        expected = mlp.c_proj(gate_out * mlp.c_fc(x))
+
+    actual = mlp(x)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_dense_qwen3_gate_projection_bias_has_expected_shape_when_enabled():
+    config = GPTConfig(
+        n_exp=1,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+
+    mlp = Qwen3MLP(config)
+
+    assert mlp.gate_proj_bias is not None
+    assert mlp.gate_proj_bias.ndim == 1
+    assert mlp.gate_proj_bias.shape == (4 * config.n_embd,)
 
 
 def test_dense_gate_projection_has_expected_shape():

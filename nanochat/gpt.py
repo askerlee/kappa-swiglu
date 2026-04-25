@@ -666,7 +666,7 @@ class Block(nn.Module):
         if use_moe:
             self.mlp = MOELayer(config, layer_idx)
         else:
-            self.mlp = MLP(config)
+            self.mlp = Qwen3MLP(config)
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
@@ -700,7 +700,12 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        if self.use_gate_proj_bias:
+            self.gate_proj_bias = nn.Parameter(torch.empty(self.intermediate_size))
+        else:
+            self.gate_proj_bias = None
         # up_proj -> c_fc, down_proj -> c_proj
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -708,7 +713,10 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiLUActivation()
 
     def forward(self, x):
-        down_proj = self.c_proj(self.act_fn(self.gate_proj(x)) * self.c_fc(x))
+        gate_out = self.act_fn(self.gate_proj(x))
+        if self.gate_proj_bias is not None:
+            gate_out = gate_out + self.gate_proj_bias
+        down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
 class Qwen3MLPExperts(nn.Module):
@@ -1181,7 +1189,13 @@ class GPT(nn.Module):
             torch.nn.init.uniform_(block.attn.c_v.weight, -s, s)
             torch.nn.init.zeros_(block.attn.c_proj.weight) # projections are zero
 
-            if isinstance(block.mlp, MLP):
+            if isinstance(block.mlp, Qwen3MLP):
+                torch.nn.init.uniform_(block.mlp.gate_proj.weight, -s, s)
+                if block.mlp.gate_proj_bias is not None:
+                    torch.nn.init.zeros_(block.mlp.gate_proj_bias)
+                torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
+                torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            elif isinstance(block.mlp, MLP):
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
             elif isinstance(block.mlp, MOELayer):
