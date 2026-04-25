@@ -1161,6 +1161,25 @@ class GPT(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
+    def compute_gate_proj_bias_l2_losses(self):
+        dense_losses = []
+        moe_losses = []
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, Qwen3MLP):
+                if mlp.gate_proj_bias is not None:
+                    dense_losses.append(mlp.gate_proj_bias.float().square().mean())
+            elif isinstance(mlp, MOELayer):
+                experts = getattr(mlp, 'experts', None)
+                gate_proj_bias = getattr(experts, 'gate_proj_bias', None)
+                if gate_proj_bias is not None:
+                    moe_losses.append(gate_proj_bias.float().square().mean())
+
+        device = self.transformer.wte.weight.device
+        dense_loss = torch.stack(dense_losses).mean() if dense_losses else torch.zeros((), device=device)
+        moe_loss = torch.stack(moe_losses).mean() if moe_losses else torch.zeros((), device=device)
+        return dense_loss, moe_loss
+
     @torch.no_grad()
     def init_weights(self):
         """
@@ -1488,6 +1507,8 @@ class GPT(nn.Module):
                    'experts_ortho_loss': 0,
                    'experts_gate_output_loss': 0,
                    'projs_diversity_loss': 0,
+                                     'dense_gate_proj_bias_l2_loss': 0,
+                                     'exp_gate_proj_bias_l2_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -1556,6 +1577,14 @@ class GPT(nn.Module):
                 loss += self.config.experts_gate_output_loss_weight * experts_gate_output_loss
                 losses['experts_gate_output_loss'] = experts_gate_output_loss.detach() if isinstance(experts_gate_output_loss, torch.Tensor) else experts_gate_output_loss
                 MANAGER.reset("experts_gate_output_loss")
+
+            dense_gate_proj_bias_l2_loss, exp_gate_proj_bias_l2_loss = self.compute_gate_proj_bias_l2_losses()
+            if self.config.dense_gate_proj_bias_l2_loss_weight != 0:
+                loss += self.config.dense_gate_proj_bias_l2_loss_weight * dense_gate_proj_bias_l2_loss
+            if self.config.exp_gate_proj_bias_l2_loss_weight != 0:
+                loss += self.config.exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
+            losses['dense_gate_proj_bias_l2_loss'] = dense_gate_proj_bias_l2_loss.detach()
+            losses['exp_gate_proj_bias_l2_loss'] = exp_gate_proj_bias_l2_loss.detach()
         else:
             # inference: just return the logits directly
             return logits

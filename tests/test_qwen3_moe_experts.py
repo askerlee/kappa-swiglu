@@ -1,4 +1,5 @@
 import torch
+from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
@@ -111,6 +112,64 @@ def test_dense_qwen3_gate_projection_bias_stays_disabled_without_dense_flag():
     mlp = Qwen3MLP(config)
 
     assert mlp.gate_proj_bias is None
+
+
+def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_and_moe_layers():
+    torch.manual_seed(0)
+    base_config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
+        exp_gate_proj_bias_l2_loss_weight=0.0,
+        dense_gate_proj_bias_l2_loss_weight=0.0,
+        debug=False,
+    )
+    penalized_config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
+        exp_gate_proj_bias_l2_loss_weight=0.7,
+        dense_gate_proj_bias_l2_loss_weight=0.3,
+        debug=False,
+    )
+
+    base_model = GPT(base_config)
+    penalized_model = GPT(penalized_config)
+    penalized_model.load_state_dict(deepcopy(base_model.state_dict()))
+
+    with torch.no_grad():
+        penalized_model.transformer.h[0].mlp.gate_proj_bias.fill_(2.0)
+        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(3.0)
+        base_model.load_state_dict(deepcopy(penalized_model.state_dict()))
+
+    idx = torch.randint(0, base_config.vocab_size, (2, 4))
+    targets = torch.randint(0, base_config.vocab_size, (2, 4))
+
+    base_loss, base_losses = base_model(idx, targets)
+    penalized_loss, penalized_losses = penalized_model(idx, targets)
+
+    assert penalized_losses['dense_gate_proj_bias_l2_loss'].item() == 4.0
+    assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
+    expected_delta = 0.3 * 4.0 + 0.7 * 9.0
+    torch.testing.assert_close(penalized_loss - base_loss, torch.tensor(expected_delta, dtype=penalized_loss.dtype))
+    assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 4.0
+    assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
 
 
 def test_dense_gate_projection_has_expected_shape():

@@ -182,6 +182,9 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
+parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-5, help="weight for MoE gate_proj_bias L2 loss")
+# The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
+parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-4, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument(
     "--remove-exp-gate-proj-row-mean-comp",
     type=str2bool,
@@ -362,6 +365,8 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         use_dense_gate_proj_bias=args.use_dense_gate_proj_bias,
+        exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
+        dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         experts_ortho_loss_weight=args.experts_ortho_loss_weight,
@@ -1284,6 +1289,8 @@ while True:
             'experts_ortho_loss': 0.0,
             'experts_gate_output_loss': 0.0,
             'projs_diversity_loss': 0.0,
+            'dense_gate_proj_bias_l2_loss': 0.0,
+            'exp_gate_proj_bias_l2_loss': 0.0,
             'drop_rate_per_ks': None,
         }
         train_loss_f = 0.0
@@ -1380,6 +1387,8 @@ while True:
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
+            "train/dense_gate_proj_bias_l2_loss_step": losses['dense_gate_proj_bias_l2_loss'],
+            "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
             "lrm": lrm,
             "dt": dt,
             "tok_per_sec": tok_per_sec,
