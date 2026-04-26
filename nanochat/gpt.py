@@ -89,23 +89,31 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
 class ScaleGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, alpha_, debug=False):
-        ctx.save_for_backward(alpha_, debug)
-        output = input_
-        if debug:
+        if isinstance(alpha_, torch.Tensor):
+            if alpha_.numel() != 1:
+                raise ValueError("ScaleGrad only supports scalar alpha values")
+            ctx.alpha = float(alpha_.detach().item())
+        else:
+            ctx.alpha = float(alpha_)
+        if isinstance(debug, torch.Tensor):
+            if debug.numel() != 1:
+                raise ValueError("ScaleGrad only supports scalar debug values")
+            ctx.debug = bool(debug.detach().item())
+        else:
+            ctx.debug = bool(debug)
+        if ctx.debug:
             print(f"input: {input_.abs().mean().detach().item()}")
-        return output
+        return input_
 
     @staticmethod
     def backward(ctx, grad_output):  # pragma: no cover
-        # saved_tensors returns a tuple of tensors.
-        alpha_, debug = ctx.saved_tensors
-        if ctx.needs_input_grad[0]:
-            grad_output2 = grad_output * alpha_
-            if debug:
-                print(f"grad_output2: {grad_output2.abs().mean().detach().item()}")
-        else:
-            grad_output2 = None
-        return grad_output2, None, None
+        if not ctx.needs_input_grad[0]:
+            return None, None, None
+        if ctx.alpha != 1.0:
+            grad_output.mul_(ctx.alpha)
+        if ctx.debug:
+            print(f"grad_output: {grad_output.abs().mean().detach().item()}")
+        return grad_output, None, None
 
 
 class SoftcapInPlace(torch.autograd.Function):
@@ -717,8 +725,7 @@ class Qwen3MLP(nn.Module):
     def get_gate_proj_bias_with_scaled_grad(self):
         if self.gate_proj_bias is None:
             return None
-        bias_alpha_t = torch.as_tensor(self.gate_proj_bias_grad_scale, device=self.gate_proj_bias.device, dtype=self.gate_proj_bias.dtype)
-        return ScaleGrad.apply(self.gate_proj_bias, bias_alpha_t, torch.tensor(False, device=self.gate_proj_bias.device, dtype=torch.bool))
+        return ScaleGrad.apply(self.gate_proj_bias, self.gate_proj_bias_grad_scale, False)
 
     def forward(self, x):
         gate_out = self.act_fn(self.gate_proj(x))
@@ -761,8 +768,7 @@ class Qwen3MLPExperts(nn.Module):
     def get_gate_proj_bias_with_scaled_grad(self):
         if self.gate_proj_bias is None:
             return None
-        bias_alpha_t = torch.as_tensor(self.gate_proj_bias_grad_scale, device=self.gate_proj_bias.device, dtype=self.gate_proj_bias.dtype)
-        return ScaleGrad.apply(self.gate_proj_bias, bias_alpha_t, torch.tensor(False, device=self.gate_proj_bias.device, dtype=torch.bool))
+        return ScaleGrad.apply(self.gate_proj_bias, self.gate_proj_bias_grad_scale, False)
 
     def set_router(self, router):
         self._router_ref = weakref.ref(router)
@@ -803,8 +809,7 @@ class Qwen3MLPExperts(nn.Module):
             if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out_acts
             else:
-                alpha_t = torch.as_tensor(self.experts_gate_output_loss_input_grad_scale, device=gate_out_acts.device, dtype=gate_out_acts.dtype)
-                gate_input_gs = ScaleGrad.apply(gate_input, alpha_t, torch.tensor(False, device=gate_input.device, dtype=torch.bool))
+                gate_input_gs = ScaleGrad.apply(gate_input, self.experts_gate_output_loss_input_grad_scale, False)
                 gate_out_gs_raw = torch.bmm(gate_input_gs, self.gate_proj)
                 gate_out_gs = self.act_fn(gate_out_gs_raw)
 
