@@ -1124,14 +1124,12 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                scaled_bias = mlp.get_gate_proj_bias_with_scaled_grad()
-                if scaled_bias is not None:
-                    dense_losses.append(scaled_bias.float().square().mean())
+                if mlp.gate_proj_bias is not None:
+                    dense_losses.append(mlp.gate_proj_bias.float().square().mean())
             elif isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
-                scaled_bias = None if experts is None else experts.get_gate_proj_bias_with_scaled_grad()
-                if scaled_bias is not None:
-                    moe_losses.append(scaled_bias.float().square().mean())
+                if experts is not None and experts.gate_proj_bias is not None:
+                    moe_losses.append(experts.gate_proj_bias.float().square().mean())
 
         device = self.transformer.wte.weight.device
         dense_loss = torch.stack(dense_losses).mean() if dense_losses else torch.zeros((), device=device)
