@@ -701,6 +701,7 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.gate_proj_bias_grad_scale = 0.1
         self.use_gate_proj_bias = bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         if self.use_gate_proj_bias:
@@ -713,10 +714,17 @@ class Qwen3MLP(nn.Module):
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
 
+    def get_gate_proj_bias_with_scaled_grad(self):
+        if self.gate_proj_bias is None:
+            return None
+        bias_alpha_t = torch.as_tensor(self.gate_proj_bias_grad_scale, device=self.gate_proj_bias.device, dtype=self.gate_proj_bias.dtype)
+        return ScaleGrad.apply(self.gate_proj_bias, bias_alpha_t, torch.tensor(False, device=self.gate_proj_bias.device, dtype=torch.bool))
+
     def forward(self, x):
         gate_out = self.act_fn(self.gate_proj(x))
-        if self.gate_proj_bias is not None:
-            gate_out = gate_out + self.gate_proj_bias
+        gate_proj_bias = self.get_gate_proj_bias_with_scaled_grad()
+        if gate_proj_bias is not None:
+            gate_out = gate_out + gate_proj_bias
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -727,6 +735,7 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.gate_proj_bias_grad_scale = 0.1
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
@@ -749,6 +758,12 @@ class Qwen3MLPExperts(nn.Module):
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
+    def get_gate_proj_bias_with_scaled_grad(self):
+        if self.gate_proj_bias is None:
+            return None
+        bias_alpha_t = torch.as_tensor(self.gate_proj_bias_grad_scale, device=self.gate_proj_bias.device, dtype=self.gate_proj_bias.dtype)
+        return ScaleGrad.apply(self.gate_proj_bias, bias_alpha_t, torch.tensor(False, device=self.gate_proj_bias.device, dtype=torch.bool))
+
     def set_router(self, router):
         self._router_ref = weakref.ref(router)
 
@@ -766,8 +781,9 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
-        if self.gate_proj_bias is not None:
-            gate_out_acts = gate_out_acts + self.gate_proj_bias.unsqueeze(1)
+        gate_proj_bias = self.get_gate_proj_bias_with_scaled_grad()
+        if gate_proj_bias is not None:
+            gate_out_acts = gate_out_acts + gate_proj_bias.unsqueeze(1)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -779,7 +795,7 @@ class Qwen3MLPExperts(nn.Module):
             gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
             if self.gate_proj_bias is not None:
-                gate_out_ortho_acts = gate_out_ortho_acts + self.gate_proj_bias.unsqueeze(1)
+                gate_out_ortho_acts = gate_out_ortho_acts + gate_proj_bias.unsqueeze(1)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -1103,13 +1119,14 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                if mlp.gate_proj_bias is not None:
-                    dense_losses.append(mlp.gate_proj_bias.float().square().mean())
+                scaled_bias = mlp.get_gate_proj_bias_with_scaled_grad()
+                if scaled_bias is not None:
+                    dense_losses.append(scaled_bias.float().square().mean())
             elif isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
-                gate_proj_bias = getattr(experts, 'gate_proj_bias', None)
-                if gate_proj_bias is not None:
-                    moe_losses.append(gate_proj_bias.float().square().mean())
+                scaled_bias = None if experts is None else experts.get_gate_proj_bias_with_scaled_grad()
+                if scaled_bias is not None:
+                    moe_losses.append(scaled_bias.float().square().mean())
 
         device = self.transformer.wte.weight.device
         dense_loss = torch.stack(dense_losses).mean() if dense_losses else torch.zeros((), device=device)

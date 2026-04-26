@@ -1,7 +1,7 @@
 import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT
+from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
 from nanochat.optim import MuonAdamW
 
 
@@ -200,3 +200,45 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     assert all(param not in muon_params for param in moe_gate_bias)
     assert all(param in adamw_params for param in dense_gate_bias)
     assert all(param in adamw_params for param in moe_gate_bias)
+
+
+def test_gate_proj_bias_forward_and_l2_gradients_are_scaled_down():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_layer=2,
+        moe_start_layer=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
+    )
+    x_dense = torch.randn(2, 3, config.n_embd)
+    x_moe = torch.randn(config.n_exp, 3, config.n_embd)
+
+    dense_mlp = Qwen3MLP(config)
+    with torch.no_grad():
+        for parameter in dense_mlp.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    dense_loss = dense_mlp(x_dense).sum() + dense_mlp.get_gate_proj_bias_with_scaled_grad().float().square().mean()
+    dense_loss.backward()
+    dense_bias = dense_mlp.gate_proj_bias.detach().clone().requires_grad_(True)
+    dense_expected_loss = dense_mlp.c_proj(
+        (dense_mlp.act_fn(dense_mlp.gate_proj(x_dense)) + dense_bias) * dense_mlp.c_fc(x_dense)
+    ).sum() + dense_bias.float().square().mean()
+    dense_expected_grad, = torch.autograd.grad(dense_expected_loss, dense_bias)
+
+    moe_mlp = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        for parameter in moe_mlp.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    moe_loss = moe_mlp(x_moe).sum() + moe_mlp.get_gate_proj_bias_with_scaled_grad().float().square().mean()
+    moe_loss.backward()
+    moe_bias = moe_mlp.gate_proj_bias.detach().clone().requires_grad_(True)
+    moe_gate_out = moe_mlp.act_fn(torch.bmm(x_moe, moe_mlp.gate_proj)) + moe_bias.unsqueeze(1)
+    moe_expected_loss = torch.bmm(moe_gate_out * torch.bmm(x_moe, moe_mlp.c_fc), moe_mlp.c_proj).sum() + moe_bias.float().square().mean()
+    moe_expected_grad, = torch.autograd.grad(moe_expected_loss, moe_bias)
+
+    assert torch.allclose(dense_mlp.gate_proj_bias.grad, dense_expected_grad * 0.1, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(moe_mlp.gate_proj_bias.grad, moe_expected_grad * 0.1, atol=1e-6, rtol=1e-5)
