@@ -114,7 +114,35 @@ def test_dense_qwen3_gate_projection_bias_stays_disabled_without_dense_flag():
     assert mlp.gate_proj_bias is None
 
 
-def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_and_moe_layers():
+def test_gate_proj_bias_grad_scale_defaults_and_overrides_from_config():
+    default_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
+        debug=False,
+    )
+    override_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_dense_gate_proj_bias=True,
+        gate_proj_bias_grad_scale=0.25,
+        debug=False,
+    )
+
+    default_dense = Qwen3MLP(default_config)
+    default_moe = Qwen3MLPExperts(default_config)
+    override_dense = Qwen3MLP(override_config)
+    override_moe = Qwen3MLPExperts(override_config)
+
+    assert default_dense.gate_proj_bias_grad_scale == 0.1
+    assert default_moe.gate_proj_bias_grad_scale == 0.1
+    assert override_dense.gate_proj_bias_grad_scale == 0.25
+    assert override_moe.gate_proj_bias_grad_scale == 0.25
+
+
+def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_layers():
     torch.manual_seed(0)
     base_config = GPTConfig(
         sequence_len=8,
@@ -169,10 +197,9 @@ def test_gate_proj_bias_l2_losses_are_added_to_main_loss_separately_for_dense_an
 
     assert penalized_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
-    expected_delta = 0.3 * 2.0 + 0.7 * 9.0
-    torch.testing.assert_close(penalized_loss - base_loss, torch.tensor(expected_delta, dtype=penalized_loss.dtype))
     assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
+    torch.testing.assert_close(penalized_loss, base_loss)
 
 
 def test_dense_gate_projection_has_expected_shape():

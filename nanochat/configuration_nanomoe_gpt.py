@@ -27,6 +27,7 @@ class GPTConfig:
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         use_dense_gate_proj_bias: bool = False,  # add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU
+        gate_proj_bias_grad_scale: float = 0.1,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         dense_gate_proj_bias_l2_loss_weight: float = 0.0,
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
@@ -89,6 +90,7 @@ class GPTConfig:
         self.router_ortho_loss_target = router_ortho_loss_target
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
         self.use_dense_gate_proj_bias = bool(use_dense_gate_proj_bias)
+        self.gate_proj_bias_grad_scale = float(gate_proj_bias_grad_scale)
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
         self.dense_gate_proj_bias_l2_loss_weight = float(dense_gate_proj_bias_l2_loss_weight)
         self.use_experts_ortho_loss = use_experts_ortho_loss

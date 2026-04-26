@@ -701,7 +701,7 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_grad_scale = 0.1
+        self.gate_proj_bias_grad_scale = float(getattr(config, 'gate_proj_bias_grad_scale', 0.1))
         self.use_gate_proj_bias = bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         if self.use_gate_proj_bias:
@@ -735,7 +735,7 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_grad_scale = 0.1
+        self.gate_proj_bias_grad_scale = float(getattr(config, 'gate_proj_bias_grad_scale', 0.1))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)

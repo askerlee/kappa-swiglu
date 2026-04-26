@@ -182,6 +182,8 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
+parser.add_argument("--gate-proj-bias-grad-scale", type=float, default=0.1,
+                    help="scale factor applied to gate_proj_bias gradients through forward and L2-loss paths")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 # The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
@@ -370,6 +372,7 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         use_dense_gate_proj_bias=args.use_dense_gate_proj_bias,
+        gate_proj_bias_grad_scale=args.gate_proj_bias_grad_scale,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
         dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
