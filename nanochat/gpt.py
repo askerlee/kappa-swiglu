@@ -1342,18 +1342,14 @@ class GPT(nn.Module):
         dense_nonmatrix_params = []
         moe_matrix_params = []
         moe_nonmatrix_params = []
-        gate_proj_bias_nonmatrix_params = []
-        gate_proj_bias_matrix_params = []
+        gate_proj_bias_params = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
                 if name.endswith('gate_proj_bias'):
-                    if param.ndim < 2:
-                        gate_proj_bias_nonmatrix_params.append(param)
-                    else:
-                        gate_proj_bias_matrix_params.append(param)
+                    gate_proj_bias_params.append(param)
                 elif param.ndim < 2:
                     target_nonmatrix_params.append(param)
                 else:
@@ -1366,7 +1362,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
-            len(gate_proj_bias_nonmatrix_params) + len(gate_proj_bias_matrix_params) +
+            len(gate_proj_bias_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -1393,7 +1389,7 @@ class GPT(nn.Module):
             dict(
                 kind='adamw',
                 name='gate_proj_bias',
-                params=gate_proj_bias_nonmatrix_params,
+                params=gate_proj_bias_params,
                 lr=embedding_lr * dmodel_lr_scale * gate_proj_bias_lr_scale,
                 base_lr=embedding_lr * dmodel_lr_scale,
                 lr_scale_start=gate_proj_bias_lr_scale,
@@ -1429,22 +1425,6 @@ class GPT(nn.Module):
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
-        for shape in sorted({p.shape for p in gate_proj_bias_matrix_params}):
-            group_params = [p for p in gate_proj_bias_matrix_params if p.shape == shape]
-            param_groups.append(dict(
-                kind='muon',
-                name='gate_proj_bias',
-                params=group_params,
-                lr=matrix_lr * gate_proj_bias_lr_scale,
-                base_lr=matrix_lr,
-                momentum=0.95,
-                ns_steps=5,
-                beta2=0.95,
-                weight_decay=weight_decay_moe,
-                chunk_size=2,
-                match_rms_adamw=muon_match_rms_adamw,
-            ))
-
         Factory = DistMuonAdamW if ddp else MuonAdamW
         optimizer = Factory(param_groups)
         for group in optimizer.param_groups:

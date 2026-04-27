@@ -153,7 +153,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
 
 
-def test_setup_optimizer_routes_gate_projection_biases_by_shape():
+def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
@@ -197,9 +197,9 @@ def test_setup_optimizer_routes_gate_projection_biases_by_shape():
     assert dense_gate_bias
     assert moe_gate_bias
     assert all(param not in muon_params for param in dense_gate_bias)
+    assert all(param not in muon_params for param in moe_gate_bias)
     assert all(param in adamw_params for param in dense_gate_bias)
-    assert all(param in muon_params for param in moe_gate_bias)
-    assert all(param not in adamw_params for param in moe_gate_bias)
+    assert all(param in adamw_params for param in moe_gate_bias)
 
 
 def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
@@ -235,29 +235,18 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         if getattr(experts, 'gate_proj_bias', None) is not None:
             moe_gate_proj_bias_params.append(experts.gate_proj_bias)
 
-    dense_gate_proj_bias_group = None
-    moe_gate_proj_bias_group = None
+    gate_proj_bias_group = None
     for group in optimizer.param_groups:
         params = set(group['params'])
-        if params == set(dense_gate_proj_bias_params):
-            dense_gate_proj_bias_group = group
-        elif params == set(moe_gate_proj_bias_params):
-            moe_gate_proj_bias_group = group
+        if params == set(dense_gate_proj_bias_params + moe_gate_proj_bias_params):
+            gate_proj_bias_group = group
 
-    assert dense_gate_proj_bias_group is not None
-    assert moe_gate_proj_bias_group is not None
-    assert dense_gate_proj_bias_group['kind'] == 'adamw'
-    assert moe_gate_proj_bias_group['kind'] == 'muon'
+    assert gate_proj_bias_group is not None
+    assert gate_proj_bias_group['kind'] == 'adamw'
     dmodel_lr_scale = (config.n_embd / 768) ** -0.5
-    assert dense_gate_proj_bias_group['lr'] == 0.2 * dmodel_lr_scale * 0.25
-    assert dense_gate_proj_bias_group['initial_lr'] == dense_gate_proj_bias_group['lr']
-    assert dense_gate_proj_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
-    assert dense_gate_proj_bias_group['lr_scale_start'] == 0.25
-    assert dense_gate_proj_bias_group['lr_scale_end'] == 1.0
-    assert dense_gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000
-    assert moe_gate_proj_bias_group['lr'] == 0.01 * 0.25
-    assert moe_gate_proj_bias_group['initial_lr'] == moe_gate_proj_bias_group['lr']
-    assert moe_gate_proj_bias_group['base_lr'] == 0.01
-    assert moe_gate_proj_bias_group['lr_scale_start'] == 0.25
-    assert moe_gate_proj_bias_group['lr_scale_end'] == 1.0
-    assert moe_gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000
+    assert gate_proj_bias_group['lr'] == 0.2 * dmodel_lr_scale * 0.25
+    assert gate_proj_bias_group['initial_lr'] == gate_proj_bias_group['lr']
+    assert gate_proj_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
+    assert gate_proj_bias_group['lr_scale_start'] == 0.25
+    assert gate_proj_bias_group['lr_scale_end'] == 1.0
+    assert gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000

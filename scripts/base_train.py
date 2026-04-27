@@ -188,7 +188,7 @@ parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=1.0,
                     help="final LR scale factor for gate_proj_bias params after their dedicated warmup")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from --gate-proj-bias-lr-scale to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-3, help="weight for MoE gate_proj_bias L2 loss")
+parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 # The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
