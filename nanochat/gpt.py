@@ -1356,7 +1356,7 @@ class GPT(nn.Module):
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
-                if name.endswith('bias') or param.ndim < 2:
+                if param.ndim < 2:
                     target_nonmatrix_params.append(param)
                 else:
                     target_matrix_params.append(param)

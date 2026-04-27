@@ -199,8 +199,7 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
     assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
     assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
-    assert torch.isnan(base_loss)
-    assert torch.isnan(penalized_loss)
+    torch.testing.assert_close(penalized_loss, base_loss)
 
 
 def test_dense_gate_projection_has_expected_shape():

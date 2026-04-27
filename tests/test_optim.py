@@ -153,7 +153,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
 
 
-def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
+def test_setup_optimizer_routes_gate_projection_biases_by_shape():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
@@ -197,9 +197,9 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     assert dense_gate_bias
     assert moe_gate_bias
     assert all(param not in muon_params for param in dense_gate_bias)
-    assert all(param not in muon_params for param in moe_gate_bias)
     assert all(param in adamw_params for param in dense_gate_bias)
-    assert all(param in adamw_params for param in moe_gate_bias)
+    assert all(param in muon_params for param in moe_gate_bias)
+    assert all(param not in adamw_params for param in moe_gate_bias)
 
 
 def test_gate_proj_bias_forward_gradients_are_scaled_but_l2_gradients_are_not():
