@@ -54,12 +54,16 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_w
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
         router.w_g.weight.copy_(torch.randn_like(router.w_g.weight))
         raw_gate_out = torch.bmm(x, experts.gate_proj)
-        router_scores = torch.bmm(x, router.w_g.weight.unsqueeze(-1)).squeeze(-1)
+        router_scores = (x * router.w_g.weight.unsqueeze(1)).sum(dim=-1)
         normalized_router_scores = F.normalize(router_scores.float(), dim=1, eps=1e-6).to(dtype=x.dtype)
-        expected_gate_out_acts = (
-            experts.act_fn(raw_gate_out)
-            - experts.gate_proj_bias.unsqueeze(1) * normalized_router_scores.unsqueeze(-1)
+        raw_gate_out = torch.baddbmm(
+            raw_gate_out,
+            normalized_router_scores.unsqueeze(-1),
+            experts.gate_proj_bias.unsqueeze(1),
+            beta=1,
+            alpha=-1,
         )
+        expected_gate_out_acts = experts.act_fn(raw_gate_out)
 
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
