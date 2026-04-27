@@ -192,7 +192,7 @@ parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1
 # The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
-parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.3, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
 parser.add_argument(
     "--remove-exp-gate-proj-row-mean-comp",
     type=str2bool,
