@@ -182,13 +182,17 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
-parser.add_argument("--gate-proj-bias-grad-scale", type=float, default=0.1,
-                    help="scale factor applied to gate_proj_bias gradients through forward and L2-loss paths")
+parser.add_argument("--gate-proj-bias-lr-scale", type=float, default=0.1,
+                    help="LR scale factor for gate_proj_bias AdamW params; the normal LR scheduler still anneals this group")
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=1.0,
+                    help="final LR scale factor for gate_proj_bias params after their dedicated warmup")
+parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
+                    help="number of iterations to linearly ramp gate_proj_bias LR scale from --gate-proj-bias-lr-scale to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 # The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
-parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for dense and MoE gate_proj_bias L2 losses (-1 = use total training iterations)")
-parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=1, help="fraction of the gate_proj_bias L2 base weights to keep after annealing completes (1 = no annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
+parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
 parser.add_argument(
     "--remove-exp-gate-proj-row-mean-comp",
     type=str2bool,
@@ -372,7 +376,7 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         use_dense_gate_proj_bias=args.use_dense_gate_proj_bias,
-        gate_proj_bias_grad_scale=args.gate_proj_bias_grad_scale,
+        gate_proj_bias_lr_scale=args.gate_proj_bias_lr_scale,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
         dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
@@ -640,7 +644,7 @@ if args.depth != 12:
 
 # -----------------------------------------------------------------------------
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
-# After setup_optimizer(), one shouldn't change grad scale settings.
+# After setup_optimizer(), one shouldn't change parameter-group LR scaling settings.
 adam_betas = (args.adam_beta1, args.adam_beta2)
 optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr * batch_lr_scale,
@@ -651,6 +655,8 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
+    gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
+    gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
 if resuming and load_optimizer_state:
@@ -724,6 +730,14 @@ def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=-1, floor_fr
     anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
     anneal_multiplier = floor_frac + (1.0 - floor_frac) * (1.0 - anneal_progress)
     return base_weight * anneal_multiplier
+
+
+def get_linear_lr_scale(it, start_scale=0.1, end_scale=1.0, warmup_iterations=1000):
+    if warmup_iterations <= 0:
+        return end_scale
+
+    progress = min(max(it, 0), warmup_iterations) / warmup_iterations
+    return start_scale + (end_scale - start_scale) * progress
 
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
@@ -1049,12 +1063,7 @@ while True:
         num_anneal_iterations=gate_proj_bias_l2_num_anneal_iterations,
         floor_frac=args.gate_proj_bias_l2_loss_floor_frac,
     )
-    dense_gate_proj_bias_l2_loss_weight = get_annealed_loss_weight(
-        args.dense_gate_proj_bias_l2_loss_weight,
-        step,
-        num_anneal_iterations=gate_proj_bias_l2_num_anneal_iterations,
-        floor_frac=args.gate_proj_bias_l2_loss_floor_frac,
-    )
+    dense_gate_proj_bias_l2_loss_weight = args.dense_gate_proj_bias_l2_loss_weight
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
         router_ortho_blockwise_active = True
@@ -1365,7 +1374,16 @@ while True:
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-            group["lr"] = group["initial_lr"] * lrm
+            if group.get("name") == "gate_proj_bias":
+                gate_proj_bias_lr_scale = get_linear_lr_scale(
+                    step,
+                    start_scale=group.get("lr_scale_start", 0.1),
+                    end_scale=group.get("lr_scale_end", 1.0),
+                    warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
+                )
+                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
+            else:
+                group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':
                 group["momentum"] = muon_momentum
                 group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)

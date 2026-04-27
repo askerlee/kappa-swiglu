@@ -709,7 +709,7 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_grad_scale = float(getattr(config, 'gate_proj_bias_grad_scale', 0.1))
+        self.gate_proj_bias_lr_scale = float(getattr(config, 'gate_proj_bias_lr_scale', 0.1))
         self.use_gate_proj_bias = bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         if self.use_gate_proj_bias:
@@ -722,16 +722,10 @@ class Qwen3MLP(nn.Module):
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
 
-    def get_gate_proj_bias_with_scaled_grad(self):
-        if self.gate_proj_bias is None:
-            return None
-        return ScaleGrad.apply(self.gate_proj_bias, self.gate_proj_bias_grad_scale, False)
-
     def forward(self, x):
         gate_out = self.act_fn(self.gate_proj(x))
-        gate_proj_bias = self.get_gate_proj_bias_with_scaled_grad()
-        if gate_proj_bias is not None:
-            gate_out = gate_out + gate_proj_bias
+        if self.gate_proj_bias is not None:
+            gate_out = gate_out + self.gate_proj_bias
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -742,7 +736,7 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_grad_scale = float(getattr(config, 'gate_proj_bias_grad_scale', 0.1))
+        self.gate_proj_bias_lr_scale = float(getattr(config, 'gate_proj_bias_lr_scale', 0.1))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
@@ -765,11 +759,6 @@ class Qwen3MLPExperts(nn.Module):
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
-    def get_gate_proj_bias_with_scaled_grad(self):
-        if self.gate_proj_bias is None:
-            return None
-        return ScaleGrad.apply(self.gate_proj_bias, self.gate_proj_bias_grad_scale, False)
-
     def set_router(self, router):
         self._router_ref = weakref.ref(router)
 
@@ -787,9 +776,8 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
-        gate_proj_bias = self.get_gate_proj_bias_with_scaled_grad()
-        if gate_proj_bias is not None:
-            gate_out_acts = gate_out_acts + gate_proj_bias.unsqueeze(1)
+        if self.gate_proj_bias is not None:
+            gate_out_acts = gate_out_acts + self.gate_proj_bias.unsqueeze(1)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -801,7 +789,7 @@ class Qwen3MLPExperts(nn.Module):
             gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
             if self.gate_proj_bias is not None:
-                gate_out_ortho_acts = gate_out_ortho_acts + gate_proj_bias.unsqueeze(1)
+                gate_out_ortho_acts = gate_out_ortho_acts + self.gate_proj_bias.unsqueeze(1)
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:
@@ -1342,8 +1330,11 @@ class GPT(nn.Module):
 
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
                         weight_decay_dense=0.0, weight_decay_moe=0.0,
-                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False):
+                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
+                        gate_proj_bias_lr_final_scale=1.0,
+                        gate_proj_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
+        gate_proj_bias_lr_scale = float(getattr(self.config, 'gate_proj_bias_lr_scale', 0.1))
         ddp, rank, local_rank, world_size = get_dist_info()
 
         # Separate out all parameters into groups
@@ -1351,12 +1342,19 @@ class GPT(nn.Module):
         dense_nonmatrix_params = []
         moe_matrix_params = []
         moe_nonmatrix_params = []
+        gate_proj_bias_nonmatrix_params = []
+        gate_proj_bias_matrix_params = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
-                if param.ndim < 2:
+                if name.endswith('gate_proj_bias'):
+                    if param.ndim < 2:
+                        gate_proj_bias_nonmatrix_params.append(param)
+                    else:
+                        gate_proj_bias_matrix_params.append(param)
+                elif param.ndim < 2:
                     target_nonmatrix_params.append(param)
                 else:
                     target_matrix_params.append(param)
@@ -1368,6 +1366,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
+            len(gate_proj_bias_nonmatrix_params) + len(gate_proj_bias_matrix_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -1391,6 +1390,21 @@ class GPT(nn.Module):
             dict(kind='adamw', params=dense_nonmatrix_params + moe_nonmatrix_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
         param_groups.append(
+            dict(
+                kind='adamw',
+                name='gate_proj_bias',
+                params=gate_proj_bias_nonmatrix_params,
+                lr=embedding_lr * dmodel_lr_scale * gate_proj_bias_lr_scale,
+                base_lr=embedding_lr * dmodel_lr_scale,
+                lr_scale_start=gate_proj_bias_lr_scale,
+                lr_scale_end=gate_proj_bias_lr_final_scale,
+                lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            )
+        )
+        param_groups.append(
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
         param_groups.append(
@@ -1412,6 +1426,24 @@ class GPT(nn.Module):
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay_moe,
+                chunk_size=2,
+                match_rms_adamw=muon_match_rms_adamw,
+            ))
+        for shape in sorted({p.shape for p in gate_proj_bias_matrix_params}):
+            group_params = [p for p in gate_proj_bias_matrix_params if p.shape == shape]
+            param_groups.append(dict(
+                kind='muon',
+                name='gate_proj_bias',
+                params=group_params,
+                lr=matrix_lr * gate_proj_bias_lr_scale,
+                base_lr=matrix_lr,
+                lr_scale_start=gate_proj_bias_lr_scale,
+                lr_scale_end=gate_proj_bias_lr_final_scale,
+                lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
+                momentum=0.95,
+                ns_steps=5,
+                beta2=0.95,
+                weight_decay=weight_decay_moe,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))

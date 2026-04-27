@@ -202,10 +202,9 @@ def test_setup_optimizer_routes_gate_projection_biases_by_shape():
     assert all(param not in adamw_params for param in moe_gate_bias)
 
 
-def test_gate_proj_bias_forward_gradients_are_scaled_but_l2_gradients_are_not():
-    torch.manual_seed(0)
+def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
     config = GPTConfig(
-        n_layer=2,
+        n_layer=4,
         moe_start_layer=1,
         moe_layer_stride=1,
         n_exp=2,
@@ -213,39 +212,52 @@ def test_gate_proj_bias_forward_gradients_are_scaled_but_l2_gradients_are_not():
         n_head=2,
         use_exp_gate_proj_bias=True,
         use_dense_gate_proj_bias=True,
+        gate_proj_bias_lr_scale=0.25,
     )
-    x_dense = torch.randn(2, 3, config.n_embd)
-    x_moe = torch.randn(config.n_exp, 3, config.n_embd)
+    model = GPT(config)
 
-    dense_mlp = Qwen3MLP(config)
-    with torch.no_grad():
-        for parameter in dense_mlp.parameters():
-            parameter.normal_(mean=0.0, std=0.02)
-    dense_loss = dense_mlp(x_dense).sum() + dense_mlp.gate_proj_bias.float().square().mean()
-    dense_loss.backward()
-    dense_bias = dense_mlp.gate_proj_bias.detach().clone().requires_grad_(True)
-    dense_forward_loss = dense_mlp.c_proj(
-        (dense_mlp.act_fn(dense_mlp.gate_proj(x_dense)) + dense_bias) * dense_mlp.c_fc(x_dense)
-    ).sum()
-    dense_forward_grad, = torch.autograd.grad(dense_forward_loss, dense_bias, retain_graph=True)
-    dense_l2_loss = dense_bias.float().square().mean()
-    dense_l2_grad, = torch.autograd.grad(dense_l2_loss, dense_bias)
+    optimizer = model.setup_optimizer(
+        embedding_lr=0.2,
+        matrix_lr=0.01,
+        weight_decay_dense=0.0,
+        weight_decay_moe=0.0,
+        gate_proj_bias_lr_final_scale=1.0,
+        gate_proj_bias_lr_warmup_iterations=1000,
+    )
 
-    moe_mlp = Qwen3MLPExperts(config)
-    with torch.no_grad():
-        for parameter in moe_mlp.parameters():
-            parameter.normal_(mean=0.0, std=0.02)
-    moe_loss = moe_mlp(x_moe).sum() + moe_mlp.gate_proj_bias.float().square().mean()
-    moe_loss.backward()
-    moe_bias = moe_mlp.gate_proj_bias.detach().clone().requires_grad_(True)
-    moe_gate_out = moe_mlp.act_fn(torch.bmm(x_moe, moe_mlp.gate_proj)) + moe_bias.unsqueeze(1)
-    moe_forward_loss = torch.bmm(moe_gate_out * torch.bmm(x_moe, moe_mlp.c_fc), moe_mlp.c_proj).sum()
-    moe_forward_grad, = torch.autograd.grad(moe_forward_loss, moe_bias, retain_graph=True)
-    moe_l2_loss = moe_bias.float().square().mean()
-    moe_l2_grad, = torch.autograd.grad(moe_l2_loss, moe_bias)
+    dense_gate_proj_bias_params = []
+    moe_gate_proj_bias_params = []
+    for block in model.transformer.h:
+        mlp = getattr(block, 'mlp', None)
+        if getattr(mlp, 'gate_proj_bias', None) is not None:
+            dense_gate_proj_bias_params.append(mlp.gate_proj_bias)
+        experts = getattr(mlp, 'experts', None)
+        if getattr(experts, 'gate_proj_bias', None) is not None:
+            moe_gate_proj_bias_params.append(experts.gate_proj_bias)
 
-    dense_expected_grad = dense_forward_grad * 0.1 + dense_l2_grad
-    moe_expected_grad = moe_forward_grad * 0.1 + moe_l2_grad
+    dense_gate_proj_bias_group = None
+    moe_gate_proj_bias_group = None
+    for group in optimizer.param_groups:
+        params = set(group['params'])
+        if params == set(dense_gate_proj_bias_params):
+            dense_gate_proj_bias_group = group
+        elif params == set(moe_gate_proj_bias_params):
+            moe_gate_proj_bias_group = group
 
-    assert torch.allclose(dense_mlp.gate_proj_bias.grad, dense_expected_grad, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(moe_mlp.gate_proj_bias.grad, moe_expected_grad, atol=1e-6, rtol=1e-5)
+    assert dense_gate_proj_bias_group is not None
+    assert moe_gate_proj_bias_group is not None
+    assert dense_gate_proj_bias_group['kind'] == 'adamw'
+    assert moe_gate_proj_bias_group['kind'] == 'muon'
+    dmodel_lr_scale = (config.n_embd / 768) ** -0.5
+    assert dense_gate_proj_bias_group['lr'] == 0.2 * dmodel_lr_scale * 0.25
+    assert dense_gate_proj_bias_group['initial_lr'] == dense_gate_proj_bias_group['lr']
+    assert dense_gate_proj_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
+    assert dense_gate_proj_bias_group['lr_scale_start'] == 0.25
+    assert dense_gate_proj_bias_group['lr_scale_end'] == 1.0
+    assert dense_gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000
+    assert moe_gate_proj_bias_group['lr'] == 0.01 * 0.25
+    assert moe_gate_proj_bias_group['initial_lr'] == moe_gate_proj_bias_group['lr']
+    assert moe_gate_proj_bias_group['base_lr'] == 0.01
+    assert moe_gate_proj_bias_group['lr_scale_start'] == 0.25
+    assert moe_gate_proj_bias_group['lr_scale_end'] == 1.0
+    assert moe_gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000

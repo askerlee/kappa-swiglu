@@ -34,8 +34,12 @@ def _patch_missing_config_keys(model_config_kwargs):
         model_config_kwargs["aux_free_load_balancing_bias_update_speed"] = 1e-3
     if "num_moe_layers" not in model_config_kwargs:
         model_config_kwargs["num_moe_layers"] = -1
-    if "gate_proj_bias_grad_scale" not in model_config_kwargs:
-        model_config_kwargs["gate_proj_bias_grad_scale"] = 0.1
+    legacy_gate_proj_bias_grad_scale = model_config_kwargs.pop("gate_proj_bias_grad_scale", None)
+    if "gate_proj_bias_lr_scale" not in model_config_kwargs:
+        if legacy_gate_proj_bias_grad_scale is not None:
+            model_config_kwargs["gate_proj_bias_lr_scale"] = legacy_gate_proj_bias_grad_scale
+        else:
+            model_config_kwargs["gate_proj_bias_lr_scale"] = 0.1
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
