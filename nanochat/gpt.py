@@ -710,7 +710,7 @@ class Qwen3MLP(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.gate_proj_bias_lr_scale = float(getattr(config, 'gate_proj_bias_lr_scale', 0.1))
-        self.use_gate_proj_bias = bool(getattr(config, 'use_dense_gate_proj_bias', False))
+        self.use_gate_proj_bias = False # bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         if self.use_gate_proj_bias:
             self.gate_proj_bias = nn.Parameter(torch.empty(self.intermediate_size))
@@ -768,16 +768,26 @@ class Qwen3MLPExperts(nn.Module):
         assert router is not None, "Router reference is no longer valid"
         return router
 
+    def _compute_gate_proj_dynamic_bias(self, x, router):
+        if self.gate_proj_bias is None:
+            return None
+        router_weight = router.w_g.weight.to(dtype=x.dtype).unsqueeze(-1)
+        router_scores = torch.bmm(x, router_weight).squeeze(-1)
+        normalized_scores = F.normalize(router_scores.float(), dim=1, eps=1e-6)
+        normalized_scores = normalized_scores.to(dtype=x.dtype).detach()
+        return self.gate_proj_bias.unsqueeze(1) * normalized_scores.unsqueeze(-1)
+
     def forward(self, x):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
-        router = self._get_router() if self.debug else None
+        router = self._get_router() if (self.debug or self.gate_proj_bias is not None) else None
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_out_acts = self.act_fn(gate_out_raw)
-        if self.gate_proj_bias is not None:
-            gate_out_acts = gate_out_acts + self.gate_proj_bias.unsqueeze(1)
+        dynamic_gate_bias = self._compute_gate_proj_dynamic_bias(gate_input, router)
+        if dynamic_gate_bias is not None:
+            gate_out_acts = gate_out_acts - dynamic_gate_bias
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -788,8 +798,8 @@ class Qwen3MLPExperts(nn.Module):
             )
             gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
-            if self.gate_proj_bias is not None:
-                gate_out_ortho_acts = gate_out_ortho_acts + self.gate_proj_bias.unsqueeze(1)
+            if dynamic_gate_bias is not None:
+                gate_out_ortho_acts = gate_out_ortho_acts - dynamic_gate_bias
 
         # NOTE: use_experts_gate_output_loss is disabled by default.
         if self.training and self.use_experts_gate_output_loss:

@@ -1,8 +1,9 @@
 import torch
+from torch.nn import functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
+from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts, Router
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -31,7 +32,7 @@ def test_dense_gate_projection_is_applied_before_fc_gating():
     torch.testing.assert_close(actual, expected)
 
 
-def test_gate_projection_bias_is_added_after_activation_when_enabled():
+def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_when_enabled():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -41,6 +42,8 @@ def test_gate_projection_bias_is_added_after_activation_when_enabled():
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
+    router = Router(config)
+    experts.set_router(router)
 
     x = torch.randn(config.n_exp, 5, config.n_embd)
 
@@ -49,14 +52,40 @@ def test_gate_projection_bias_is_added_after_activation_when_enabled():
         experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        router.w_g.weight.copy_(torch.randn_like(router.w_g.weight))
         raw_gate_out = torch.bmm(x, experts.gate_proj)
-        expected_gate_out_acts = experts.act_fn(raw_gate_out) + experts.gate_proj_bias.unsqueeze(1)
+        router_scores = torch.bmm(x, router.w_g.weight.unsqueeze(-1)).squeeze(-1)
+        normalized_router_scores = F.normalize(router_scores.float(), dim=1, eps=1e-6).to(dtype=x.dtype)
+        expected_gate_out_acts = (
+            experts.act_fn(raw_gate_out)
+            - experts.gate_proj_bias.unsqueeze(1) * normalized_router_scores.unsqueeze(-1)
+        )
 
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 
     actual = experts(x)
     torch.testing.assert_close(actual, expected)
+
+
+def test_dynamic_gate_projection_bias_does_not_backprop_into_router_weights():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_experts_gate_output_loss=False,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    router = Router(config)
+    experts.set_router(router)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd, requires_grad=True)
+    out = experts(x).sum()
+    out.backward()
+
+    assert router.w_g.weight.grad is None
 
 
 def test_dense_qwen3_gate_projection_bias_is_added_after_activation_when_enabled():
