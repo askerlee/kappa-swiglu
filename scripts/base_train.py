@@ -1374,18 +1374,18 @@ while True:
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-            if group.get("name") == "gate_proj_bias":
-                gate_proj_bias_lr_scale = get_linear_lr_scale(
-                    step,
-                    start_scale=group.get("lr_scale_start", 0.1),
-                    end_scale=group.get("lr_scale_end", 1.0),
-                    warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
-                )
-                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
-            else:
-                group["lr"] = group["initial_lr"] * lrm
-            if group['kind'] == 'muon':
-                group["momentum"] = muon_momentum
+                if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
+                    gate_proj_bias_lr_scale = get_linear_lr_scale(
+                        step,
+                        start_scale=group.get("lr_scale_start", 0.1),
+                        end_scale=group.get("lr_scale_end", 1.0),
+                        warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
+                    )
+                    group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
+                else:
+                    group["lr"] = group["initial_lr"] * lrm
+                if group['kind'] == 'muon':
+                    group["momentum"] = muon_momentum
                 group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
         orig_model.update_aux_free_load_balancing()
         optimizer.step()
