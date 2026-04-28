@@ -859,11 +859,8 @@ class MOELayer(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
+        self.projs_diversity_loss_weight = float(getattr(config, 'projs_diversity_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
-        # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
-        # But the computation is slow, so disabled by default.
-        # We just don't optimize it unless the weight is set > 0 in the config.
-        self.use_experts_ortho_loss = config.use_experts_ortho_loss
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
 
     def update_aux_free_load_balancing(self):
@@ -909,13 +906,9 @@ class MOELayer(nn.Module):
             MANAGER.add("router_ortho_loss", router_ortho_loss)
             for loss_name, loss_value in router_ortho_sub_losses.items():
                 MANAGER.add(loss_name, loss_value)
-            # Always use gate diversity loss when using router orthogonality loss.
-            projs_diversity_loss = self.compute_projs_diversity_loss()
-            MANAGER.add("projs_diversity_loss", projs_diversity_loss)
-
-        if self.training and self.use_experts_ortho_loss:
-            experts_ortho_loss = self.compute_experts_ortho_loss()
-            MANAGER.add("experts_ortho_loss", experts_ortho_loss)
+            if self.projs_diversity_loss_weight != 0:
+                projs_diversity_loss = self.compute_projs_diversity_loss()
+                MANAGER.add("projs_diversity_loss", projs_diversity_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -1551,11 +1544,6 @@ class GPT(nn.Module):
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
                 losses['projs_diversity_loss'] = projs_diversity_loss.detach() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
                 MANAGER.reset("projs_diversity_loss")
-            if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
-                experts_ortho_loss = MANAGER.aggregate("experts_ortho_loss")
-                loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
-                losses['experts_ortho_loss'] = experts_ortho_loss.detach() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
-                MANAGER.reset("experts_ortho_loss")
             if self.config.n_exp > 1 and self.config.use_experts_gate_output_loss:
                 experts_gate_output_loss = MANAGER.aggregate("experts_gate_output_loss")
                 loss += self.config.experts_gate_output_loss_weight * experts_gate_output_loss

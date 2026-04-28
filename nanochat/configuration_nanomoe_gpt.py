@@ -30,7 +30,6 @@ class GPTConfig:
         gate_proj_bias_lr_scale: float = 0.1,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         dense_gate_proj_bias_l2_loss_weight: float = 0.0,
-        use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_experts_gate_output_loss: bool = False,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -39,9 +38,6 @@ class GPTConfig:
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
         router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
-        # experts_ortho_loss is very small due to squared cosine similarities.
-        # So its weight is set higher to have a meaningful effect.
-        experts_ortho_loss_weight: float = 0.01,
         experts_gate_output_loss_weight: float = 1e-5,  # default weight for gate output regularization loss
         # projs diversity loss is very small (<0.01) due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
@@ -96,7 +92,6 @@ class GPTConfig:
         self.gate_proj_bias_lr_scale = float(gate_proj_bias_lr_scale)
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
         self.dense_gate_proj_bias_l2_loss_weight = float(dense_gate_proj_bias_l2_loss_weight)
-        self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
@@ -104,7 +99,6 @@ class GPTConfig:
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight
         legacy_stride = kwargs.pop('stride', None)
