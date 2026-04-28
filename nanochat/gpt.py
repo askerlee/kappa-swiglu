@@ -858,6 +858,7 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
+        self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
         # But the computation is slow, so disabled by default.
@@ -901,8 +902,10 @@ class MOELayer(nn.Module):
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
-            router_ortho_loss, router_ortho_sub_losses = self.compute_router_ortho_loss()
-            # router_ortho_loss will be optimized, so we keep its computation graph.
+            router_ortho_ctx = torch.no_grad if self.router_ortho_loss_weight == 0 else nullcontext
+            with router_ortho_ctx():
+                router_ortho_loss, router_ortho_sub_losses = self.compute_router_ortho_loss()
+            # Keep the graph of router_ortho_loss only when the configured orthogonality weight is non-zero.
             MANAGER.add("router_ortho_loss", router_ortho_loss)
             for loss_name, loss_value in router_ortho_sub_losses.items():
                 MANAGER.add(loss_name, loss_value)
