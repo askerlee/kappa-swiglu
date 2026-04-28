@@ -141,6 +141,80 @@ class SoftcapInPlace(torch.autograd.Function):
             grad_input = None
         return grad_input, None
 
+
+def _get_loss_chunk_tokens(config, total_tokens: int) -> int:
+    """Bound lm_head/loss work to a token chunk that keeps peak vocab activations manageable."""
+    configured = getattr(config, "loss_chunk_tokens", None)
+    if configured is not None:
+        chunk_tokens = int(configured)
+        if chunk_tokens <= 0:
+            raise ValueError("loss_chunk_tokens must be a positive integer")
+        return min(total_tokens, chunk_tokens)
+
+    max_logit_elements = 64 * 1024 * 1024
+    # vocab_size: 50304. If loss_chunk_tokens is None, then
+    # chunk_tokens = 64 * 1024 * 1024 // 50304 = 1334.
+    chunk_tokens = max(1, max_logit_elements // int(config.vocab_size))
+    return min(total_tokens, chunk_tokens)
+
+
+def _chunked_cross_entropy(
+    hidden_states: torch.Tensor,
+    targets: torch.Tensor,
+    lm_head: nn.Module,
+    vocab_size: int,
+    softcap: float,
+    loss_reduction: str,
+    chunk_tokens: int,
+) -> torch.Tensor:
+    """Compute next-token loss without materializing full training logits at once."""
+    hidden_flat = hidden_states.reshape(-1, hidden_states.size(-1))
+    targets_flat = targets.reshape(-1)
+
+    if chunk_tokens >= hidden_flat.size(0):
+        logits = lm_head(hidden_flat)
+        logits = logits[:, :vocab_size]
+        logits = SoftcapInPlace.apply(logits, softcap)
+        return F.cross_entropy(logits, targets_flat, ignore_index=-1, reduction=loss_reduction)
+
+    if loss_reduction == 'none':
+        chunk_losses = []
+        for chunk_start in range(0, hidden_flat.size(0), chunk_tokens):
+            chunk_end = min(chunk_start + chunk_tokens, hidden_flat.size(0))
+            chunk_logits = lm_head(hidden_flat[chunk_start:chunk_end])
+            chunk_logits = chunk_logits[:, :vocab_size]
+            chunk_logits = SoftcapInPlace.apply(chunk_logits, softcap)
+            chunk_losses.append(F.cross_entropy(
+                chunk_logits,
+                targets_flat[chunk_start:chunk_end],
+                ignore_index=-1,
+                reduction='none',
+            ))
+        return torch.cat(chunk_losses, dim=0)
+
+    if loss_reduction not in {'mean', 'sum'}:
+        raise ValueError(f"Unsupported loss_reduction: {loss_reduction}")
+
+    loss_sum = None
+    for chunk_start in range(0, hidden_flat.size(0), chunk_tokens):
+        chunk_end = min(chunk_start + chunk_tokens, hidden_flat.size(0))
+        chunk_logits = lm_head(hidden_flat[chunk_start:chunk_end])
+        chunk_logits = chunk_logits[:, :vocab_size]
+        chunk_logits = SoftcapInPlace.apply(chunk_logits, softcap)
+        chunk_loss = F.cross_entropy(
+            chunk_logits,
+            targets_flat[chunk_start:chunk_end],
+            ignore_index=-1,
+            reduction='sum',
+        )
+        loss_sum = chunk_loss if loss_sum is None else loss_sum + chunk_loss
+
+    if loss_reduction == 'sum':
+        return loss_sum
+
+    valid_tokens = targets_flat.ne(-1).sum()
+    return loss_sum / valid_tokens
+
 # NOTE: alpha is only applied to grad_left, the left leaf node
 class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -1475,10 +1549,12 @@ class GPT(nn.Module):
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
-        # Always compute logits for all positions (HuggingFace standard)
-        logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
-        logits = logits[..., :self.config.vocab_size] # slice to remove padding
-        logits = SoftcapInPlace.apply(logits, softcap)
+        logits = None
+        if targets is None:
+            # Always compute logits for all positions at inference time (HuggingFace standard)
+            logits = self.lm_head(x) # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
+            logits = logits[..., :self.config.vocab_size] # slice to remove padding
+            logits = SoftcapInPlace.apply(logits, softcap)
 
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
@@ -1508,12 +1584,14 @@ class GPT(nn.Module):
         MANAGER.reset("selected_scores")
         
         if targets is not None:
-            # Compute loss when targets are provided
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                ignore_index=-1,
-                reduction=loss_reduction,
+            loss = _chunked_cross_entropy(
+                x,
+                targets,
+                self.lm_head,
+                self.config.vocab_size,
+                softcap,
+                loss_reduction,
+                _get_loss_chunk_tokens(self.config, x.size(0) * x.size(1)),
             )
             losses['ntp_loss'] = loss.detach()
 

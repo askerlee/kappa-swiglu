@@ -56,6 +56,7 @@ class GPTConfig:
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
         window_pattern: str = "SSSL",
+        loss_chunk_tokens: int | None = None,
         debug: bool = False,
         **kwargs,
     ):        
@@ -117,5 +118,6 @@ class GPTConfig:
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.window_pattern = window_pattern
+        self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
         self.debug = debug
         
