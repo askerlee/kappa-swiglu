@@ -17,7 +17,6 @@ class MOEManager:
             "router_ortho_loss_gate_proj": [],
             "experts_ortho_loss": [],
             "experts_gate_output_loss": [],
-            "projs_diversity_loss": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
@@ -34,7 +33,6 @@ class MOEManager:
             "router_ortho_loss_gate_proj",
             "experts_ortho_loss",
             "experts_gate_output_loss",
-            "projs_diversity_loss",
         }
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",

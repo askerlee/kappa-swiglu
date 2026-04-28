@@ -558,7 +558,7 @@ class Router(nn.Module):
             # 1. GET ROUTING LOGITS
             # ---------------------
             logits_wg = F.linear(x_flat, self.w_g.weight)  # [B*T, n_exp]
-            noise = None
+            noise = None  # Initialize noise variable
 
             if self.training and self.use_noisy_top_k:
                 noise = F.softplus(self.w_noise(x_flat))
@@ -933,7 +933,6 @@ class MOELayer(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
-        self.projs_diversity_loss_weight = float(getattr(config, 'projs_diversity_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
 
@@ -980,9 +979,6 @@ class MOELayer(nn.Module):
             MANAGER.add("router_ortho_loss", router_ortho_loss)
             for loss_name, loss_value in router_ortho_sub_losses.items():
                 MANAGER.add(loss_name, loss_value)
-            if self.projs_diversity_loss_weight != 0:
-                projs_diversity_loss = self.compute_projs_diversity_loss()
-                MANAGER.add("projs_diversity_loss", projs_diversity_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -1072,53 +1068,6 @@ class MOELayer(nn.Module):
         sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
         return ortho_loss, sub_losses
                 
-    # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
-    def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
-        loss = 0
-
-        if not self.use_qwen3_moe_mlp:
-            # Only apply orthogonality loss when using Qwen3-style MoE MLPs
-            return loss
-
-        for proj_name in ('gate_proj', 'c_fc'):
-            # G: [n_exp, n_embd, intermediate_size]
-            G = getattr(self.experts, proj_name)
-            # Row-normalize: normalize each row vector over intermediate_size
-            G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
-            E, D, F = G.size()  # n_exp, n_embd, intermediate_size
-
-            if use_rand_estimate:
-                # Stochastic Hutchinson trace/Frobenius estimator.
-                # 2 probs are not accurate, but slightly faster than the exact method.
-                # On the long term, it can still provide useful signal 
-                # to improve diversity and suppress collapse.
-                K = num_rand_probes
-                # Z: [E, D, K]  (±1)
-                Z = torch.empty((E, D, K), device=G.device, dtype=torch.int8).random_(2)
-                Z = (Z * 2 - 1).to(G.dtype)
-                # gt_z = G^T Z: [E, F, K]
-                gt_z = torch.bmm(G.transpose(1, 2), Z)
-                # Ggt_z = G gt_z: [E, D, K]
-                Ggt_z = torch.bmm(G, gt_z)
-                Az = Ggt_z - Z
-                est_frob2 = Az.square().sum(dim=1).mean(dim=1)  # [E]  sum over D, mean over K
-                row_sim_per_expert = est_frob2 / (D * D - D)
-            else:
-                # Batched Gram: [n_exp, n_embd, n_embd]
-                # This computes cosine similarity between all pairs of row vectors of 
-                # each expert's gate projection matrix.
-                gram = torch.bmm(G, G.transpose(1, 2))
-                # Zero out diagonal without materializing eye per expert
-                gram = gram - torch.diag_embed(torch.diagonal(gram, dim1=-2, dim2=-1))
-
-                # Mean squared off-diagonal similarity per expert
-                # Off-diagonal count = n_embd * n_embd - n_embd
-                offdiag_sq_sum = gram.square().sum(dim=(1, 2))       # [n_exp]
-                row_sim_per_expert = offdiag_sq_sum / (D * D - D)    # [n_exp]
-
-            loss += row_sim_per_expert.mean()
-            return loss
-        
     # Compute orthogonality loss between expert weight matrices.
     # This is an ablation study of arXiv:2601.00457.
     def compute_experts_ortho_loss(self):
@@ -1562,7 +1511,6 @@ class GPT(nn.Module):
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0,
                    'experts_gate_output_loss': 0,
-                   'projs_diversity_loss': 0,
                                      'dense_gate_proj_bias_l2_loss': 0,
                                      'exp_gate_proj_bias_l2_loss': 0,
                    'drop_rate_per_ks': None,
@@ -1618,10 +1566,6 @@ class GPT(nn.Module):
                     sub_loss = MANAGER.aggregate(sub_loss_name)
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
-                projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
-                loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
-                losses['projs_diversity_loss'] = projs_diversity_loss.detach() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
-                MANAGER.reset("projs_diversity_loss")
             if self.config.n_exp > 1 and self.config.use_experts_gate_output_loss:
                 experts_gate_output_loss = MANAGER.aggregate("experts_gate_output_loss")
                 loss += self.config.experts_gate_output_loss_weight * experts_gate_output_loss

@@ -193,7 +193,6 @@ parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.3, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
-parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, help="weight for expert gate projection diversity loss")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -374,7 +373,6 @@ def build_model_meta(depth):
         dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
         # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
         experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
-        projs_diversity_loss_weight=args.projs_diversity_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1292,7 +1290,6 @@ while True:
             'router_ortho_loss_gate_proj': 0.0,
             'experts_ortho_loss': 0.0,
             'experts_gate_output_loss': 0.0,
-            'projs_diversity_loss': 0.0,
             'dense_gate_proj_bias_l2_loss': 0.0,
             'exp_gate_proj_bias_l2_loss': 0.0,
             'drop_rate_per_ks': None,
@@ -1399,7 +1396,6 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
-            "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
             "train/dense_gate_proj_bias_l2_loss_step": losses['dense_gate_proj_bias_l2_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
             "lrm": lrm,

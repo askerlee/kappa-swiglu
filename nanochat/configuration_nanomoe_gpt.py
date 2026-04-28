@@ -39,9 +39,6 @@ class GPTConfig:
         router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
         experts_gate_output_loss_weight: float = 1e-5,  # default weight for gate output regularization loss
-        # projs diversity loss is very small (<0.01) due to squared cosine similarities.
-        # So its weight is set higher to have a meaningful effect.
-        projs_diversity_loss_weight: float = 0.01,  # default weight for expert gate projs diversity loss
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
@@ -101,7 +98,6 @@ class GPTConfig:
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
-        self.projs_diversity_loss_weight = projs_diversity_loss_weight
         legacy_stride = kwargs.pop('stride', None)
         if legacy_stride is not None:
             moe_layer_stride = legacy_stride

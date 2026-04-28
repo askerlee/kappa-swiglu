@@ -678,7 +678,6 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
             "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
-            "train/projs_diversity_loss_step": losses['projs_diversity_loss'],            
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
