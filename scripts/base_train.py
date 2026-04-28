@@ -206,11 +206,22 @@ parser.add_argument("--window-pattern", type=str, default="LLLL", help="sliding 
 # Training horizon (only one used, in order of precedence)
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
-parser.add_argument("--target-param-data-ratio", type=float, default=10, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
+parser.add_argument("--target-param-data-ratio", type=float, default=5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
-parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
+parser.add_argument(
+    "--total-batch-size",
+    type=int,
+    default=-1,
+    help=(
+        "total batch size in tokens. Must currently be divisible by "
+        "--device-batch-size * --max-seq-len * DDP world size because each "
+        "micro-step uses a fixed-shape batch and padded rows would still "
+        "affect auxiliary MoE losses. Decent numbers are e.g. 524288. "
+        "(-1 = auto-compute optimal)"
+    ),
+)
 parser.add_argument("--max-auto-grad-accum-steps", type=int, default=64, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
@@ -589,8 +600,11 @@ if total_batch_size % world_tokens_per_fwdbwd != 0:
         total_batch_size = rounded
     else:
         raise ValueError(
-            "total_batch_size must be a multiple of world_tokens_per_fwdbwd. "
+            "total_batch_size must be a multiple of world_tokens_per_fwdbwd "
+            "(= --device-batch-size * --max-seq-len * DDP world size). "
             f"Got total_batch_size={total_batch_size:,}, world_tokens_per_fwdbwd={world_tokens_per_fwdbwd:,}. "
+            "This script currently uses fixed-shape micro-batches, and simply padding the "
+            "remainder would change auxiliary/router losses instead of only masking the LM loss. "
             "Adjust --total-batch-size, --device-batch-size, --max-seq-len, or DDP world size."
         )
     
