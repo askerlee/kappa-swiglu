@@ -609,6 +609,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
 
             if num_owned > 0:
                 owned_params = [params[start_idx + i] for i in range(num_owned)]
+                for idx, owned_param in enumerate(owned_params):
+                    updated_params[idx].copy_(owned_param)
 
                 self._muon_momentum_t.fill_(group["momentum"])
                 self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
@@ -620,14 +622,12 @@ class DistMuonAdamW(torch.optim.Optimizer):
                     muon_lr_scale_max = 1.0
                 self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
                 self._muon_wd_t.fill_(group["weight_decay"])
-                stacked_owned = torch.stack(owned_params)
                 muon_step_fused(
-                    grad_chunk[:num_owned], stacked_owned,
+                    grad_chunk[:num_owned], updated_params[:num_owned],
                     state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
                     self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
                     group["ns_steps"], red_dim,
                 )
-                updated_params[:num_owned].copy_(stacked_owned)
 
             if num_owned < chunk_size:
                 updated_params[num_owned:].zero_()

@@ -2,7 +2,8 @@ import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
-from nanochat.optim import MuonAdamW
+from nanochat import optim as optim_module
+from nanochat.optim import DistMuonAdamW, MuonAdamW
 
 
 def test_adamw_step_updates_parameter_and_state():
@@ -108,6 +109,68 @@ def test_muon_chunk_size_one_updates_all_params():
 
     for param, param_before in zip(params, before):
         assert not torch.allclose(param, param_before)
+
+
+def test_dist_muon_compute_reuses_updated_param_buffer(monkeypatch):
+    params = [
+        torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) + offset)
+        for offset in (0.0, 10.0)
+    ]
+    grad_chunk = torch.stack([torch.ones_like(params[0]), torch.full_like(params[0], 2.0)])
+    stacked_grads = torch.empty_like(grad_chunk)
+    optimizer = DistMuonAdamW([
+        dict(kind='muon', params=params, lr=0.05, momentum=0.95, ns_steps=3, beta2=0.95, weight_decay=0.01),
+    ])
+
+    class _DoneFuture:
+        def wait(self):
+            return None
+
+    class _AsyncCollective:
+        def __init__(self, output, local):
+            self.output = output
+            self.local = local
+
+        def get_future(self):
+            self.output[:self.local.shape[0]].copy_(self.local)
+            return _DoneFuture()
+
+    def fake_all_gather_into_tensor(output, local, async_op=True):
+        assert async_op is True
+        return _AsyncCollective(output, local)
+
+    def fake_muon_step_fused(grads, updated, momentum_buffer, second_momentum_buffer, *_args):
+        updated.sub_(grads)
+        momentum_buffer.copy_(grads)
+        second_momentum_buffer.zero_()
+
+    original_stack = torch.stack
+
+    def guarded_stack(sequence, *args, **kwargs):
+        if sequence and all(item is param for item, param in zip(sequence, params)) and len(sequence) == len(params):
+            raise AssertionError('owned params should be copied into the update buffer, not restacked')
+        return original_stack(sequence, *args, **kwargs)
+
+    monkeypatch.setattr(optim_module.dist, 'all_gather_into_tensor', fake_all_gather_into_tensor)
+    monkeypatch.setattr(optim_module, 'muon_step_fused', fake_muon_step_fused)
+    monkeypatch.setattr(torch, 'stack', guarded_stack)
+
+    info = dict(chunk_infos=[dict(
+        future=_DoneFuture(),
+        params=params,
+        chunk_size=len(params),
+        grad_chunk=grad_chunk,
+        stacked_grads=stacked_grads,
+    )])
+    gather_list = []
+
+    with torch.inference_mode():
+        optimizer._compute_muon(optimizer.param_groups[0], info, gather_list, rank=0)
+        optimizer._finish_gathers(gather_list)
+
+    assert len(gather_list) == 1
+    assert torch.allclose(params[0], torch.arange(12, dtype=torch.float32).reshape(3, 4) - 1.0)
+    assert torch.allclose(params[1], torch.arange(12, dtype=torch.float32).reshape(3, 4) + 8.0)
 
 
 def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
