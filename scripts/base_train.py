@@ -193,22 +193,6 @@ parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1
 parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.3, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
-parser.add_argument(
-    "--remove-exp-gate-proj-row-mean-comp",
-    type=str2bool,
-    nargs='?',
-    const=True,
-    default=False,
-    help="after each optimizer step, subtract the per-row mean from expert gate_proj rows",
-)
-parser.add_argument(
-    "--remove-dense-gate-proj-row-mean-comp",
-    type=str2bool,
-    nargs='?',
-    const=True,
-    default=False,
-    help="after each optimizer step, subtract the per-row mean from dense gate_proj rows",
-)
 # use_experts_ortho_loss is False by default. So this weight has no effect.
 parser.add_argument("--experts-ortho-loss-weight", type=float, default=0.01, help="weight for experts orthogonality loss")
 parser.add_argument("--projs-diversity-loss-weight", type=float, default=0.01, help="weight for expert gate projection diversity loss")
@@ -743,26 +727,6 @@ def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
         return value.detach().item()
     return float(value)
-
-def remove_gate_proj_row_mean_component(model, remove_exp_gate_proj_row_mean_comp=False, remove_dense_gate_proj_row_mean_comp=False):
-    with torch.no_grad():
-        for layer in model.transformer.h:
-            if hasattr(layer.mlp, 'experts'):
-                if not remove_exp_gate_proj_row_mean_comp:
-                    continue
-                # gate_proj is a tensor: [n_exp, in_features, out_features]
-                # = [n_exp, hidden_size, intermediate_size].
-                # We should average across the out_features dimension, so dim=2.
-                gate_proj = layer.mlp.experts.gate_proj
-                gate_proj.sub_(gate_proj.mean(dim=2, keepdim=True))
-            else:
-                if not remove_dense_gate_proj_row_mean_comp:
-                    continue
-                # Weight matrix shape: [out_features, in_features] 
-                # = [intermediate_size, hidden_size]
-                # We should average across the out_features dimension, so dim=0.
-                gate_proj = layer.mlp.gate_proj.weight
-                gate_proj.sub_(gate_proj.mean(dim=0, keepdim=True))
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
@@ -1388,13 +1352,6 @@ while True:
         synchronize()
         t1 = time.time()
         dt = t1 - t0
-
-        if args.remove_exp_gate_proj_row_mean_comp or args.remove_dense_gate_proj_row_mean_comp:
-            remove_gate_proj_row_mean_component(
-                orig_model,
-                remove_exp_gate_proj_row_mean_comp=args.remove_exp_gate_proj_row_mean_comp,
-                remove_dense_gate_proj_row_mean_comp=args.remove_dense_gate_proj_row_mean_comp,
-            )
 
     # -------------------------------------------------------------------------
 
