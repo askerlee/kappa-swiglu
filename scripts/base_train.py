@@ -858,7 +858,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     router_row_norms = []
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
-    gate_proj_diversity_scores = []
     gate_proj_row_mean_component_ratios = []
     c_fc_diversity_scores = []
     exp_gate_grad_norms = []
@@ -891,9 +890,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
-                gate_proj_diversity_score = compute_row_diversity_score(exp_gate_weight)
-                gate_proj_diversity_scores.append(gate_proj_diversity_score)
-                losses[f'gate_proj_diversity_score_{i}'] = gate_proj_diversity_score.mean().item()
                 gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(exp_gate_weight).mean(dim=1)
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
@@ -980,8 +976,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     losses['router_grad_self_alignments'] = router_grad_self_alignments
     router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0) if router_weight_exp_gate_alignments else None
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
-    gate_proj_diversity_scores = torch.stack(gate_proj_diversity_scores, dim=0) if gate_proj_diversity_scores else None
-    losses['gate_proj_diversity_scores'] = gate_proj_diversity_scores
     gate_proj_row_mean_component_ratios = torch.stack(gate_proj_row_mean_component_ratios, dim=0) if gate_proj_row_mean_component_ratios else None
     losses['gate_proj_row_mean_component_ratios'] = gate_proj_row_mean_component_ratios
     c_fc_diversity_scores = torch.stack(c_fc_diversity_scores, dim=0) if c_fc_diversity_scores else None
@@ -1470,8 +1464,6 @@ while True:
                 log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})
             if f'router_row_norm_{i}' in losses:
                 log_data.update({f"inspect/router_row_norm_{i}": losses[f'router_row_norm_{i}']})
-            if f'gate_proj_diversity_score_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_diversity_score_{i}": losses[f'gate_proj_diversity_score_{i}']})
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
             if f'exp_gate_proj_bias_mean_{i}' in losses:
