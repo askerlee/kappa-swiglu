@@ -85,35 +85,8 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
     else:
         return result
 
-# Revised from RevGrad, by removing the grad negation.
-class ScaleGrad(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input_, alpha_, debug=False):
-        if isinstance(alpha_, torch.Tensor):
-            if alpha_.numel() != 1:
-                raise ValueError("ScaleGrad only supports scalar alpha values")
-            ctx.alpha = float(alpha_.detach().item())
-        else:
-            ctx.alpha = float(alpha_)
-        if isinstance(debug, torch.Tensor):
-            if debug.numel() != 1:
-                raise ValueError("ScaleGrad only supports scalar debug values")
-            ctx.debug = bool(debug.detach().item())
-        else:
-            ctx.debug = bool(debug)
-        if ctx.debug:
-            print(f"input: {input_.abs().mean().detach().item()}")
-        return input_
-
-    @staticmethod
-    def backward(ctx, grad_output):  # pragma: no cover
-        if not ctx.needs_input_grad[0]:
-            return None, None, None
-        if ctx.alpha != 1.0:
-            grad_output.mul_(ctx.alpha)
-        if ctx.debug:
-            print(f"grad_output: {grad_output.abs().mean().detach().item()}")
-        return grad_output, None, None
+def scale_grad(x, alpha: float):
+    return x.detach() + alpha * (x - x.detach())
 
 
 class SoftcapInPlace(torch.autograd.Function):
@@ -214,85 +187,6 @@ def _chunked_cross_entropy(
 
     valid_tokens = targets_flat.ne(-1).sum()
     return loss_sum / valid_tokens
-
-# NOTE: alpha is only applied to grad_left, the left leaf node
-class ReuseBmmWithScaledInputGrad(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, output, left, right, alpha):
-        ctx.save_for_backward(left, right, alpha)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):  # pragma: no cover
-        left, right, alpha = ctx.saved_tensors
-
-        grad_output_for_output = None
-
-        if ctx.needs_input_grad[1]:
-            right_t = right.transpose(1, 2)
-            if right_t.dtype != grad_output.dtype:
-                right_t = right_t.to(dtype=grad_output.dtype)
-            grad_left = torch.bmm(grad_output, right_t)
-            if alpha.dtype != grad_left.dtype:
-                alpha = alpha.to(dtype=grad_left.dtype)
-            # NOTE: alpha is only applied to grad_left
-            grad_left = grad_left * alpha
-            if grad_left.dtype != left.dtype:
-                grad_left = grad_left.to(dtype=left.dtype)
-        else:
-            grad_left = None
-
-        if ctx.needs_input_grad[2]:
-            left_t = left.transpose(1, 2)
-            if left_t.dtype != grad_output.dtype:
-                left_t = left_t.to(dtype=grad_output.dtype)
-            grad_right = torch.bmm(left_t, grad_output)
-            if grad_right.dtype != right.dtype:
-                grad_right = grad_right.to(dtype=right.dtype)
-        else:
-            grad_right = None
-
-        return grad_output_for_output, grad_left, grad_right, None
-
-class ReuseBmmWithScaledWeightGrad(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, output, left, right, alpha):
-        ctx.save_for_backward(left, right, alpha)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):  # pragma: no cover
-        left, right, alpha = ctx.saved_tensors
-
-        grad_output_for_output = None
-
-        if ctx.needs_input_grad[1]:
-            right_t = right.transpose(1, 2)
-            if right_t.dtype != grad_output.dtype:
-                right_t = right_t.to(dtype=grad_output.dtype)
-            grad_left = torch.bmm(grad_output, right_t)
-            if grad_left.dtype != left.dtype:
-                grad_left = grad_left.to(dtype=left.dtype)
-        else:
-            grad_left = None
-
-        if ctx.needs_input_grad[2]:
-            left_t = left.transpose(1, 2)
-            if left_t.dtype != grad_output.dtype:
-                left_t = left_t.to(dtype=grad_output.dtype)
-            grad_right = torch.bmm(left_t, grad_output)
-            alpha_for_grad_right = alpha
-            if alpha_for_grad_right.dtype != grad_right.dtype:
-                alpha_for_grad_right = alpha_for_grad_right.to(dtype=grad_right.dtype)
-            while alpha_for_grad_right.ndim < grad_right.ndim:
-                alpha_for_grad_right = alpha_for_grad_right.unsqueeze(-1)
-            grad_right = grad_right * alpha_for_grad_right
-            if grad_right.dtype != right.dtype:
-                grad_right = grad_right.to(dtype=right.dtype)
-        else:
-            grad_right = None
-
-        return grad_output_for_output, grad_left, grad_right, None
 
 class ReuseMmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -891,7 +785,7 @@ class Qwen3MLPExperts(nn.Module):
             if self.experts_gate_output_loss_input_grad_scale == 1:
                 gate_out_gs = gate_out_acts
             else:
-                gate_input_gs = ScaleGrad.apply(gate_input, self.experts_gate_output_loss_input_grad_scale, False)
+                gate_input_gs = scale_grad(gate_input, self.experts_gate_output_loss_input_grad_scale)
                 gate_out_gs_raw = torch.bmm(gate_input_gs, self.gate_proj)
                 gate_out_gs = self.act_fn(gate_out_gs_raw)
 
