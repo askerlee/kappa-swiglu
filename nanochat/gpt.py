@@ -743,7 +743,7 @@ class Qwen3MLPExperts(nn.Module):
         router_weight = router.w_g.weight.to(dtype=x.dtype)
         router_scores = (x * router_weight.unsqueeze(1)).sum(dim=-1)
         router_scores = router_scores.float()
-        router_score_norms = router_scores.norm(dim=1, keepdim=True).clamp_min_(1e-6)
+        router_score_norms = router_scores.norm(dim=1, keepdim=True).clamp_min(1e-6)
         normalized_scores = router_scores / router_score_norms
         normalized_scores = scale_grad(normalized_scores, grad_scale)
         return normalized_scores.to(dtype=x.dtype)
