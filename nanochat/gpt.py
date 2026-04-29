@@ -723,6 +723,7 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.experts_gate_output_loss_input_grad_scale = 0.1
+        self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
@@ -736,15 +737,15 @@ class Qwen3MLPExperts(nn.Module):
         assert router is not None, "Router reference is no longer valid"
         return router
 
-    def _compute_gate_proj_dynamic_bias(self, x, router):
+    def _compute_router_confidence_gate_scale(self, x, router, grad_scale=0.1):
         if self.gate_proj_bias is None:
             return None
-        with torch.no_grad():
-            router_weight = router.w_g.weight.to(dtype=x.dtype)
-            router_scores = (x * router_weight.unsqueeze(1)).sum(dim=-1)
-            router_scores = router_scores.float()
-            router_score_norms = router_scores.norm(dim=1, keepdim=True).clamp_min_(1e-6)
-            normalized_scores = router_scores / router_score_norms
+        router_weight = router.w_g.weight.to(dtype=x.dtype)
+        router_scores = (x * router_weight.unsqueeze(1)).sum(dim=-1)
+        router_scores = router_scores.float()
+        router_score_norms = router_scores.norm(dim=1, keepdim=True).clamp_min_(1e-6)
+        normalized_scores = router_scores / router_score_norms
+        normalized_scores = scale_grad(normalized_scores, grad_scale)
         return normalized_scores.to(dtype=x.dtype)
 
     def forward(self, x):
@@ -754,10 +755,10 @@ class Qwen3MLPExperts(nn.Module):
         router = self._get_router() if (self.debug or self.gate_proj_bias is not None) else None
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        dynamic_gate_scale = self._compute_gate_proj_dynamic_bias(gate_input, router)
-        if dynamic_gate_scale is not None:
+        router_confidence_gate_scale = self._compute_router_confidence_gate_scale(gate_input, router, grad_scale=self.router_confidence_gate_bias_grad_scale)
+        if router_confidence_gate_scale is not None:
             gate_out_raw.addcmul_(
-                dynamic_gate_scale.unsqueeze(-1),
+                router_confidence_gate_scale.unsqueeze(-1),
                 self.gate_proj_bias.unsqueeze(1),
                 value=-1,
             )
@@ -771,9 +772,9 @@ class Qwen3MLPExperts(nn.Module):
                 dims=[1],
             )
             gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
-            if dynamic_gate_scale is not None:
+            if router_confidence_gate_scale is not None:
                 gate_out_ortho_raw.addcmul_(
-                    dynamic_gate_scale.unsqueeze(-1),
+                    router_confidence_gate_scale.unsqueeze(-1),
                     self.gate_proj_bias.unsqueeze(1),
                     value=-1,
                 )
