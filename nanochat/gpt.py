@@ -696,7 +696,6 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_lr_scale = float(getattr(config, 'gate_proj_bias_lr_scale', 0.1))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
@@ -1213,7 +1212,6 @@ class GPT(nn.Module):
                         gate_proj_bias_lr_final_scale=1.0,
                         gate_proj_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
-        gate_proj_bias_lr_scale = float(getattr(self.config, 'gate_proj_bias_lr_scale', 0.1))
         ddp, rank, local_rank, world_size = get_dist_info()
 
         # Separate out all parameters into groups
@@ -1269,9 +1267,8 @@ class GPT(nn.Module):
                 kind='adamw',
                 name='gate_proj_bias',
                 params=gate_proj_bias_params,
-                lr=embedding_lr * dmodel_lr_scale * gate_proj_bias_lr_scale,
+                lr=0.0,
                 base_lr=embedding_lr * dmodel_lr_scale,
-                lr_scale_start=gate_proj_bias_lr_scale,
                 lr_scale_end=gate_proj_bias_lr_final_scale,
                 lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
                 betas=adam_betas,

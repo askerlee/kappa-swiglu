@@ -1,9 +1,26 @@
+import ast
+from pathlib import Path
+
 import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
 from nanochat import optim as optim_module
 from nanochat.optim import DistMuonAdamW, MuonAdamW
+
+
+def load_base_train_function(name: str):
+    base_train_path = Path(__file__).resolve().parents[1] / "scripts" / "base_train.py"
+    source = base_train_path.read_text(encoding="utf-8")
+    module = ast.parse(source, filename=str(base_train_path))
+    namespace = {}
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            function_module = ast.Module(body=[node], type_ignores=[])
+            ast.fix_missing_locations(function_module)
+            exec(compile(function_module, str(base_train_path), "exec"), namespace)
+            return namespace[name]
+    raise AssertionError(f"Function {name} not found in {base_train_path}")
 
 
 def test_adamw_step_updates_parameter_and_state():
@@ -268,7 +285,6 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         n_embd=8,
         n_head=2,
         use_exp_gate_proj_bias=True,
-        gate_proj_bias_lr_scale=0.25,
     )
     model = GPT(config)
 
@@ -297,9 +313,18 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
     assert gate_proj_bias_group is not None
     assert gate_proj_bias_group['kind'] == 'adamw'
     dmodel_lr_scale = (config.n_embd / 768) ** -0.5
-    assert gate_proj_bias_group['lr'] == 0.2 * dmodel_lr_scale * 0.25
+    assert gate_proj_bias_group['lr'] == 0.0
     assert gate_proj_bias_group['initial_lr'] == gate_proj_bias_group['lr']
     assert gate_proj_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
-    assert gate_proj_bias_group['lr_scale_start'] == 0.25
     assert gate_proj_bias_group['lr_scale_end'] == 1.0
     assert gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000
+
+
+def test_gate_proj_bias_lr_schedule_warms_then_decays_to_final_scale():
+    schedule = load_base_train_function("get_linear_lr_scale")
+
+    assert schedule(0, 100, end_scale=0.2, warmup_iterations=10) == 0.0
+    assert schedule(5, 100, end_scale=0.2, warmup_iterations=10) == 0.5
+    assert schedule(10, 100, end_scale=0.2, warmup_iterations=10) == 1.0
+    assert abs(schedule(55, 100, end_scale=0.2, warmup_iterations=10) - 0.6) < 1e-12
+    assert abs(schedule(100, 100, end_scale=0.2, warmup_iterations=10) - 0.2) < 1e-12

@@ -105,15 +105,13 @@ parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, na
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--gate-proj-bias-lr-scale", type=float, default=0.1,
-                    help="LR scale factor for gate_proj_bias AdamW params; the normal LR scheduler still anneals this group")
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=1.0,
-                    help="final LR scale factor for gate_proj_bias params after their dedicated warmup")
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.1,
+                    help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
-                    help="number of iterations to linearly ramp gate_proj_bias LR scale from --gate-proj-bias-lr-scale to --gate-proj-bias-lr-final-scale")
+                    help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to 1 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
-parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.3, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -286,7 +284,6 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        gate_proj_bias_lr_scale=args.gate_proj_bias_lr_scale,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -640,12 +637,20 @@ def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=-1, floor_fr
     return base_weight * anneal_multiplier
 
 
-def get_linear_lr_scale(it, start_scale=0.1, end_scale=1.0, warmup_iterations=1000):
-    if warmup_iterations <= 0:
-        return end_scale
+def get_linear_lr_scale(it, num_iterations, end_scale=1.0, warmup_iterations=1000):
+    num_iterations = max(0, num_iterations)
+    effective_warmup_iterations = min(max(0, warmup_iterations), num_iterations)
+    it = min(max(it, 0), num_iterations)
 
-    progress = min(max(it, 0), warmup_iterations) / warmup_iterations
-    return start_scale + (end_scale - start_scale) * progress
+    if effective_warmup_iterations > 0 and it < effective_warmup_iterations:
+        return it / effective_warmup_iterations
+
+    remaining_iterations = num_iterations - effective_warmup_iterations
+    if remaining_iterations <= 0:
+        return 1.0
+
+    decay_progress = min(max(it - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
+    return 1.0 + (end_scale - 1.0) * decay_progress
 
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
@@ -1196,7 +1201,7 @@ while True:
                 if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
                     gate_proj_bias_lr_scale = get_linear_lr_scale(
                         step,
-                        start_scale=group.get("lr_scale_start", 0.1),
+                        num_iterations,
                         end_scale=group.get("lr_scale_end", 1.0),
                         warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
                     )

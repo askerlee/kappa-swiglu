@@ -113,15 +113,11 @@ def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        gate_proj_bias_lr_scale=0.25,
         debug=False,
     )
 
     default_moe = Qwen3MLPExperts(default_config)
     override_moe = Qwen3MLPExperts(override_config)
-
-    assert default_moe.gate_proj_bias_lr_scale == 0.1
-    assert override_moe.gate_proj_bias_lr_scale == 0.25
 
 
 def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
