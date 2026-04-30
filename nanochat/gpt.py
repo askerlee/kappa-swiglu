@@ -642,8 +642,10 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         if use_moe:
             self.mlp = MOELayer(config, layer_idx)
-        else:
+        elif getattr(config, 'use_qwen3_dense_mlp', True):
             self.mlp = Qwen3MLP(config)
+        else:
+            self.mlp = MLP(config)
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)

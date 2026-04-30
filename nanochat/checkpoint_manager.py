@@ -35,6 +35,27 @@ def _patch_missing_config_keys(model_config_kwargs):
     if "num_moe_layers" not in model_config_kwargs:
         model_config_kwargs["num_moe_layers"] = -1
 
+
+def _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs):
+    """Infer whether dense layers use the new gated Qwen3 MLP or the legacy ReLU^2 MLP."""
+    if "use_qwen3_dense_mlp" in model_config_kwargs:
+        return
+
+    temp_config = GPTConfig(**model_config_kwargs)
+    moe_layer_indices = set(get_moe_layer_indices(temp_config))
+    missing_dense_gate_proj = False
+    for layer_idx in range(temp_config.n_layer):
+        if layer_idx in moe_layer_indices:
+            continue
+        gate_proj_key = f"transformer.h.{layer_idx}.mlp.gate_proj.weight"
+        if gate_proj_key not in model_data:
+            missing_dense_gate_proj = True
+            break
+
+    model_config_kwargs["use_qwen3_dense_mlp"] = not missing_dense_gate_proj
+    if missing_dense_gate_proj:
+        log0("Patching missing use_qwen3_dense_mlp in model config to False")
+
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
@@ -550,6 +571,7 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)
+    _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)

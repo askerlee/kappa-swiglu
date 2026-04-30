@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -211,6 +211,41 @@ def test_inspect_optimizer_shards_infers_world_size_from_available_files(tmp_pat
     assert shard_info["expected_ranks"] == [0]
     assert shard_info["available_ranks"] == [0]
     assert shard_info["missing_ranks"] == []
+
+
+def test_infer_use_qwen3_dense_mlp_disables_gated_dense_mlp_for_legacy_checkpoints():
+    model_config_kwargs = {
+        "n_layer": 4,
+        "n_exp": 2,
+        "moe_start_layer": 2,
+        "moe_layer_stride": 1,
+        "num_moe_layers": -1,
+    }
+    model_data = {
+        "transformer.h.0.mlp.c_fc.weight": torch.zeros(32, 8),
+        "transformer.h.0.mlp.c_proj.weight": torch.zeros(8, 32),
+        "transformer.h.1.mlp.c_fc.weight": torch.zeros(32, 8),
+        "transformer.h.1.mlp.c_proj.weight": torch.zeros(8, 32),
+    }
+
+    _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
+
+    assert model_config_kwargs["use_qwen3_dense_mlp"] is False
+
+
+def test_infer_use_qwen3_dense_mlp_keeps_gated_dense_mlp_when_gate_proj_exists():
+    model_config_kwargs = {
+        "n_layer": 2,
+        "n_exp": 1,
+    }
+    model_data = {
+        "transformer.h.0.mlp.gate_proj.weight": torch.zeros(32, 8),
+        "transformer.h.1.mlp.gate_proj.weight": torch.zeros(32, 8),
+    }
+
+    _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
+
+    assert model_config_kwargs["use_qwen3_dense_mlp"] is True
 
 
 def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):
