@@ -10,6 +10,7 @@ SPEC.loader.exec_module(BOOLQ_EVAL)
 
 compute_boolq_confusion_counts = BOOLQ_EVAL.compute_boolq_confusion_counts
 compute_average_boolq_margin = BOOLQ_EVAL.compute_average_boolq_margin
+compute_calibrated_boolq_accuracy = BOOLQ_EVAL.compute_calibrated_boolq_accuracy
 compute_class_conditional_boolq_margin_means = BOOLQ_EVAL.compute_class_conditional_boolq_margin_means
 normalize_boolq_answer = BOOLQ_EVAL.normalize_boolq_answer
 
@@ -67,6 +68,23 @@ def test_compute_average_boolq_margin_uses_yes_minus_no_logp():
     average_margin = compute_average_boolq_margin(details, data)
 
     assert average_margin == 1.75
+
+
+def test_compute_calibrated_boolq_accuracy_uses_tau_threshold():
+    data = [
+        {'choices': ['No', 'Yes']},
+        {'choices': ['Yes', 'No']},
+        {'choices': ['No', 'Yes']},
+    ]
+    details = [
+        {'index': 0, 'gold_idx': 1, 'choice_logps': [-2.0, -1.0]},
+        {'index': 1, 'gold_idx': 1, 'choice_logps': [-1.0, -1.4]},
+        {'index': 2, 'gold_idx': 0, 'choice_logps': [-1.0, -1.2]},
+    ]
+
+    calibrated_accuracy = compute_calibrated_boolq_accuracy(details, data, tau=0.3)
+
+    assert calibrated_accuracy == 2 / 3
 
 
 def test_compute_class_conditional_boolq_margin_means_splits_by_gold_label():

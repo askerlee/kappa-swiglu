@@ -146,6 +146,13 @@ def compute_class_conditional_boolq_margin_means(details, data):
     }
 
 
+def compute_calibrated_boolq_accuracy(details, data, tau=0.0):
+    """Compute accuracy after applying the calibrated decision rule margin > tau."""
+    margins = compute_boolq_margins(details, data)
+    num_correct = sum((entry['margin'] > tau) == entry['gold_is_yes'] for entry in margins)
+    return num_correct / len(margins)
+
+
 def load_boolq_data(max_examples):
     """Load BoolQ task metadata and examples from the eval bundle."""
     base_dir = get_base_dir()
@@ -231,11 +238,13 @@ def main():
         results = evaluate_task_detailed(model, tokenizer, data, device, task_meta)
 
     confusion = compute_boolq_confusion_counts(results['details'], data, tau=args.tau)
+    calibrated_accuracy = compute_calibrated_boolq_accuracy(results['details'], data, tau=args.tau)
     average_margin = compute_average_boolq_margin(results['details'], data)
     class_conditional_margins = compute_class_conditional_boolq_margin_means(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
-        print(f"Accuracy: {results['accuracy']:.4f}")
+        print(f"Original accuracy: {results['accuracy']:.4f}")
+        print(f"Calibrated accuracy: {calibrated_accuracy:.4f}")
         print(f"tau: {args.tau:.4f}")
         print(f"Average margin (logp_yes - logp_no): {average_margin:.4f}")
         print(f"mean_margin_yes_examples: {class_conditional_margins['mean_margin_yes_examples']:.4f}")
