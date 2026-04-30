@@ -106,6 +106,31 @@ def compute_boolq_confusion_counts(details, data):
     return counts
 
 
+def compute_average_boolq_margin(details, data):
+    """Compute the average per-example margin logp_yes - logp_no."""
+    margins = []
+    for detail in details:
+        item = data[detail['index']]
+        choice_logps = detail.get('choice_logps')
+        if choice_logps is None:
+            raise ValueError("BoolQ margins require per-choice log probabilities.")
+
+        yes_idx = None
+        no_idx = None
+        for idx, choice in enumerate(item['choices']):
+            if normalize_boolq_answer(choice):
+                yes_idx = idx
+            else:
+                no_idx = idx
+
+        if yes_idx is None or no_idx is None:
+            raise ValueError("Each BoolQ example must contain both a yes and a no choice.")
+
+        margins.append(choice_logps[yes_idx] - choice_logps[no_idx])
+
+    return sum(margins) / len(margins)
+
+
 def load_boolq_data(max_examples):
     """Load BoolQ task metadata and examples from the eval bundle."""
     base_dir = get_base_dir()
@@ -147,7 +172,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Evaluate BoolQ only and report TP/TN/FP/FN")
     parser.add_argument('--hf-path', type=str, default=None, help='HuggingFace model path (e.g. openai-community/gpt2-xl)')
     parser.add_argument('--model-tag', type=str, default=None, help='nanochat model tag to identify the checkpoint directory')
-    parser.add_argument('-i', '--source', type=str, default='base', required=True, help='Source of the model: base|sft|rl')
+    parser.add_argument('-i', '--source', type=str, default='base', help='Source of the model: base|sft|rl')
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--max-examples', type=int, default=-1, help='Max BoolQ examples to evaluate (-1 = all)')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
@@ -190,9 +215,11 @@ def main():
         results = evaluate_task_detailed(model, tokenizer, data, device, task_meta)
 
     confusion = compute_boolq_confusion_counts(results['details'], data)
+    average_margin = compute_average_boolq_margin(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
         print(f"Accuracy: {results['accuracy']:.4f}")
+        print(f"Average margin (logp_yes - logp_no): {average_margin:.4f}")
         print(f"TP: {confusion['tp']}")
         print(f"TN: {confusion['tn']}")
         print(f"FP: {confusion['fp']}")

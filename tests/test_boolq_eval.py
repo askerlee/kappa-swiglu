@@ -9,6 +9,7 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(BOOLQ_EVAL)
 
 compute_boolq_confusion_counts = BOOLQ_EVAL.compute_boolq_confusion_counts
+compute_average_boolq_margin = BOOLQ_EVAL.compute_average_boolq_margin
 normalize_boolq_answer = BOOLQ_EVAL.normalize_boolq_answer
 
 
@@ -35,3 +36,18 @@ def test_compute_boolq_confusion_counts_uses_yes_as_positive_class():
     confusion = compute_boolq_confusion_counts(details, data)
 
     assert confusion == {'tp': 1, 'tn': 1, 'fp': 1, 'fn': 1}
+
+
+def test_compute_average_boolq_margin_uses_yes_minus_no_logp():
+    data = [
+        {'choices': ['No', 'Yes']},
+        {'choices': ['Yes', 'No']},
+    ]
+    details = [
+        {'index': 0, 'choice_logps': [-3.0, -1.0]},
+        {'index': 1, 'choice_logps': [-0.5, -2.0]},
+    ]
+
+    average_margin = compute_average_boolq_margin(details, data)
+
+    assert average_margin == 1.75

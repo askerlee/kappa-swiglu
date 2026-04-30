@@ -231,8 +231,13 @@ def evaluate_example_details(idx, model, tokenizer, data, device, task_meta):
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
         pred_idx = -1
         gold_idx = -1
+        choice_logps = None
     elif task_type in ['multiple_choice', 'schema']:
         # For MC/schema: find the option with lowest average loss
+        choice_logps = [
+            -losses[i, si-1:ei-1].sum().item()
+            for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))
+        ]
         mean_losses = [losses[i, si-1:ei-1].mean().item()
                         for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
@@ -245,6 +250,7 @@ def evaluate_example_details(idx, model, tokenizer, data, device, task_meta):
         'is_correct': bool(is_correct),
         'pred_idx': pred_idx,
         'gold_idx': gold_idx,
+        'choice_logps': choice_logps,
     }
 
 
@@ -259,37 +265,30 @@ def evaluate_task_detailed(model, tokenizer, data, device, task_meta):
     """Evaluate a task and return accuracy plus per-example prediction details."""
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    correct = torch.zeros(len(data), dtype=torch.float32, device=device)
-    pred_indices = torch.zeros(len(data), dtype=torch.long, device=device)
-    gold_indices = torch.zeros(len(data), dtype=torch.long, device=device)
-    evaluated = torch.zeros(len(data), dtype=torch.long, device=device)
+    local_details = []
 
     for idx in range(rank, len(data), world_size):
         result = evaluate_example_details(idx, model, tokenizer, data, device, task_meta)
-        correct[idx] = float(result['is_correct'])
-        pred_indices[idx] = int(result['pred_idx'])
-        gold_indices[idx] = int(result['gold_idx'])
-        evaluated[idx] = 1
-
-    if world_size > 1:
-        dist.barrier()
-        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-        dist.all_reduce(pred_indices, op=dist.ReduceOp.SUM)
-        dist.all_reduce(gold_indices, op=dist.ReduceOp.SUM)
-        dist.all_reduce(evaluated, op=dist.ReduceOp.SUM)
-
-    details = []
-    for idx in range(len(data)):
-        was_evaluated = bool(evaluated[idx].item())
-        details.append({
+        local_details.append({
             'index': idx,
-            'is_correct': bool(correct[idx].item()),
-            'pred_idx': int(pred_indices[idx].item()) if was_evaluated else None,
-            'gold_idx': int(gold_indices[idx].item()) if was_evaluated else None,
+            'is_correct': bool(result['is_correct']),
+            'pred_idx': int(result['pred_idx']),
+            'gold_idx': int(result['gold_idx']),
+            'choice_logps': result['choice_logps'],
         })
 
+    if world_size > 1:
+        gathered_details = [None] * world_size
+        dist.all_gather_object(gathered_details, local_details)
+        details = [detail for rank_details in gathered_details for detail in rank_details]
+    else:
+        details = local_details
+
+    details.sort(key=lambda detail: detail['index'])
+    accuracy = sum(float(detail['is_correct']) for detail in details) / len(data)
+
     return {
-        'accuracy': correct.mean().item(),
+        'accuracy': accuracy,
         'details': details,
     }
 
