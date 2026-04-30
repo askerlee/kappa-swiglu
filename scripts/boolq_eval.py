@@ -108,6 +108,12 @@ def compute_boolq_confusion_counts(details, data):
 
 def compute_average_boolq_margin(details, data):
     """Compute the average per-example margin logp_yes - logp_no."""
+    margins = compute_boolq_margins(details, data)
+    return sum(entry['margin'] for entry in margins) / len(margins)
+
+
+def compute_boolq_margins(details, data):
+    """Compute per-example margins logp_yes - logp_no and gold labels."""
     margins = []
     for detail in details:
         item = data[detail['index']]
@@ -126,9 +132,23 @@ def compute_average_boolq_margin(details, data):
         if yes_idx is None or no_idx is None:
             raise ValueError("Each BoolQ example must contain both a yes and a no choice.")
 
-        margins.append(choice_logps[yes_idx] - choice_logps[no_idx])
+        margins.append({
+            'margin': choice_logps[yes_idx] - choice_logps[no_idx],
+            'gold_is_yes': normalize_boolq_answer(item['choices'][detail['gold_idx']]),
+        })
 
-    return sum(margins) / len(margins)
+    return margins
+
+
+def compute_class_conditional_boolq_margin_means(details, data):
+    """Compute mean margins separately for gold-yes and gold-no examples."""
+    margins = compute_boolq_margins(details, data)
+    yes_margins = [entry['margin'] for entry in margins if entry['gold_is_yes']]
+    no_margins = [entry['margin'] for entry in margins if not entry['gold_is_yes']]
+    return {
+        'mean_margin_yes_examples': sum(yes_margins) / len(yes_margins),
+        'mean_margin_no_examples': sum(no_margins) / len(no_margins),
+    }
 
 
 def load_boolq_data(max_examples):
@@ -216,10 +236,13 @@ def main():
 
     confusion = compute_boolq_confusion_counts(results['details'], data)
     average_margin = compute_average_boolq_margin(results['details'], data)
+    class_conditional_margins = compute_class_conditional_boolq_margin_means(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
         print(f"Accuracy: {results['accuracy']:.4f}")
         print(f"Average margin (logp_yes - logp_no): {average_margin:.4f}")
+        print(f"mean_margin_yes_examples: {class_conditional_margins['mean_margin_yes_examples']:.4f}")
+        print(f"mean_margin_no_examples: {class_conditional_margins['mean_margin_no_examples']:.4f}")
         print(f"TP: {confusion['tp']}")
         print(f"TN: {confusion['tn']}")
         print(f"FP: {confusion['fp']}")
