@@ -165,8 +165,8 @@ def forward_model(model, input_ids):
 
 
 @torch.inference_mode()
-def evaluate_example(idx, model, tokenizer, data, device, task_meta):
-    """Evaluate a single example, return True if correct, False otherwise"""
+def evaluate_example_details(idx, model, tokenizer, data, device, task_meta):
+    """Evaluate a single example and return prediction details."""
     item = data[idx]
     task_type = task_meta['task_type']
     num_fewshot = task_meta['num_fewshot']
@@ -229,16 +229,69 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         predicted_tokens = predictions[0, si-1:ei-1]
         actual_tokens = input_ids[0, si:ei]
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
+        pred_idx = -1
+        gold_idx = -1
     elif task_type in ['multiple_choice', 'schema']:
         # For MC/schema: find the option with lowest average loss
         mean_losses = [losses[i, si-1:ei-1].mean().item()
                         for i, (si, ei) in enumerate(zip(start_idxs, end_idxs))]
         pred_idx = mean_losses.index(min(mean_losses))
-        is_correct = pred_idx == item['gold']
+        gold_idx = int(item['gold'])
+        is_correct = pred_idx == gold_idx
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    return is_correct
+    return {
+        'is_correct': bool(is_correct),
+        'pred_idx': pred_idx,
+        'gold_idx': gold_idx,
+    }
+
+
+@torch.inference_mode()
+def evaluate_example(idx, model, tokenizer, data, device, task_meta):
+    """Evaluate a single example, return True if correct, False otherwise"""
+    result = evaluate_example_details(idx, model, tokenizer, data, device, task_meta)
+    return result['is_correct']
+
+
+def evaluate_task_detailed(model, tokenizer, data, device, task_meta):
+    """Evaluate a task and return accuracy plus per-example prediction details."""
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    correct = torch.zeros(len(data), dtype=torch.float32, device=device)
+    pred_indices = torch.zeros(len(data), dtype=torch.long, device=device)
+    gold_indices = torch.zeros(len(data), dtype=torch.long, device=device)
+    evaluated = torch.zeros(len(data), dtype=torch.long, device=device)
+
+    for idx in range(rank, len(data), world_size):
+        result = evaluate_example_details(idx, model, tokenizer, data, device, task_meta)
+        correct[idx] = float(result['is_correct'])
+        pred_indices[idx] = int(result['pred_idx'])
+        gold_indices[idx] = int(result['gold_idx'])
+        evaluated[idx] = 1
+
+    if world_size > 1:
+        dist.barrier()
+        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(pred_indices, op=dist.ReduceOp.SUM)
+        dist.all_reduce(gold_indices, op=dist.ReduceOp.SUM)
+        dist.all_reduce(evaluated, op=dist.ReduceOp.SUM)
+
+    details = []
+    for idx in range(len(data)):
+        was_evaluated = bool(evaluated[idx].item())
+        details.append({
+            'index': idx,
+            'is_correct': bool(correct[idx].item()),
+            'pred_idx': int(pred_indices[idx].item()) if was_evaluated else None,
+            'gold_idx': int(gold_indices[idx].item()) if was_evaluated else None,
+        })
+
+    return {
+        'accuracy': correct.mean().item(),
+        'details': details,
+    }
 
 
 def evaluate_task(model, tokenizer, data, device, task_meta):
@@ -246,17 +299,4 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
     This function is responsible for evaluating one task across many examples.
     It also handles dispatch to all processes if the script is run with torchrun.
     """
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
-    correct = torch.zeros(len(data), dtype=torch.float32, device=device)
-    # stride the examples to each rank
-    for idx in range(rank, len(data), world_size):
-        is_correct = evaluate_example(idx, model, tokenizer, data, device, task_meta)
-        correct[idx] = float(is_correct)
-    # sync results across all the processes if running distributed
-    if world_size > 1:
-        dist.barrier()
-        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-    # compute the mean
-    mean_correct = correct.mean().item()
-    return mean_correct
+    return evaluate_task_detailed(model, tokenizer, data, device, task_meta)['accuracy']
