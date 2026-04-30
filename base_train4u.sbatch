@@ -9,4 +9,4 @@
 
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
-torchrun --standalone --nproc_per_node=4 -m scripts.base_train --save-every 8889 --model-tag "$SLURM_JOB_ID" "$@"
+torchrun --standalone --nproc_per_node=4 -m scripts.base_train --save-every 8889 --wandb-api-key-file ~/.wandb_key_sh --model-tag "$SLURM_JOB_ID" "$@"
