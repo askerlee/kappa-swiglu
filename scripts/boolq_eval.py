@@ -84,17 +84,12 @@ def normalize_boolq_answer(text):
     raise ValueError(f"Unsupported BoolQ answer label: {text!r}")
 
 
-def compute_boolq_confusion_counts(details, data):
-    """Treat Yes as the positive class and compute TP/TN/FP/FN."""
+def compute_boolq_confusion_counts(details, data, tau=0.0):
+    """Treat Yes as the positive class and compute TP/TN/FP/FN using margin > tau."""
     counts = {'tp': 0, 'tn': 0, 'fp': 0, 'fn': 0}
-    for detail in details:
-        item = data[detail['index']]
-        pred_idx = detail['pred_idx']
-        gold_idx = detail['gold_idx']
-        if pred_idx is None or gold_idx is None:
-            raise ValueError("BoolQ confusion counts require multiple-choice predictions.")
-        pred_is_yes = normalize_boolq_answer(item['choices'][pred_idx])
-        gold_is_yes = normalize_boolq_answer(item['choices'][gold_idx])
+    for entry in compute_boolq_margins(details, data):
+        pred_is_yes = entry['margin'] > tau
+        gold_is_yes = entry['gold_is_yes']
         if pred_is_yes and gold_is_yes:
             counts['tp'] += 1
         elif pred_is_yes and not gold_is_yes:
@@ -195,6 +190,7 @@ def build_parser():
     parser.add_argument('-i', '--source', type=str, default='base', help='Source of the model: base|sft|rl')
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--max-examples', type=int, default=-1, help='Max BoolQ examples to evaluate (-1 = all)')
+    parser.add_argument('--tau', type=float, default=0.0, help='Predict yes when margin logp_yes - logp_no is greater than tau')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     return parser
@@ -234,12 +230,13 @@ def main():
     with autocast_ctx:
         results = evaluate_task_detailed(model, tokenizer, data, device, task_meta)
 
-    confusion = compute_boolq_confusion_counts(results['details'], data)
+    confusion = compute_boolq_confusion_counts(results['details'], data, tau=args.tau)
     average_margin = compute_average_boolq_margin(results['details'], data)
     class_conditional_margins = compute_class_conditional_boolq_margin_means(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
         print(f"Accuracy: {results['accuracy']:.4f}")
+        print(f"tau: {args.tau:.4f}")
         print(f"Average margin (logp_yes - logp_no): {average_margin:.4f}")
         print(f"mean_margin_yes_examples: {class_conditional_margins['mean_margin_yes_examples']:.4f}")
         print(f"mean_margin_no_examples: {class_conditional_margins['mean_margin_no_examples']:.4f}")

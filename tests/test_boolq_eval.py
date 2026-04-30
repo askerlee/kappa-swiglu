@@ -28,15 +28,30 @@ def test_compute_boolq_confusion_counts_uses_yes_as_positive_class():
         {'choices': ['Yes', 'No']},
     ]
     details = [
-        {'index': 0, 'pred_idx': 1, 'gold_idx': 1},  # TP
-        {'index': 1, 'pred_idx': 1, 'gold_idx': 1},  # TN
-        {'index': 2, 'pred_idx': 1, 'gold_idx': 0},  # FP
-        {'index': 3, 'pred_idx': 1, 'gold_idx': 0},  # FN
+        {'index': 0, 'gold_idx': 1, 'choice_logps': [-3.0, -1.0]},
+        {'index': 1, 'gold_idx': 1, 'choice_logps': [-3.0, -1.0]},
+        {'index': 2, 'gold_idx': 0, 'choice_logps': [-3.0, -1.0]},
+        {'index': 3, 'gold_idx': 0, 'choice_logps': [-3.0, -1.0]},
     ]
 
     confusion = compute_boolq_confusion_counts(details, data)
 
     assert confusion == {'tp': 1, 'tn': 1, 'fp': 1, 'fn': 1}
+
+
+def test_compute_boolq_confusion_counts_respects_tau_threshold():
+    data = [
+        {'choices': ['No', 'Yes']},
+        {'choices': ['Yes', 'No']},
+    ]
+    details = [
+        {'index': 0, 'gold_idx': 1, 'choice_logps': [-1.4, -1.0]},
+        {'index': 1, 'gold_idx': 1, 'choice_logps': [-1.0, -1.3]},
+    ]
+
+    confusion = compute_boolq_confusion_counts(details, data, tau=0.5)
+
+    assert confusion == {'tp': 0, 'tn': 1, 'fp': 0, 'fn': 1}
 
 
 def test_compute_average_boolq_margin_uses_yes_minus_no_logp():
