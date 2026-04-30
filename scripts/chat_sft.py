@@ -676,8 +676,6 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
-            "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,

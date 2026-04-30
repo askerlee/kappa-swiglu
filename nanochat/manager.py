@@ -15,8 +15,6 @@ class MOEManager:
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
-            "experts_ortho_loss": [],
-            "experts_gate_output_loss": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
@@ -31,8 +29,6 @@ class MOEManager:
         self._start_frac_names = {
             "router_ortho_loss",
             "router_ortho_loss_gate_proj",
-            "experts_ortho_loss",
-            "experts_gate_output_loss",
         }
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",

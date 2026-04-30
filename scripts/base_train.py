@@ -177,7 +177,6 @@ parser.add_argument("--router-ortho-block-size", type=int, default=100, help="bl
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
 parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
-parser.add_argument("--experts-gate-output-loss-weight", type=float, default=1e-5, help="weight for expert gate z loss")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
@@ -371,8 +370,6 @@ def build_model_meta(depth):
         gate_proj_bias_lr_scale=args.gate_proj_bias_lr_scale,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
         dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
-        # this is the alpha in the paper that scales down gradients to expert gate projection weights during router orthogonality loss computation.
-        experts_gate_output_loss_weight=args.experts_gate_output_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1288,8 +1285,6 @@ while True:
             'router_z_loss': 0.0,
             router_ortho_loss_name: 0.0,
             'router_ortho_loss_gate_proj': 0.0,
-            'experts_ortho_loss': 0.0,
-            'experts_gate_output_loss': 0.0,
             'dense_gate_proj_bias_l2_loss': 0.0,
             'exp_gate_proj_bias_l2_loss': 0.0,
             'drop_rate_per_ks': None,
@@ -1394,8 +1389,6 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
-            "train/experts_gate_output_loss_step": losses['experts_gate_output_loss'],
             "train/dense_gate_proj_bias_l2_loss_step": losses['dense_gate_proj_bias_l2_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
             "lrm": lrm,

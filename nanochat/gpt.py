@@ -713,16 +713,14 @@ class Qwen3MLPExperts(nn.Module):
             self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
         else:
             self.gate_proj_bias = None
-        self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
+        self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
-        self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.experts_gate_output_loss_input_grad_scale = 0.1
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
         # Weak reference to the router. Avoid registering it as a child module.
@@ -780,23 +778,6 @@ class Qwen3MLPExperts(nn.Module):
                 )
             gate_out_ortho_acts = self.act_fn(gate_out_ortho_raw)
 
-        # NOTE: use_experts_gate_output_loss is disabled by default.
-        if self.training and self.use_experts_gate_output_loss:
-            # experts_gate_output_loss_input_grad_scale is hardcoded as 0.1
-            if self.experts_gate_output_loss_input_grad_scale == 1:
-                gate_out_gs = gate_out_acts
-            else:
-                gate_input_gs = scale_grad(gate_input, self.experts_gate_output_loss_input_grad_scale)
-                gate_out_gs_raw = torch.bmm(gate_input_gs, self.gate_proj)
-                gate_out_gs = self.act_fn(gate_out_gs_raw)
-
-            # gate_out_gs: [n_exp, capacity, intermediate_size]
-            # We treat each (token-slot, intermediate-dim) pair as a routing decision over experts,
-            # so expert dimension should be the final logits dimension.
-            gate_out_gs = gate_out_gs.permute(1, 2, 0)  # [capacity, intermediate_size, n_exp]
-            experts_gate_output_loss = (gate_out_gs ** 2).mean()
-            MANAGER.add("experts_gate_output_loss", experts_gate_output_loss)
-
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
         proj_out = torch.bmm(x, self.c_proj)
@@ -829,7 +810,6 @@ class MOELayer(nn.Module):
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
-        self.use_experts_gate_output_loss = config.use_experts_gate_output_loss
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -962,26 +942,6 @@ class MOELayer(nn.Module):
         ).sum(dim=1).mean()
         sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
         return ortho_loss, sub_losses
-                
-    # Compute orthogonality loss between expert weight matrices.
-    # This is an ablation study of arXiv:2601.00457.
-    def compute_experts_ortho_loss(self):
-        if not self.use_qwen3_moe_mlp:
-            return torch.tensor(0.0, device=self.experts.c_fc.device)
-
-        W = self.experts.c_fc  # [n_exp, n_embd, 4*n_embd]
-        n_exp = W.shape[0]
-        if n_exp < 2:
-            return W.new_zeros(())
-
-        X = W.reshape(n_exp, -1).float()  # do math in fp32. long vector math is unstable in fp16/bf16.
-        X = X / (X.norm(dim=1, keepdim=True) + 1e-12)  # normalize per expert
-
-        G = X @ X.t()  # cosine-sim Gram matrix, diag ~ 1
-        offdiag = torch.triu(G, diagonal=1)
-        # penalize non-orthogonality without sign cancellation
-        loss = (offdiag ** 2).mean()
-        return loss.to(W.dtype)
 
 
 class GPT(nn.Module):
@@ -1404,8 +1364,6 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
-                   'experts_ortho_loss': 0,
-                   'experts_gate_output_loss': 0,
                                      'dense_gate_proj_bias_l2_loss': 0,
                                      'exp_gate_proj_bias_l2_loss': 0,
                    'drop_rate_per_ks': None,
@@ -1461,11 +1419,6 @@ class GPT(nn.Module):
                     sub_loss = MANAGER.aggregate(sub_loss_name)
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
-            if self.config.n_exp > 1 and self.config.use_experts_gate_output_loss:
-                experts_gate_output_loss = MANAGER.aggregate("experts_gate_output_loss")
-                loss += self.config.experts_gate_output_loss_weight * experts_gate_output_loss
-                losses['experts_gate_output_loss'] = experts_gate_output_loss.detach() if isinstance(experts_gate_output_loss, torch.Tensor) else experts_gate_output_loss
-                MANAGER.reset("experts_gate_output_loss")
 
             dense_gate_proj_bias_l2_loss, exp_gate_proj_bias_l2_loss = self.compute_gate_proj_bias_l2_losses()
             losses['dense_gate_proj_bias_l2_loss'] = dense_gate_proj_bias_l2_loss

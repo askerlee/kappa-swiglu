@@ -11,7 +11,6 @@ def test_dense_gate_projection_is_applied_before_fc_gating():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -38,7 +37,6 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_w
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -78,7 +76,6 @@ def test_dynamic_gate_projection_bias_does_not_backprop_into_router_weights():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -190,7 +187,6 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
         use_aux_loss=False,
         use_router_z_loss=False,
         use_router_ortho_loss=False,
-        use_experts_gate_output_loss=False,
         use_exp_gate_proj_bias=True,
         use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.0,
@@ -210,7 +206,6 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
         use_aux_loss=False,
         use_router_z_loss=False,
         use_router_ortho_loss=False,
-        use_experts_gate_output_loss=False,
         use_exp_gate_proj_bias=True,
         use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.7,
@@ -250,7 +245,6 @@ def test_dense_gate_projection_has_expected_shape():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
 
@@ -267,7 +261,6 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
 
@@ -282,7 +275,6 @@ def test_qwen3_experts_use_dense_gate_projection_only():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
 
@@ -301,7 +293,6 @@ def test_all_moe_layers_use_dense_gate_projection():
         n_exp=2,
         n_embd=8,
         n_head=2,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
 
@@ -319,7 +310,6 @@ def test_qwen3_experts_do_not_expose_low_rank_gate_factors():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_experts_gate_output_loss=False,
         debug=False,
     )
 

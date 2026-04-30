@@ -30,7 +30,6 @@ class GPTConfig:
         gate_proj_bias_lr_scale: float = 0.1,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         dense_gate_proj_bias_l2_loss_weight: float = 0.0,
-        use_experts_gate_output_loss: bool = False,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
@@ -38,7 +37,6 @@ class GPTConfig:
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
         router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
-        experts_gate_output_loss_weight: float = 1e-5,  # default weight for gate output regularization loss
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
@@ -57,6 +55,8 @@ class GPTConfig:
         debug: bool = False,
         **kwargs,
     ):        
+        kwargs.pop('use_experts_gate_output_loss', None)
+        kwargs.pop('experts_gate_output_loss_weight', None)
         self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
@@ -90,14 +90,12 @@ class GPTConfig:
         self.gate_proj_bias_lr_scale = float(gate_proj_bias_lr_scale)
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
         self.dense_gate_proj_bias_l2_loss_weight = float(dense_gate_proj_bias_l2_loss_weight)
-        self.use_experts_gate_output_loss = use_experts_gate_output_loss
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        self.experts_gate_output_loss_weight = experts_gate_output_loss_weight
         legacy_stride = kwargs.pop('stride', None)
         if legacy_stride is not None:
             moe_layer_stride = legacy_stride
