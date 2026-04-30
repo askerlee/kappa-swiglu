@@ -101,7 +101,6 @@ parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', co
                     help="Enable blockwise on/off schedule for router-ortho loss to counter the memory effect of Muon")
 parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
-parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
@@ -943,7 +942,9 @@ while True:
         router_ortho_is_on, router_ortho_gate_random_u, router_ortho_block_idx = 1.0, 1.0, step // args.router_ortho_block_size
 
     router_ortho_loss_on_scale = 1.0
-    if router_ortho_blockwise_active and router_ortho_is_on > 0.0 and args.router_ortho_blockwise_scale_preserve and args.router_ortho_on_prob < 1.0:
+    # If blockwise router-ortho is active but the gate is only on for a fraction of the blocks, 
+    # we scale up the loss when it's on to maintain a stable loss scale and avoid underflow issues.
+    if router_ortho_blockwise_active and router_ortho_is_on > 0.0 and args.router_ortho_on_prob < 1.0:
         router_ortho_loss_on_scale = 1.0 / args.router_ortho_on_prob
     router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
 
