@@ -97,7 +97,8 @@ parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help
 parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
-parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=False, help="enable blockwise on/off schedule for router-ortho loss")
+parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=True, 
+                    help="Enable blockwise on/off schedule for router-ortho loss to counter the memory effect of Muon")
 parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
 parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
 parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, nargs='?', const=True, default=True, help="when a router-ortho block is active, scale by 1/on_prob to preserve expected loss weight")
@@ -719,17 +720,6 @@ def get_dense_gate_proj_bias_stat_layer_indices(model):
     ][:2]
 
 def collect_weight_grad_stats(model, losses, moe_layer_indices):
-    def compute_row_diversity_score(weight):
-        # weight: [n_exp, n_rows, row_dim]
-        _, n_rows, _ = weight.shape
-        if n_rows < 2:
-            return weight.new_zeros(weight.shape[0])
-        weight = weight.float()
-        weight = weight / weight.norm(dim=2, keepdim=True).clamp_min(1e-12)
-        cosine = torch.bmm(weight, weight.transpose(1, 2))
-        offdiag_sum = cosine.sum(dim=(1, 2)) - torch.diagonal(cosine, dim1=-2, dim2=-1).sum(dim=1)
-        return offdiag_sum / (n_rows * (n_rows - 1))
-
     # weight: [n_exp, n_rows, row_dim]
     # returns: [n_exp, n_rows], the ratio of the mean component to the overall norm 
     # for each row. Higher means more of the row is aligned with the mean direction.
@@ -746,7 +736,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     router_grad_self_alignments = []
     router_weight_exp_gate_alignments = []
     gate_proj_row_mean_component_ratios = []
-    c_fc_diversity_scores = []
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
@@ -784,10 +773,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 if exp_gate_proj_bias is not None:
                     losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
-                exp_cfc_weight = layer.mlp.experts.c_fc
-                c_fc_diversity_score = compute_row_diversity_score(exp_cfc_weight)
-                c_fc_diversity_scores.append(c_fc_diversity_score)
-                losses[f'c_fc_diversity_score_{i}'] = c_fc_diversity_score.mean().item()
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                 # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
@@ -865,8 +850,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
     gate_proj_row_mean_component_ratios = torch.stack(gate_proj_row_mean_component_ratios, dim=0) if gate_proj_row_mean_component_ratios else None
     losses['gate_proj_row_mean_component_ratios'] = gate_proj_row_mean_component_ratios
-    c_fc_diversity_scores = torch.stack(c_fc_diversity_scores, dim=0) if c_fc_diversity_scores else None
-    losses['c_fc_diversity_scores'] = c_fc_diversity_scores
     exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
     losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
@@ -1290,7 +1273,6 @@ while True:
             if expert_utilities is not None:
                 layer_expert_utilities = expert_utilities[moe_layer_to_stats_idx[i]]
                 log_data.update({f"inspect/expert_utility_min_{i}": layer_expert_utilities.min().item()})
-                log_data.update({f"inspect/expert_utility_max_{i}": layer_expert_utilities.max().item()})
                 log_data.update({f"inspect/expert_utility_mean_{i}": layer_expert_utilities.mean().item()})
             if f'router_row_norm_{i}' in losses:
                 log_data.update({f"inspect/router_row_norm_{i}": losses[f'router_row_norm_{i}']})
@@ -1298,8 +1280,6 @@ while True:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
             if f'exp_gate_proj_bias_mean_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
-            if f'c_fc_diversity_score_{i}' in losses:
-                log_data.update({f"inspect/c_fc_diversity_score_{i}": losses[f'c_fc_diversity_score_{i}']})
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
             if f'router_grad_norm_top_{i}' in losses:
