@@ -26,10 +26,8 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        use_dense_gate_proj_bias: bool = False,  # add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU
         gate_proj_bias_lr_scale: float = 0.1,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
-        dense_gate_proj_bias_l2_loss_weight: float = 0.0,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
@@ -83,13 +81,13 @@ class GPTConfig:
             )
         self.router_ortho_loss_target = router_ortho_loss_target
         legacy_gate_proj_bias_grad_scale = kwargs.pop('gate_proj_bias_grad_scale', None)
+        kwargs.pop('use_dense_gate_proj_bias', None)
+        kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         if legacy_gate_proj_bias_grad_scale is not None and gate_proj_bias_lr_scale == 0.1:
             gate_proj_bias_lr_scale = legacy_gate_proj_bias_grad_scale
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
-        self.use_dense_gate_proj_bias = bool(use_dense_gate_proj_bias)
         self.gate_proj_bias_lr_scale = float(gate_proj_bias_lr_scale)
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
-        self.dense_gate_proj_bias_l2_loss_weight = float(dense_gate_proj_bias_l2_loss_weight)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight

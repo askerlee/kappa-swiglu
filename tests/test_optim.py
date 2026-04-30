@@ -225,7 +225,6 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
         n_embd=8,
         n_head=2,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
     )
     model = GPT(config)
 
@@ -239,8 +238,6 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     moe_gate_bias = []
     for block in model.transformer.h:
         mlp = getattr(block, 'mlp', None)
-        if hasattr(mlp, 'gate_proj_bias') and mlp.gate_proj_bias is not None:
-            dense_gate_bias.append(mlp.gate_proj_bias)
         if hasattr(mlp, 'experts') and getattr(mlp.experts, 'gate_proj_bias', None) is not None:
             moe_gate_bias.append(mlp.experts.gate_proj_bias)
 
@@ -257,11 +254,8 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
         for param in group['params']
     }
 
-    assert dense_gate_bias
     assert moe_gate_bias
-    assert all(param not in muon_params for param in dense_gate_bias)
     assert all(param not in muon_params for param in moe_gate_bias)
-    assert all(param in adamw_params for param in dense_gate_bias)
     assert all(param in adamw_params for param in moe_gate_bias)
 
 
@@ -274,7 +268,6 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         n_embd=8,
         n_head=2,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         gate_proj_bias_lr_scale=0.25,
     )
     model = GPT(config)
@@ -288,12 +281,9 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         gate_proj_bias_lr_warmup_iterations=1000,
     )
 
-    dense_gate_proj_bias_params = []
     moe_gate_proj_bias_params = []
     for block in model.transformer.h:
         mlp = getattr(block, 'mlp', None)
-        if getattr(mlp, 'gate_proj_bias', None) is not None:
-            dense_gate_proj_bias_params.append(mlp.gate_proj_bias)
         experts = getattr(mlp, 'experts', None)
         if getattr(experts, 'gate_proj_bias', None) is not None:
             moe_gate_proj_bias_params.append(experts.gate_proj_bias)
@@ -301,7 +291,7 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
     gate_proj_bias_group = None
     for group in optimizer.param_groups:
         params = set(group['params'])
-        if params == set(dense_gate_proj_bias_params + moe_gate_proj_bias_params):
+        if params == set(moe_gate_proj_bias_params):
             gate_proj_bias_group = group
 
     assert gate_proj_bias_group is not None

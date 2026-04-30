@@ -70,7 +70,7 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_w
     torch.testing.assert_close(actual, expected)
 
 
-def test_dynamic_gate_projection_bias_does_not_backprop_into_router_weights():
+def test_dynamic_gate_projection_bias_backprops_into_router_weights():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -86,62 +86,20 @@ def test_dynamic_gate_projection_bias_does_not_backprop_into_router_weights():
     out = experts(x).sum()
     out.backward()
 
-    assert router.w_g.weight.grad is None
+    assert router.w_g.weight.grad is not None
 
 
-def test_dense_qwen3_gate_projection_bias_is_added_after_activation_when_enabled():
-    torch.manual_seed(0)
+def test_dense_qwen3_gate_projection_has_no_bias_parameter():
     config = GPTConfig(
         n_exp=1,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
-        debug=False,
-    )
-    mlp = Qwen3MLP(config)
-
-    x = torch.randn(5, config.n_embd)
-
-    with torch.no_grad():
-        mlp.gate_proj.weight.copy_(torch.randn_like(mlp.gate_proj.weight))
-        mlp.gate_proj_bias.copy_(torch.randn_like(mlp.gate_proj_bias))
-        mlp.c_fc.weight.copy_(torch.randn_like(mlp.c_fc.weight))
-        mlp.c_proj.weight.copy_(torch.randn_like(mlp.c_proj.weight))
-        gate_out = mlp.act_fn(mlp.gate_proj(x)) + mlp.gate_proj_bias
-        expected = mlp.c_proj(gate_out * mlp.c_fc(x))
-
-    actual = mlp(x)
-    torch.testing.assert_close(actual, expected)
-
-
-def test_dense_qwen3_gate_projection_bias_has_expected_shape_when_enabled():
-    config = GPTConfig(
-        n_exp=1,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         debug=False,
     )
 
     mlp = Qwen3MLP(config)
 
-    assert mlp.gate_proj_bias is not None
-    assert mlp.gate_proj_bias.ndim == 1
-    assert mlp.gate_proj_bias.shape == (4 * config.n_embd,)
-
-
-def test_dense_qwen3_gate_projection_bias_stays_disabled_without_dense_flag():
-    config = GPTConfig(
-        n_exp=1,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=False,
-        debug=False,
-    )
-
-    mlp = Qwen3MLP(config)
-
-    assert mlp.gate_proj_bias is None
+    assert not hasattr(mlp, 'gate_proj_bias')
 
 
 def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
@@ -149,30 +107,24 @@ def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         debug=False,
     )
     override_config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         gate_proj_bias_lr_scale=0.25,
         debug=False,
     )
 
-    default_dense = Qwen3MLP(default_config)
     default_moe = Qwen3MLPExperts(default_config)
-    override_dense = Qwen3MLP(override_config)
     override_moe = Qwen3MLPExperts(override_config)
 
-    assert default_dense.gate_proj_bias_lr_scale == 0.1
     assert default_moe.gate_proj_bias_lr_scale == 0.1
-    assert override_dense.gate_proj_bias_lr_scale == 0.25
     assert override_moe.gate_proj_bias_lr_scale == 0.25
 
 
-def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_layers():
+def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
     torch.manual_seed(0)
     base_config = GPTConfig(
         sequence_len=8,
@@ -188,9 +140,7 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
         use_router_z_loss=False,
         use_router_ortho_loss=False,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.0,
-        dense_gate_proj_bias_l2_loss_weight=0.0,
         debug=False,
     )
     penalized_config = GPTConfig(
@@ -207,9 +157,7 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
         use_router_z_loss=False,
         use_router_ortho_loss=False,
         use_exp_gate_proj_bias=True,
-        use_dense_gate_proj_bias=True,
         exp_gate_proj_bias_l2_loss_weight=0.7,
-        dense_gate_proj_bias_l2_loss_weight=0.3,
         debug=False,
     )
 
@@ -218,10 +166,7 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
     penalized_model.load_state_dict(deepcopy(base_model.state_dict()))
 
     with torch.no_grad():
-        penalized_model.transformer.h[0].mlp.gate_proj_bias.zero_()
         penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.zero_()
-        penalized_model.transformer.h[2].mlp.gate_proj_bias.zero_()
-        penalized_model.transformer.h[0].mlp.gate_proj_bias.fill_(2.0)
         penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(3.0)
         base_model.load_state_dict(deepcopy(penalized_model.state_dict()))
 
@@ -231,9 +176,7 @@ def test_gate_proj_bias_l2_losses_are_reported_separately_for_dense_and_moe_laye
     base_loss, base_losses = base_model(idx, targets)
     penalized_loss, penalized_losses = penalized_model(idx, targets)
 
-    assert penalized_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
-    assert base_losses['dense_gate_proj_bias_l2_loss'].item() == 2.0
     assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
     if torch.isnan(base_loss) and torch.isnan(penalized_loss):
         assert True

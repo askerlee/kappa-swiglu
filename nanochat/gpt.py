@@ -677,13 +677,7 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.gate_proj_bias_lr_scale = float(getattr(config, 'gate_proj_bias_lr_scale', 0.1))
-        self.use_gate_proj_bias = False # bool(getattr(config, 'use_dense_gate_proj_bias', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        if self.use_gate_proj_bias:
-            self.gate_proj_bias = nn.Parameter(torch.empty(self.intermediate_size))
-        else:
-            self.gate_proj_bias = None
         # up_proj -> c_fc, down_proj -> c_proj
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -692,8 +686,6 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x):
         gate_out = self.act_fn(self.gate_proj(x))
-        if self.gate_proj_bias is not None:
-            gate_out = gate_out + self.gate_proj_bias
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -1001,22 +993,17 @@ class GPT(nn.Module):
         self.register_buffer("sin", sin, persistent=False)
 
     def compute_gate_proj_bias_l2_losses(self):
-        dense_losses = []
         moe_losses = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, Qwen3MLP):
-                if mlp.gate_proj_bias is not None:
-                    dense_losses.append(mlp.gate_proj_bias.float().square().mean())
-            elif isinstance(mlp, MOELayer):
+            if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if experts is not None and experts.gate_proj_bias is not None:
                     moe_losses.append(experts.gate_proj_bias.float().square().mean())
 
         device = self.transformer.wte.weight.device
-        dense_loss = torch.stack(dense_losses).mean() if dense_losses else torch.zeros((), device=device)
         moe_loss = torch.stack(moe_losses).mean() if moe_losses else torch.zeros((), device=device)
-        return dense_loss, moe_loss
+        return moe_loss
 
     @torch.no_grad()
     def init_weights(self):
@@ -1049,8 +1036,6 @@ class GPT(nn.Module):
 
             if isinstance(block.mlp, Qwen3MLP):
                 torch.nn.init.uniform_(block.mlp.gate_proj.weight, -s, s)
-                if block.mlp.gate_proj_bias is not None:
-                    torch.nn.init.zeros_(block.mlp.gate_proj_bias)
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
             elif isinstance(block.mlp, MLP):
@@ -1364,8 +1349,7 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
-                                     'dense_gate_proj_bias_l2_loss': 0,
-                                     'exp_gate_proj_bias_l2_loss': 0,
+                   'exp_gate_proj_bias_l2_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -1420,9 +1404,7 @@ class GPT(nn.Module):
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
 
-            dense_gate_proj_bias_l2_loss, exp_gate_proj_bias_l2_loss = self.compute_gate_proj_bias_l2_losses()
-            losses['dense_gate_proj_bias_l2_loss'] = dense_gate_proj_bias_l2_loss
-            losses['exp_gate_proj_bias_l2_loss'] = exp_gate_proj_bias_l2_loss
+            losses['exp_gate_proj_bias_l2_loss'] = self.compute_gate_proj_bias_l2_losses()
         else:
             # inference: just return the logits directly
             return logits

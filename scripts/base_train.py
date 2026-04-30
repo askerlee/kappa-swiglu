@@ -179,8 +179,6 @@ parser.add_argument("--router-ortho-blockwise-scale-preserve", type=str2bool, na
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-dense-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
-                    help="add a learnable bias to dense Qwen3 gate activations after gate_proj and SiLU")
 parser.add_argument("--gate-proj-bias-lr-scale", type=float, default=0.1,
                     help="LR scale factor for gate_proj_bias AdamW params; the normal LR scheduler still anneals this group")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=1.0,
@@ -188,8 +186,6 @@ parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=1.0,
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from --gate-proj-bias-lr-scale to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
-# The dense gate_proj_bias more tends to diverge, so we use a higher weight for its L2 loss to counter it.
-parser.add_argument("--dense-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for dense gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.3, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -366,10 +362,8 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        use_dense_gate_proj_bias=args.use_dense_gate_proj_bias,
         gate_proj_bias_lr_scale=args.gate_proj_bias_lr_scale,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
-        dense_gate_proj_bias_l2_loss_weight=args.dense_gate_proj_bias_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1027,7 +1021,6 @@ while True:
         num_anneal_iterations=gate_proj_bias_l2_num_anneal_iterations,
         floor_frac=args.gate_proj_bias_l2_loss_floor_frac,
     )
-    dense_gate_proj_bias_l2_loss_weight = args.dense_gate_proj_bias_l2_loss_weight
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
         router_ortho_blockwise_active = True
@@ -1285,7 +1278,6 @@ while True:
             'router_z_loss': 0.0,
             router_ortho_loss_name: 0.0,
             'router_ortho_loss_gate_proj': 0.0,
-            'dense_gate_proj_bias_l2_loss': 0.0,
             'exp_gate_proj_bias_l2_loss': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -1307,10 +1299,6 @@ while True:
             if router_ortho_loss is None:
                 router_ortho_loss = 0.0
             loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
-            dense_gate_proj_bias_l2_loss = micro_losses.get("dense_gate_proj_bias_l2_loss")
-            if dense_gate_proj_bias_l2_loss is None:
-                dense_gate_proj_bias_l2_loss = 0.0
-            loss = loss + dense_gate_proj_bias_l2_loss_weight * dense_gate_proj_bias_l2_loss
             exp_gate_proj_bias_l2_loss = micro_losses.get("exp_gate_proj_bias_l2_loss")
             if exp_gate_proj_bias_l2_loss is None:
                 exp_gate_proj_bias_l2_loss = 0.0
@@ -1389,7 +1377,6 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/dense_gate_proj_bias_l2_loss_step": losses['dense_gate_proj_bias_l2_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
             "lrm": lrm,
             "dt": dt,
@@ -1399,7 +1386,6 @@ while True:
         }
         log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
-        log_data["train/dense_gate_proj_bias_l2_loss_weight"] = dense_gate_proj_bias_l2_loss_weight
         log_data["train/exp_gate_proj_bias_l2_loss_weight"] = exp_gate_proj_bias_l2_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
@@ -1453,8 +1439,6 @@ while True:
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
-            if f'exp_gate_proj_bias_mean_{i}' in losses:
-                log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
                         
         wandb_run.log(log_data, step=step)
 
