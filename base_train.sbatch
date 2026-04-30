@@ -9,5 +9,4 @@
 
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
-export BASE_TRAIN_EXTRA_ARGS="$@"
 python -m scripts.base_train --save-every 8889 --model-tag "$SLURM_JOB_ID" "$@"

@@ -18,8 +18,6 @@ import json
 import time
 import math
 import argparse
-import shlex
-import subprocess
 import sys
 from contextlib import nullcontext, contextmanager
 import re
@@ -50,79 +48,6 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
-
-def arg_was_explicitly_set(argv, option_name):
-    return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
-
-def parse_milestones_arg(milestones_arg):
-    if not milestones_arg:
-        return []
-    milestones = []
-    for raw in milestones_arg.split(','):
-        token = raw.strip()
-        if not token:
-            continue
-        try:
-            milestone = int(token)
-        except ValueError as exc:
-            raise argparse.ArgumentTypeError(
-                f"Invalid milestone '{token}'. Milestones must be integers."
-            ) from exc
-        if milestone < 0:
-            raise argparse.ArgumentTypeError(
-                f"Invalid milestone '{token}'. Milestones must be >= 0."
-            )
-        milestones.append(milestone)
-    return sorted(set(milestones))
-
-
-def strip_and_override_runtime_args(argv, remaining_milestones, resume_from_step):
-    cleaned_argv = []
-    skip_next = False
-    for token in argv:
-        if skip_next:
-            skip_next = False
-            continue
-        if token == "--milestones":
-            skip_next = True
-            continue
-        if token == "--resume-from-step":
-            skip_next = True
-            continue
-        if token.startswith("--milestones="):
-            continue
-        if token.startswith("--resume-from-step="):
-            continue
-        cleaned_argv.append(token)
-
-    if remaining_milestones:
-        cleaned_argv.extend(["--milestones", ",".join(str(m) for m in remaining_milestones)])
-    cleaned_argv.extend(["--resume-from-step", str(resume_from_step)])
-
-    return cleaned_argv
-
-
-def build_self_command_with_milestones(remaining_milestones, resume_from_step):
-    # Slurm path: if extra submit-time args were captured in base_train.sbatch,
-    # relaunch via sbatch so the new training run gets a fresh allocation.
-    base_train_extra_args = os.environ.get("BASE_TRAIN_EXTRA_ARGS")
-    slurm_job_id = os.environ.get("SLURM_JOB_ID", "")
-    if slurm_job_id and base_train_extra_args is not None:
-        try:
-            slurm_extra_argv = shlex.split(base_train_extra_args)
-        except ValueError:
-            slurm_extra_argv = []
-        slurm_extra_argv = strip_and_override_runtime_args(
-            slurm_extra_argv,
-            remaining_milestones,
-            resume_from_step,
-        )
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sbatch_script = os.path.join(repo_root, "base_train.sbatch")
-        cmd_parts = ["sbatch", sbatch_script, *slurm_extra_argv]
-        return " ".join(shlex.quote(part) for part in cmd_parts)
-    else:
-        return None
 
 
 def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
@@ -241,7 +166,6 @@ parser.add_argument("--sample-every", type=int, default=1000, help="sample from 
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
-parser.add_argument("--milestones", type=str, default="", help="comma-separated iteration milestones; when a checkpoint save crosses a milestone, spawn this script again with that milestone removed")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
@@ -270,7 +194,6 @@ if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 
 user_config = vars(args).copy()  # for logging
-milestones = parse_milestones_arg(args.milestones)
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
@@ -979,15 +902,9 @@ else:
                 f"step {last_core_eval_step:06d}."
             )
 
-pending_milestones = [m for m in milestones if m > step]
-if milestones:
-    print0(f"Milestones configured: {milestones}")
-if milestones and not pending_milestones:
-    print0(f"All milestones are <= current step ({step}); no milestone spawn will be triggered.")
 if args.mockup_mode:
     print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
 
-terminate_after_checkpoint = False
 core_results = {}
 
 # -----------------------------------------------------------------------------
@@ -1165,34 +1082,6 @@ while True:
             raise RuntimeError(
                 f"Checkpoint deletion failed on rank 0 at step {step}. See rank 0 logs for details."
             )
-        if master_process and (not checkpoint_save_failed) and pending_milestones:
-            hit_milestones = [m for m in pending_milestones if step >= m]
-            if hit_milestones:
-                print0(f"Milestone(s) hit at step {step}: {hit_milestones}")
-                pending_milestones = [m for m in pending_milestones if m > step]
-                relaunch_cmd = build_self_command_with_milestones(pending_milestones, step)
-                if relaunch_cmd is not None:
-                    subprocess.Popen(relaunch_cmd, shell=True, start_new_session=True)
-                    terminate_after_checkpoint = True
-                    print0(
-                        f"Milestone hit at step {step}: {hit_milestones}. "
-                        f"Spawned self command with remaining milestones {pending_milestones} and --resume-from-step {step}: {relaunch_cmd}"
-                    )
-
-        if ddp:
-            terminate_tensor = torch.tensor(
-                [1 if terminate_after_checkpoint else 0],
-                device=device,
-                dtype=torch.int32,
-            )
-            torch.distributed.broadcast(terminate_tensor, src=0)
-            terminate_after_checkpoint = bool(terminate_tensor.item())
-
-    # If a milestone-triggered relaunch was spawned, stop immediately after
-    # checkpoint save/broadcast to avoid doing expensive eval/sample work.
-    if terminate_after_checkpoint and not is_last_step:
-        print0(f"Stopping current run after milestone-triggered relaunch at step {step}.")
-        break
 
     # once in a while: estimate the CORE metric (all ranks participate)
     # use the original uncompiled model because the inputs keep changing shape
@@ -1257,9 +1146,7 @@ while True:
         model.train()
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
-    if is_last_step or terminate_after_checkpoint:
-        if terminate_after_checkpoint and not is_last_step:
-            print0(f"Stopping current run after milestone-triggered relaunch at step {step}.")
+    if is_last_step:
         break
 
     MANAGER.collect_load_balancing_stats = args.log_grad_stats and (step % args.log_interval == 0)
