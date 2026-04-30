@@ -199,7 +199,7 @@ def main():
         print(f"FN: {confusion['fn']}")
         print(f"Total: {total}")
 
-    compute_cleanup(ddp)
+    compute_cleanup()
 
 
 if __name__ == '__main__':
