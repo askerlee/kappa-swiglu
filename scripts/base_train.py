@@ -115,7 +115,7 @@ parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, hel
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
-                    help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(--depth//2, 5))")
+                    help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.1,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
@@ -204,10 +204,14 @@ elif args.num_moe_layers == 0:
     print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
 if args.exp_gate_proj_bias_start_layer is None:
     if args.num_moe_layers != 0:
-        # If depth == 6,  start layer = 3
-        # If depth == 8,  start layer = 4
-        # If depth >= 10, start layer = 5
-        args.exp_gate_proj_bias_start_layer = min(args.depth // 2, 5)
+        # If depth = 4, start layer = 2; if depth = 6, start layer = 3;
+        # If depth = 8, start layer = 4; 
+        # if depth >= 10, start layer = 5 (capped to avoid missing too many moe layers 
+        # and reducing the benefit of gate_proj_bias).
+        # moe_start_layer + 2: at most skip the first 2 moe layers, 
+        # to avoid missing too many moe layers.
+        # If depth = 10 and moe_start_layer = 2, then bias starts at layer 4 instead of 5.
+        args.exp_gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
         args.exp_gate_proj_bias_start_layer = 0
 if args.exp_gate_proj_bias_start_layer < 0:
