@@ -114,8 +114,8 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=0,
-                    help="first transformer layer index where MoE gate_proj_bias is enabled")
+parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
+                    help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(--moe-start-layer, --depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.1,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
@@ -193,11 +193,20 @@ if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
 if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
+# num_moe_layers: 
+# -1 (default): all layers from moe_start_layer
+# 0: no moe layers, i.e., a dense model
+# N: N moe layers from moe_start_layer
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
 elif args.num_moe_layers == 0:
     args.router_ortho_loss_weight = 0
     print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
+if args.exp_gate_proj_bias_start_layer is None:
+    if args.num_moe_layers != 0:
+        args.exp_gate_proj_bias_start_layer = min(args.moe_start_layer, args.depth // 2, 5)
+    else:
+        args.exp_gate_proj_bias_start_layer = 0
 if args.exp_gate_proj_bias_start_layer < 0:
     raise ValueError("--exp-gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
