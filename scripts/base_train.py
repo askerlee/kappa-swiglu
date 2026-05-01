@@ -19,6 +19,7 @@ import time
 import math
 import argparse
 import sys
+import signal
 from contextlib import nullcontext, contextmanager
 import re
 
@@ -73,6 +74,15 @@ def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metri
             last_core_eval_step = candidate_step
 
     return last_core_eval_step
+
+
+sigterm_requested = False
+
+
+def handle_sigterm(signum, frame):
+    del signum, frame
+    global sigterm_requested
+    sigterm_requested = True
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -899,10 +909,13 @@ if args.mockup_mode:
 
 core_results = {}
 
+signal.signal(signal.SIGTERM, handle_sigterm)
+
 # -----------------------------------------------------------------------------
 # Training loop
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
+    should_terminate_after_checkpoint = sigterm_requested and not is_last_step
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
     router_ortho_num_anneal_iterations = num_iterations
@@ -954,7 +967,7 @@ while True:
     router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
 
     # once in a while: evaluate the val bpb (all ranks participate)
-    if (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
+    if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
@@ -976,7 +989,10 @@ while True:
         model.train()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
-    if is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
+    if should_terminate_after_checkpoint and master_process:
+        print0(f"SIGTERM received; saving checkpoint at step {step:06d} before exit.")
+
+    if should_terminate_after_checkpoint or is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
         expected_optimizer_ranks = range(ddp_world_size)
         checkpoint_save_failed = False
         checkpoint_save_error = ""
@@ -1076,12 +1092,14 @@ while True:
             raise RuntimeError(
                 f"Checkpoint deletion failed on rank 0 at step {step}. See rank 0 logs for details."
             )
+        if should_terminate_after_checkpoint:
+            break
 
     # once in a while: estimate the CORE metric (all ranks participate)
     # use the original uncompiled model because the inputs keep changing shape
     # disable FP8 for evaluation to use BF16 for more consistent/accurate results
 
-    if (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
+    if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
@@ -1120,7 +1138,7 @@ while True:
 
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
-    if (not args.mockup_mode) and args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
+    if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.sample_every > 0 and master_process and (is_last_step or (step > 0 and step % args.sample_every == 0)):
         model.eval()
         prompts = [
             "The capital of France is",
