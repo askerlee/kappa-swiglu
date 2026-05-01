@@ -480,9 +480,10 @@ num_flops_per_token = model.estimate_flops()
 print0(f"Estimated FLOPs per token: {num_flops_per_token:e}")
 
 # Scaling params: transformer matrices + lm_head (gives cleanest scaling laws, see dev/LOG.md Jan 27, 2026)
-get_scaling_params = lambda m: m.num_scaling_params()['transformer_matrices'] + m.num_scaling_params()['lm_head']
-num_scaling_params = get_scaling_params(model)
-target_tokens = int(args.target_param_data_ratio * num_scaling_params)
+num_scaling_params = param_counts['transformer_matrices'] + param_counts['lm_head']
+active_scaling_params = model.get_moe_adjusted_scaling_params(args.n_exp, args.moe_top_k)
+print0(f"MoE-adjusted scaling parameters: {int(active_scaling_params):,}")
+target_tokens = int(args.target_param_data_ratio * active_scaling_params)
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
 
@@ -490,8 +491,8 @@ world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per 
 total_batch_size = args.total_batch_size
 if total_batch_size == -1:
     d12_ref = build_model_meta(12) # d12 is where the optimal batch size was measured to be 2**19 tokens
-    d12_num_scaling_params = get_scaling_params(d12_ref)
-    D_REF = args.target_param_data_ratio * d12_num_scaling_params
+    d12_active_scaling_params = d12_ref.get_moe_adjusted_scaling_params(args.n_exp, args.moe_top_k)
+    D_REF = args.target_param_data_ratio * d12_active_scaling_params
     B_REF = 2**19
     batch_size_ratio = target_tokens / D_REF
     total_batch_size = 2 ** round(math.log2(B_REF * batch_size_ratio ** 0.383)) # also clamp to power of 2
@@ -524,7 +525,7 @@ else:
     raise ValueError("No training horizon specified")
 total_tokens = total_batch_size * num_iterations
 print0(f"Total number of training tokens: {total_tokens:,}")
-print0(f"Tokens : Scaling params ratio: {total_batch_size * num_iterations / num_scaling_params:.2f}") # Chinchilla is ~20
+print0(f"Tokens : MoE-adjusted scaling params ratio: {total_batch_size * num_iterations / active_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 
 # -----------------------------------------------------------------------------
@@ -1388,7 +1389,7 @@ get_report().log(section="Base model training", data=[
         "Number of FLOPs per token": f"{num_flops_per_token:e}",
         "Calculated number of iterations": num_iterations,
         "Number of training tokens": total_tokens,
-        "Tokens : Scaling params ratio": total_batch_size * num_iterations / num_scaling_params,
+        "Tokens : MoE-adjusted scaling params ratio": total_batch_size * num_iterations / active_scaling_params,
         "DDP world size": ddp_world_size,
         "warmup_ratio": args.warmup_ratio,
         "warmdown_ratio": args.warmdown_ratio,

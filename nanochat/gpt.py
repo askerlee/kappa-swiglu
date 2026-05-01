@@ -1191,6 +1191,30 @@ class GPT(nn.Module):
             'total': total,
         }
 
+    def get_moe_adjusted_scaling_params(self, n_exp, top_k):
+        """Return MoE-adjusted scaling params: transformer matrices plus lm_head.
+
+        For MoE models, expert parameters contribute only a routed-data-adjusted fraction.
+        Dense parameters in the transformer stack and lm_head are always active.
+        """
+        n_params = 0
+        seen = set()
+        for name, param in self.named_parameters():
+            if not (name.startswith('transformer.h.') or name.startswith('lm_head.')):
+                continue
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if 'experts' in name:
+                # each expert is active for a fraction of tokens proportional to top_k / n_exp.
+                # So they tend to be undertrained compared to dense parameters.
+                # The sqrt is a heuristic to partially compensate for undertraining.
+                n_params += param.numel() * math.sqrt(top_k / n_exp)
+            else:
+                n_params += param.numel()
+        return n_params
+
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         enabled = bool(enabled)
         self.config.use_aux_free_load_balancing = enabled
