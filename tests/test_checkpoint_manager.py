@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -286,6 +286,23 @@ def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):
     assert (checkpoint_dir / "notes.txt").exists()
 
 
+def test_save_checkpoint_skips_optimizer_shard_when_optimizer_data_is_none(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+
+    save_checkpoint(
+        str(checkpoint_dir),
+        20,
+        {"weight": torch.ones(1)},
+        None,
+        {"optimizer_world_size": 0},
+        rank=0,
+    )
+
+    assert (checkpoint_dir / "model_000020.pt").exists()
+    assert (checkpoint_dir / "meta_000020.json").exists()
+    assert not (checkpoint_dir / "optim_000020_rank0.pt").exists()
+
+
 def test_validate_checkpoint_file_sizes_matches_previous_checkpoint(tmp_path):
     checkpoint_dir = tmp_path / "ckpt"
     checkpoint_dir.mkdir()
@@ -325,6 +342,25 @@ def test_validate_checkpoint_file_sizes_ignores_meta_size_changes(tmp_path):
         str(checkpoint_dir),
         20,
         expected_optimizer_ranks=[0],
+    )
+
+    assert comparison_step == 10
+
+
+def test_validate_checkpoint_file_sizes_handles_model_only_checkpoints(tmp_path):
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+
+    write_sized_file(checkpoint_dir / "model_000010.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000010.json", 120)
+
+    write_sized_file(checkpoint_dir / "model_000020.pt", 256)
+    write_sized_file(checkpoint_dir / "meta_000020.json", 132)
+
+    comparison_step = validate_checkpoint_file_sizes(
+        str(checkpoint_dir),
+        20,
+        expected_optimizer_ranks=None,
     )
 
     assert comparison_step == 10

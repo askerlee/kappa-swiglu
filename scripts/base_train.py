@@ -174,6 +174,7 @@ parser.add_argument("--core-metric-every", type=int, default=1000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=1000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=True, help="save optimizer shards alongside model checkpoints")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
 # Output
@@ -1009,7 +1010,7 @@ while True:
         print0(f"SIGTERM received; saving checkpoint at step {step:06d} before exit.")
 
     if should_terminate_after_checkpoint or is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
-        expected_optimizer_ranks = range(ddp_world_size)
+        expected_optimizer_ranks = range(ddp_world_size) if args.save_optimizer_state else None
         checkpoint_save_failed = False
         checkpoint_save_error = ""
         delete_old_ckpts_failed = False
@@ -1034,7 +1035,7 @@ while True:
             checkpoint_dir,
             step,
             orig_model.state_dict(), # model parameters
-            optimizer.state_dict(), # optimizer state
+            optimizer.state_dict() if args.save_optimizer_state else None, # optimizer state
             { # metadata saved as json
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
@@ -1042,7 +1043,7 @@ while True:
                 "user_config": user_config, # inputs to the training script
                 "device_batch_size": args.device_batch_size,
                 "max_seq_len": args.max_seq_len,
-                "optimizer_world_size": ddp_world_size,
+                "optimizer_world_size": ddp_world_size if args.save_optimizer_state else 0,
                 "dataloader_state_dict": dataloader_state_dict,
                 "loop_state": { # all loop state (other than step) so that we can resume training
                     "min_val_bpb": min_val_bpb,
