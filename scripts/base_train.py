@@ -138,7 +138,7 @@ parser.add_argument("--window-pattern", type=str, default="LLLL", help="sliding 
 parser.add_argument("--num-iterations", type=int, default=-1, help="explicit number of optimization steps (-1 = disable)")
 parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate num_iterations to reach target_flops (-1 = disable)")
 parser.add_argument("--target-param-data-ratio", type=float, default=5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
-parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?', const=True, default=True,
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
