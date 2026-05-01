@@ -116,10 +116,12 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.1,
+parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
+                    help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
-                    help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to 1 before annealing to --gate-proj-bias-lr-final-scale")
+                    help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
@@ -592,6 +594,7 @@ optimizer = model.setup_optimizer(
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
+    gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
@@ -668,20 +671,20 @@ def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=-1, floor_fr
     return base_weight * anneal_multiplier
 
 
-def get_linear_lr_scale(it, num_iterations, end_scale=1.0, warmup_iterations=1000):
+def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000):
     num_iterations = max(0, num_iterations)
     effective_warmup_iterations = min(max(0, warmup_iterations), num_iterations)
     it = min(max(it, 0), num_iterations)
 
     if effective_warmup_iterations > 0 and it < effective_warmup_iterations:
-        return it / effective_warmup_iterations
+        return max_scale * it / effective_warmup_iterations
 
     remaining_iterations = num_iterations - effective_warmup_iterations
     if remaining_iterations <= 0:
-        return 1.0
+        return max_scale
 
     decay_progress = min(max(it - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
-    return 1.0 + (end_scale - 1.0) * decay_progress
+    return max_scale + (end_scale - max_scale) * decay_progress
 
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
@@ -1244,6 +1247,7 @@ while True:
                         step,
                         num_iterations,
                         end_scale=group.get("lr_scale_end", 1.0),
+                        max_scale=group.get("lr_scale_max", 1.0),
                         warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
                     )
                     group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale

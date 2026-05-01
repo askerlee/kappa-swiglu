@@ -1215,6 +1215,7 @@ class GPT(nn.Module):
                         weight_decay_dense=0.0, weight_decay_moe=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
                         gate_proj_bias_lr_final_scale=1.0,
+                        gate_proj_bias_lr_max_scale=1.0,
                         gate_proj_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
@@ -1275,6 +1276,7 @@ class GPT(nn.Module):
                 lr=0.0,
                 base_lr=embedding_lr * dmodel_lr_scale,
                 lr_scale_end=gate_proj_bias_lr_final_scale,
+                lr_scale_max=gate_proj_bias_lr_max_scale,
                 lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
                 betas=adam_betas,
                 eps=1e-10,
