@@ -104,6 +104,8 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=0,
+                    help="first transformer layer index where MoE gate_proj_bias is enabled")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.1,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
@@ -186,6 +188,8 @@ if args.num_moe_layers < -1:
 elif args.num_moe_layers == 0:
     args.router_ortho_loss_weight = 0
     print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
+if args.exp_gate_proj_bias_start_layer < 0:
+    raise ValueError("--exp-gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.use_aux_free_load_balancing:
@@ -283,6 +287,7 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        exp_gate_proj_bias_start_layer=args.exp_gate_proj_bias_start_layer,
         exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,

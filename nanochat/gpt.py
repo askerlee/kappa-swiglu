@@ -692,13 +692,16 @@ class Qwen3MLP(nn.Module):
         return down_proj
 
 class Qwen3MLPExperts(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx=None):
         super().__init__()
         self.debug = config.debug
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False))
+        gate_proj_bias_start_layer = int(getattr(config, 'exp_gate_proj_bias_start_layer', 0))
+        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
+            layer_idx is None or layer_idx >= gate_proj_bias_start_layer
+        )
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
@@ -790,7 +793,7 @@ class MOELayer(nn.Module):
         self.router = Router(config)
         self.debug = config.debug
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
-            self.experts = Qwen3MLPExperts(config)
+            self.experts = Qwen3MLPExperts(config, layer_idx=layer_idx)
             self.use_qwen3_moe_mlp = True
             self.experts.set_router(self.router)
         else:

@@ -26,6 +26,7 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
+        exp_gate_proj_bias_start_layer: int = 0,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -84,6 +85,11 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
+        self.exp_gate_proj_bias_start_layer = int(exp_gate_proj_bias_start_layer)
+        if self.exp_gate_proj_bias_start_layer < 0:
+            raise ValueError(
+                f"exp_gate_proj_bias_start_layer must be >= 0, got {exp_gate_proj_bias_start_layer}"
+            )
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight

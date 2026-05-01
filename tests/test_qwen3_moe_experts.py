@@ -210,6 +210,22 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
     assert experts.gate_proj_bias.shape == (config.n_exp, 4 * config.n_embd)
 
 
+def test_gate_projection_bias_respects_start_layer_cutoff():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_start_layer=3,
+        debug=False,
+    )
+
+    early_experts = Qwen3MLPExperts(config, layer_idx=2)
+    late_experts = Qwen3MLPExperts(config, layer_idx=3)
+
+    assert early_experts.gate_proj_bias is None
+    assert late_experts.gate_proj_bias is not None
+
+
 def test_qwen3_experts_use_dense_gate_projection_only():
     config = GPTConfig(
         n_exp=2,
