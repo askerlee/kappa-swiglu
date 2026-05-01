@@ -207,6 +207,19 @@ if args.num_moe_layers < -1:
 elif args.num_moe_layers == 0:
     args.router_ortho_loss_weight = 0
     print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
+effective_moe_layer_count = len(get_moe_layer_indices(argparse.Namespace(
+    n_exp=args.n_exp,
+    num_moe_layers=args.num_moe_layers,
+    moe_start_layer=args.moe_start_layer,
+    moe_layer_stride=1,
+    n_layer=args.depth,
+)))
+if args.use_moe_adjusted_scaling_params and effective_moe_layer_count < args.depth / 5:
+    args.use_moe_adjusted_scaling_params = False
+    print(
+        "Disabling --use-moe-adjusted-scaling-params because the effective number of MoE layers "
+        f"({effective_moe_layer_count}) is less than one fifth of depth ({args.depth / 5:.2f})."
+    )
 if args.exp_gate_proj_bias_start_layer is None:
     if args.num_moe_layers != 0:
         # If depth = 4, start layer = 2; if depth = 6, start layer = 3;
