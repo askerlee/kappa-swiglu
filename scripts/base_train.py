@@ -123,8 +123,8 @@ parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
-parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use total training iterations)")
-parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use half total training iterations)")
+parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.0, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -973,7 +973,7 @@ while True:
         num_anneal_iterations=router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
-    gate_proj_bias_l2_num_anneal_iterations = num_iterations
+    gate_proj_bias_l2_num_anneal_iterations = max(math.ceil(num_iterations / 2), 1)
     if args.gate_proj_bias_l2_loss_anneal_iterations > 0:
         gate_proj_bias_l2_num_anneal_iterations = min(
             gate_proj_bias_l2_num_anneal_iterations,
