@@ -23,44 +23,140 @@ from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 from nanochat.gpt import MOELayer
 
 
-class ExpertGateBiasDeltaAccumulator:
+TOP_FRACTION = 0.1
+TOP_QUANTILE = 1.0 - TOP_FRACTION
+QUANTILE_SAMPLE_SIZE = 131072
+
+
+class StreamingValueStats:
+    def __init__(self):
+        self.sum_value = None
+        self.sum_abs_value = None
+        self.sum_sq_value = None
+        self.positive_count = None
+        self.count = None
+
+    def _lazy_init(self, device):
+        if self.sum_value is not None:
+            return
+        self.sum_value = torch.zeros((), device=device, dtype=torch.float64)
+        self.sum_abs_value = torch.zeros((), device=device, dtype=torch.float64)
+        self.sum_sq_value = torch.zeros((), device=device, dtype=torch.float64)
+        self.positive_count = torch.zeros((), device=device, dtype=torch.float64)
+        self.count = torch.zeros((), device=device, dtype=torch.float64)
+
+    @torch.inference_mode()
+    def observe(self, values: torch.Tensor, mask: torch.Tensor):
+        self._lazy_init(values.device)
+        masked_values = values[mask]
+        if masked_values.numel() == 0:
+            return
+        self.sum_value.add_(masked_values.sum(dtype=torch.float64))
+        self.sum_abs_value.add_(masked_values.abs().sum(dtype=torch.float64))
+        self.sum_sq_value.add_(masked_values.square().sum(dtype=torch.float64))
+        self.positive_count.add_((masked_values > 0).sum(dtype=torch.float64))
+        self.count.add_(masked_values.numel())
+
+    def reduce(self):
+        if self.sum_value is None:
+            return
+        if dist.is_initialized():
+            for tensor in (
+                self.sum_value,
+                self.sum_abs_value,
+                self.sum_sq_value,
+                self.positive_count,
+                self.count,
+            ):
+                dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+
+    def summary(self, name: str):
+        count = 0.0 if self.count is None else self.count.item()
+        if count == 0:
+            return {
+                f"mean({name})": float("nan"),
+                f"mean(abs({name}))": float("nan"),
+                f"rms({name})": float("nan"),
+                f"fraction_positive_{name}": float("nan"),
+                f"count_{name}": 0.0,
+            }
+        return {
+            f"mean({name})": self.sum_value.item() / count,
+            f"mean(abs({name}))": self.sum_abs_value.item() / count,
+            f"rms({name})": (self.sum_sq_value.item() / count) ** 0.5,
+            f"fraction_positive_{name}": self.positive_count.item() / count,
+            f"count_{name}": count,
+        }
+
+
+class PrioritySampleQuantile:
+    def __init__(self, sample_size: int):
+        self.sample_size = int(sample_size)
+        self.samples = None
+        self.priorities = None
+
+    @torch.inference_mode()
+    def observe(self, values: torch.Tensor, mask: torch.Tensor):
+        if self.sample_size <= 0:
+            return
+        masked_values = values[mask]
+        if masked_values.numel() == 0:
+            return
+        masked_values = masked_values.detach().float().reshape(-1).cpu()
+        priorities = torch.rand(masked_values.numel(), dtype=torch.float32)
+        if self.samples is None:
+            self.samples = masked_values
+            self.priorities = priorities
+        else:
+            self.samples = torch.cat((self.samples, masked_values), dim=0)
+            self.priorities = torch.cat((self.priorities, priorities), dim=0)
+        if self.samples.numel() > self.sample_size:
+            keep = torch.topk(self.priorities, k=self.sample_size, largest=True, sorted=False).indices
+            self.samples = self.samples[keep]
+            self.priorities = self.priorities[keep]
+
+    def get_samples(self):
+        if self.samples is None:
+            return torch.empty(0, dtype=torch.float32)
+        return self.samples
+
+
+def compute_global_quantile(local_samples: torch.Tensor, quantile: float):
+    samples = local_samples
+    if dist.is_initialized():
+        gathered = [None for _ in range(dist.get_world_size())]
+        dist.all_gather_object(gathered, samples)
+        sample_parts = [part for part in gathered if isinstance(part, torch.Tensor) and part.numel() > 0]
+        samples = torch.cat(sample_parts, dim=0) if sample_parts else torch.empty(0, dtype=torch.float32)
+    if samples.numel() == 0:
+        return float("nan")
+    return torch.quantile(samples, quantile).item()
+
+
+class GateBiasStatsCollector:
     def __init__(self, bias_sign: int):
         if bias_sign not in (-1, 1):
             raise ValueError(f"bias_sign must be -1 or 1, got {bias_sign}")
         self.bias_sign = bias_sign
-        self.sum_delta = None
-        self.sum_abs_delta = None
-        self.sum_sq_delta = None
-        self.positive_count = None
-        self.total_count = None
-        self.sum_relative_delta = None
-        self.sum_abs_relative_delta = None
-        self.sum_sq_relative_delta = None
-        self.positive_relative_count = None
-        self.relative_total_count = None
-
-    def _lazy_init(self, device):
-        if self.sum_delta is not None:
-            return
-        self.sum_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.sum_abs_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.sum_sq_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.positive_count = torch.zeros((), device=device, dtype=torch.float64)
-        self.total_count = torch.zeros((), device=device, dtype=torch.float64)
-        self.sum_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.sum_abs_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.sum_sq_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
-        self.positive_relative_count = torch.zeros((), device=device, dtype=torch.float64)
-        self.relative_total_count = torch.zeros((), device=device, dtype=torch.float64)
-
-    @torch._dynamo.disable
     @torch.inference_mode()
+    def __init_top_stats(self, delta_threshold, relative_threshold):
+        self.delta_threshold = delta_threshold
+        self.relative_threshold = relative_threshold
+        self.delta_stats = StreamingValueStats()
+        self.relative_stats = StreamingValueStats()
+        self.top_delta_stats = StreamingValueStats() if delta_threshold is not None else None
+        self.top_relative_stats = StreamingValueStats() if relative_threshold is not None else None
+        self.delta_sampler = None
+        self.relative_sampler = None
+
+    def enable_sampling(self, sample_size: int):
+        self.delta_sampler = PrioritySampleQuantile(sample_size)
+        self.relative_sampler = PrioritySampleQuantile(sample_size)
+
     def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
         experts = layer.experts
         if getattr(experts, "gate_proj_bias", None) is None:
             return
-
-        self._lazy_init(expert_inputs.device)
 
         gate_base = torch.bmm(expert_inputs, experts.gate_proj)
         router_confidence = experts._compute_router_confidence_gate_scale(
@@ -78,80 +174,86 @@ class ExpertGateBiasDeltaAccumulator:
         gate_base_acts = gate_base_acts.float()
 
         slot_mask = expert_slot_mask.unsqueeze(-1)
-        slot_mask_f = slot_mask.to(dtype=delta_gate.dtype)
-        total_count = expert_slot_mask.sum(dtype=torch.float64) * delta_gate.shape[-1]
-
-        self.sum_delta.add_((delta_gate * slot_mask_f).sum(dtype=torch.float64))
-        self.sum_abs_delta.add_((delta_gate.abs() * slot_mask_f).sum(dtype=torch.float64))
-        self.sum_sq_delta.add_((delta_gate.square() * slot_mask_f).sum(dtype=torch.float64))
-        self.positive_count.add_(torch.logical_and(delta_gate > 0, slot_mask).sum(dtype=torch.float64))
-        self.total_count.add_(total_count)
+        self.delta_stats.observe(delta_gate, slot_mask)
+        if self.delta_sampler is not None:
+            self.delta_sampler.observe(delta_gate, slot_mask)
+        if self.top_delta_stats is not None:
+            top_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.delta_threshold)
+            self.top_delta_stats.observe(delta_gate, top_delta_mask)
 
         relative_delta = delta_gate / gate_base_acts
         finite_relative_mask = torch.logical_and(slot_mask, torch.isfinite(relative_delta))
-        finite_relative_mask_f = finite_relative_mask.to(dtype=relative_delta.dtype)
-        self.sum_relative_delta.add_((relative_delta * finite_relative_mask_f).sum(dtype=torch.float64))
-        self.sum_abs_relative_delta.add_((relative_delta.abs() * finite_relative_mask_f).sum(dtype=torch.float64))
-        self.sum_sq_relative_delta.add_((relative_delta.square() * finite_relative_mask_f).sum(dtype=torch.float64))
-        self.positive_relative_count.add_(
-            torch.logical_and(relative_delta > 0, finite_relative_mask).sum(dtype=torch.float64)
-        )
-        self.relative_total_count.add_(finite_relative_mask.sum(dtype=torch.float64))
+        self.relative_stats.observe(relative_delta, finite_relative_mask)
+        if self.relative_sampler is not None:
+            self.relative_sampler.observe(relative_delta, finite_relative_mask)
+        if self.top_relative_stats is not None:
+            top_relative_mask = torch.logical_and(finite_relative_mask, relative_delta >= self.relative_threshold)
+            self.top_relative_stats.observe(relative_delta, top_relative_mask)
 
     def reduce(self):
-        if self.sum_delta is None:
-            raise RuntimeError("No gate-bias statistics were collected")
-        if dist.is_initialized():
-            for tensor in (
-                self.sum_delta,
-                self.sum_abs_delta,
-                self.sum_sq_delta,
-                self.positive_count,
-                self.total_count,
-                self.sum_relative_delta,
-                self.sum_abs_relative_delta,
-                self.sum_sq_relative_delta,
-                self.positive_relative_count,
-                self.relative_total_count,
-            ):
-                dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        self.delta_stats.reduce()
+        self.relative_stats.reduce()
+        if self.top_delta_stats is not None:
+            self.top_delta_stats.reduce()
+        if self.top_relative_stats is not None:
+            self.top_relative_stats.reduce()
 
     def summary(self):
-        total_count = self.total_count.item()
-        if total_count == 0:
+        delta_summary = self.delta_stats.summary("delta_gate")
+        if delta_summary["count_delta_gate"] == 0:
             raise RuntimeError("Collected zero valid gate activations; no summary can be computed")
-        relative_total_count = self.relative_total_count.item()
-        mean_delta = self.sum_delta.item() / total_count
-        mean_abs_delta = self.sum_abs_delta.item() / total_count
-        rms_delta = (self.sum_sq_delta.item() / total_count) ** 0.5
-        fraction_positive = self.positive_count.item() / total_count
         summary = {
-            "mean(delta_gate)": mean_delta,
-            "mean(abs(delta_gate))": mean_abs_delta,
-            "rms(delta_gate)": rms_delta,
-            "fraction_positive": fraction_positive,
-            "count": total_count,
+            "mean(delta_gate)": delta_summary["mean(delta_gate)"],
+            "mean(abs(delta_gate))": delta_summary["mean(abs(delta_gate))"],
+            "rms(delta_gate)": delta_summary["rms(delta_gate)"],
+            "fraction_positive": delta_summary["fraction_positive_delta_gate"],
+            "count": delta_summary["count_delta_gate"],
         }
-        if relative_total_count > 0:
+        relative_summary = self.relative_stats.summary("delta_gate / silu(g_base)")
+        summary.update({
+            "mean(delta_gate / silu(g_base))": relative_summary["mean(delta_gate / silu(g_base))"],
+            "mean(abs(delta_gate / silu(g_base)))": relative_summary["mean(abs(delta_gate / silu(g_base)))"],
+            "rms(delta_gate / silu(g_base))": relative_summary["rms(delta_gate / silu(g_base))"],
+            "fraction_positive_relative": relative_summary["fraction_positive_delta_gate / silu(g_base)"],
+            "relative_count": relative_summary["count_delta_gate / silu(g_base)"],
+        })
+        if self.top_delta_stats is not None:
+            top_delta_summary = self.top_delta_stats.summary("top10_delta_gate")
             summary.update({
-                "mean(delta_gate / silu(g_base))": self.sum_relative_delta.item() / relative_total_count,
-                "mean(abs(delta_gate / silu(g_base)))": self.sum_abs_relative_delta.item() / relative_total_count,
-                "rms(delta_gate / silu(g_base))": (self.sum_sq_relative_delta.item() / relative_total_count) ** 0.5,
-                "fraction_positive_relative": self.positive_relative_count.item() / relative_total_count,
-                "relative_count": relative_total_count,
+                "mean(top10_delta_gate)": top_delta_summary["mean(top10_delta_gate)"],
+                "mean(abs(top10_delta_gate))": top_delta_summary["mean(abs(top10_delta_gate))"],
+                "rms(top10_delta_gate)": top_delta_summary["rms(top10_delta_gate)"],
+                "fraction_positive_top10_delta_gate": top_delta_summary["fraction_positive_top10_delta_gate"],
+                "count_top10_delta_gate": top_delta_summary["count_top10_delta_gate"],
             })
-        else:
+        if self.top_relative_stats is not None:
+            top_relative_summary = self.top_relative_stats.summary("top10_delta_gate / silu(g_base)")
             summary.update({
-                "mean(delta_gate / silu(g_base))": float("nan"),
-                "mean(abs(delta_gate / silu(g_base)))": float("nan"),
-                "rms(delta_gate / silu(g_base))": float("nan"),
-                "fraction_positive_relative": float("nan"),
-                "relative_count": 0.0,
+                "mean(top10_delta_gate / silu(g_base))": top_relative_summary["mean(top10_delta_gate / silu(g_base))"],
+                "mean(abs(top10_delta_gate / silu(g_base)))": top_relative_summary["mean(abs(top10_delta_gate / silu(g_base)))"],
+                "rms(top10_delta_gate / silu(g_base))": top_relative_summary["rms(top10_delta_gate / silu(g_base))"],
+                "fraction_positive_top10_relative": top_relative_summary["fraction_positive_top10_delta_gate / silu(g_base)"],
+                "count_top10_relative": top_relative_summary["count_top10_delta_gate / silu(g_base)"],
             })
         return summary
 
 
-def install_gate_bias_instrumentation(model, accumulator: ExpertGateBiasDeltaAccumulator):
+class GateBiasObserverHost:
+    def __init__(self):
+        self.collector = None
+
+    def set_collector(self, collector: GateBiasStatsCollector):
+        self.collector = collector
+
+    @torch._dynamo.disable
+    @torch.inference_mode()
+    def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
+        if self.collector is None:
+            raise RuntimeError("Gate bias observer host was called without an active collector")
+        self.collector.observe(layer, expert_inputs, expert_slot_mask)
+
+
+def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost):
     instrumented_layers = 0
 
     def instrumented_forward(self, x: torch.Tensor):
@@ -195,7 +297,7 @@ def install_gate_bias_instrumentation(model, accumulator: ExpertGateBiasDeltaAcc
                 flat_rank[valid_mask],
             ] = True
             if self.use_qwen3_moe_mlp and getattr(self.experts, "gate_proj_bias", None) is not None:
-                accumulator.observe(self, expert_inputs, expert_slot_mask)
+                observer_host.observe(self, expert_inputs, expert_slot_mask)
 
         expert_outputs = self.experts(expert_inputs)
         output_flat = self._combine_expert_outputs(
@@ -221,6 +323,27 @@ def install_gate_bias_instrumentation(model, accumulator: ExpertGateBiasDeltaAcc
         instrumented_layers += 1
 
     return instrumented_layers
+
+
+def build_loader(tokenizer, device_batch_size, sequence_len, split, device):
+    return tokenizing_distributed_data_loader_bos_bestfit(
+        tokenizer,
+        device_batch_size,
+        sequence_len,
+        split=split,
+        device=device,
+    )
+
+
+def run_eval_pass(model, loader, eval_steps, autocast_ctx, pass_name):
+    batch_iter = iter(loader)
+    with torch.inference_mode():
+        for step_idx in range(eval_steps):
+            x, y = next(batch_iter)
+            with autocast_ctx:
+                model(x, y, loss_reduction="none")
+            if step_idx == 0 or (step_idx + 1) % 50 == 0 or step_idx + 1 == eval_steps:
+                print0(f"{pass_name}: processed {step_idx + 1}/{eval_steps} eval steps")
 
 
 def parse_args():
@@ -288,7 +411,7 @@ def main():
     print0(f"Evaluating gate bias effect for model step {meta['step']:06d}")
     print0(f"Split: {args.split} | requested tokens: {args.eval_tokens:,} | actual tokens: {actual_tokens:,}")
     print0(
-        f"Instrumented MoE layers: {instrumented_layers} | bias sign mode: implementation | compile: {args.compile}"
+        f"Instrumented MoE layers: {instrumented_layers} | bias sign: negative | compile: {args.compile}"
     )
 
     batch_iter = iter(loader)
