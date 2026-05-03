@@ -118,13 +118,14 @@ parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.02,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
-parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the MoE (2D) gate_proj_bias L2 loss only (-1 = use half total training iterations)")
-parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to keep after annealing completes (1 = no annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
+parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", "--gate-proj-bias-l2-loss-floor-frac", dest="gate_proj_bias_l2_loss_stage1_frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.01, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -198,6 +199,11 @@ if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
 if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
+if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
+    raise ValueError(
+        "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
+        "0 <= final_frac <= stage1_frac <= 1"
+    )
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -693,6 +699,28 @@ def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=-1, floor_fr
     return base_weight * anneal_multiplier
 
 
+def get_two_stage_annealed_loss_weight(base_weight, it, total_iterations, stage1_iterations=-1, stage1_floor_frac=0.1, final_floor_frac=0.01):
+    total_iterations = max(int(total_iterations), 1)
+    if stage1_iterations <= 0:
+        stage1_iterations = max((total_iterations + 1) // 2, 1)
+    stage1_iterations = min(max(int(stage1_iterations), 0), total_iterations)
+    it = min(max(int(it), 0), total_iterations)
+
+    if stage1_iterations > 0 and it <= stage1_iterations:
+        stage1_progress = min(max(it, 0), stage1_iterations) / stage1_iterations
+        stage1_multiplier = stage1_floor_frac + (1.0 - stage1_floor_frac) * (1.0 - stage1_progress)
+        return base_weight * stage1_multiplier
+
+    if stage1_iterations >= total_iterations:
+        return base_weight * stage1_floor_frac
+
+    stage2_iterations = total_iterations - stage1_iterations
+    stage2_step = it - stage1_iterations
+    stage2_progress = min(max(stage2_step, 0), stage2_iterations) / stage2_iterations
+    stage2_multiplier = final_floor_frac + (stage1_floor_frac - final_floor_frac) * (1.0 - stage2_progress)
+    return base_weight * stage2_multiplier
+
+
 def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000):
     num_iterations = max(0, num_iterations)
     effective_warmup_iterations = min(max(0, warmup_iterations), num_iterations)
@@ -973,17 +1001,14 @@ while True:
         num_anneal_iterations=router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
-    gate_proj_bias_l2_num_anneal_iterations = max(math.ceil(num_iterations / 2), 1)
-    if args.gate_proj_bias_l2_loss_anneal_iterations > 0:
-        gate_proj_bias_l2_num_anneal_iterations = min(
-            gate_proj_bias_l2_num_anneal_iterations,
-            args.gate_proj_bias_l2_loss_anneal_iterations,
-        )
-    exp_gate_proj_bias_l2_loss_weight = get_annealed_loss_weight(
+    gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
+    exp_gate_proj_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
         args.exp_gate_proj_bias_l2_loss_weight,
         step,
-        num_anneal_iterations=gate_proj_bias_l2_num_anneal_iterations,
-        floor_frac=args.gate_proj_bias_l2_loss_floor_frac,
+        total_iterations=num_iterations,
+        stage1_iterations=gate_proj_bias_l2_stage1_iterations,
+        stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
+        final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
     )
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:

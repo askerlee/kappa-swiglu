@@ -24,8 +24,18 @@ def test_get_annealed_loss_weight_reaches_zero_at_anneal_limit():
     assert get_annealed_loss_weight(0.25, 5, num_anneal_iterations=5, floor_frac=0.0) == 0.0
 
 
-def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_zero_floor():
+def test_gate_proj_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final_floor():
+    get_two_stage_annealed_loss_weight = load_function_from_script("get_two_stage_annealed_loss_weight")
+
+    assert get_two_stage_annealed_loss_weight(1.0, 0, total_iterations=10) == 1.0
+    assert get_two_stage_annealed_loss_weight(1.0, 5, total_iterations=10) == 0.1
+    assert abs(get_two_stage_annealed_loss_weight(1.0, 7, total_iterations=10) - 0.064) < 1e-12
+    assert get_two_stage_annealed_loss_weight(1.0, 10, total_iterations=10) == 0.01
+
+
+def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     source = BASE_TRAIN.read_text()
 
-    assert 'parser.add_argument("--gate-proj-bias-l2-loss-floor-frac", type=float, default=0.0' in source
-    assert 'gate_proj_bias_l2_num_anneal_iterations = max(math.ceil(num_iterations / 2), 1)' in source
+    assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", "--gate-proj-bias-l2-loss-floor-frac", dest="gate_proj_bias_l2_loss_stage1_frac", type=float, default=0.1' in source
+    assert 'parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.01' in source
+    assert 'stage1_iterations = max((total_iterations + 1) // 2, 1)' in source
