@@ -26,6 +26,7 @@ from nanochat.gpt import MOELayer
 TOP_FRACTION = 0.1
 TOP_QUANTILE = 1.0 - TOP_FRACTION
 QUANTILE_SAMPLE_SIZE = 131072
+RELATIVE_DENOM_EPS = 1e-6
 
 
 class StreamingValueStats:
@@ -183,13 +184,18 @@ class GateBiasStatsCollector:
             top_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.delta_threshold)
             self.top_delta_stats.observe(delta_gate, top_delta_mask)
 
-        relative_delta = delta_gate / gate_base_acts
-        finite_relative_mask = torch.logical_and(slot_mask, torch.isfinite(relative_delta))
-        self.relative_stats.observe(relative_delta, finite_relative_mask)
+        safe_gate_base_acts = torch.where(
+            gate_base_acts >= 0,
+            gate_base_acts.clamp_min(RELATIVE_DENOM_EPS),
+            gate_base_acts.clamp_max(-RELATIVE_DENOM_EPS),
+        )
+        relative_delta = delta_gate / safe_gate_base_acts
+        relative_mask = torch.logical_and(slot_mask, torch.isfinite(relative_delta))
+        self.relative_stats.observe(relative_delta, relative_mask)
         if self.relative_sampler is not None:
-            self.relative_sampler.observe(relative_delta, finite_relative_mask)
+            self.relative_sampler.observe(relative_delta, relative_mask)
         if self.top_relative_stats is not None:
-            top_relative_mask = torch.logical_and(finite_relative_mask, relative_delta >= self.relative_threshold)
+            top_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.relative_threshold)
             self.top_relative_stats.observe(relative_delta, top_relative_mask)
 
     def reduce(self):
@@ -417,8 +423,8 @@ def main():
 
     delta_threshold = compute_global_quantile(sampling_collector.delta_sampler.get_samples(), TOP_QUANTILE)
     relative_threshold = compute_global_quantile(sampling_collector.relative_sampler.get_samples(), TOP_QUANTILE)
-    print0(f"Top {TOP_FRACTION:.0%} delta_gate threshold: {delta_threshold:.5e}")
-    print0(f"Top {TOP_FRACTION:.0%} relative delta_gate threshold: {relative_threshold:.5e}")
+    print0(f"Top {TOP_FRACTION:.0%} delta_gate threshold: {delta_threshold:.3e}")
+    print0(f"Top {TOP_FRACTION:.0%} relative delta_gate threshold: {relative_threshold:.3e}")
 
     summary_collector = GateBiasStatsCollector(bias_sign=bias_sign)
     summary_collector.initialize_stats(delta_threshold, relative_threshold)
@@ -429,25 +435,25 @@ def main():
     summary_collector.reduce()
     summary = summary_collector.summary()
     print0("Gate bias activation delta summary:")
-    print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.5e}")
-    print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.5e}")
-    print0(f"rms(delta_gate): {summary['rms(delta_gate)']:.5e}")
-    print0(f"fraction_positive: {summary['fraction_positive']:.5e}")
+    print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.3e}")
+    print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.3e}")
+    print0(f"rms(delta_gate): {summary['rms(delta_gate)']:.3e}")
+    print0(f"fraction_positive: {summary['fraction_positive']:.3e}")
     print0(f"count: {int(summary['count'])}")
-    print0(f"mean(delta_gate / silu(g_base)): {summary['mean(delta_gate / silu(g_base))']:.5e}")
-    print0(f"mean(abs(delta_gate / silu(g_base))): {summary['mean(abs(delta_gate / silu(g_base)))']:.5e}")
-    print0(f"rms(delta_gate / silu(g_base)): {summary['rms(delta_gate / silu(g_base))']:.5e}")
-    print0(f"fraction_positive_relative: {summary['fraction_positive_relative']:.5e}")
+    print0(f"mean(delta_gate / silu(g_base)): {summary['mean(delta_gate / silu(g_base))']:.3e}")
+    print0(f"mean(abs(delta_gate / silu(g_base))): {summary['mean(abs(delta_gate / silu(g_base)))']:.3e}")
+    print0(f"rms(delta_gate / silu(g_base)): {summary['rms(delta_gate / silu(g_base))']:.3e}")
+    print0(f"fraction_positive_relative: {summary['fraction_positive_relative']:.3e}")
     print0(f"relative_count: {int(summary['relative_count'])}")
-    print0(f"mean(top10_delta_gate): {summary['mean(top10_delta_gate)']:.5e}")
-    print0(f"mean(abs(top10_delta_gate)): {summary['mean(abs(top10_delta_gate))']:.5e}")
-    print0(f"rms(top10_delta_gate): {summary['rms(top10_delta_gate)']:.5e}")
-    print0(f"fraction_positive_top10_delta_gate: {summary['fraction_positive_top10_delta_gate']:.5e}")
+    print0(f"mean(top10_delta_gate): {summary['mean(top10_delta_gate)']:.3e}")
+    print0(f"mean(abs(top10_delta_gate)): {summary['mean(abs(top10_delta_gate))']:.3e}")
+    print0(f"rms(top10_delta_gate): {summary['rms(top10_delta_gate)']:.3e}")
+    print0(f"fraction_positive_top10_delta_gate: {summary['fraction_positive_top10_delta_gate']:.3e}")
     print0(f"count_top10_delta_gate: {int(summary['count_top10_delta_gate'])}")
-    print0(f"mean(top10_delta_gate / silu(g_base)): {summary['mean(top10_delta_gate / silu(g_base))']:.5e}")
-    print0(f"mean(abs(top10_delta_gate / silu(g_base))): {summary['mean(abs(top10_delta_gate / silu(g_base)))']:.5e}")
-    print0(f"rms(top10_delta_gate / silu(g_base)): {summary['rms(top10_delta_gate / silu(g_base))']:.5e}")
-    print0(f"fraction_positive_top10_relative: {summary['fraction_positive_top10_relative']:.5e}")
+    print0(f"mean(top10_delta_gate / silu(g_base)): {summary['mean(top10_delta_gate / silu(g_base))']:.3e}")
+    print0(f"mean(abs(top10_delta_gate / silu(g_base))): {summary['mean(abs(top10_delta_gate / silu(g_base)))']:.3e}")
+    print0(f"rms(top10_delta_gate / silu(g_base)): {summary['rms(top10_delta_gate / silu(g_base))']:.3e}")
+    print0(f"fraction_positive_top10_relative: {summary['fraction_positive_top10_relative']:.3e}")
     print0(f"count_top10_relative: {int(summary['count_top10_relative'])}")
 
     compute_cleanup()
