@@ -18,7 +18,7 @@ import torch
 import torch.distributed as dist
 
 from nanochat.checkpoint_manager import load_model
-from nanochat.common import autodetect_device_type, compute_cleanup, compute_init, print0
+from nanochat.common import COMPUTE_DTYPE, autodetect_device_type, compute_cleanup, compute_init, print0
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 from nanochat.gpt import MOELayer
 
@@ -380,7 +380,7 @@ def main():
     device_type = autodetect_device_type() if args.device_type == "" else args.device_type
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
     del ddp, ddp_local_rank
-    autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16) if device_type == "cuda" else nullcontext()
+    autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=COMPUTE_DTYPE) if device_type == "cuda" else nullcontext()
 
     model, tokenizer, meta = load_model(
         args.source,
@@ -413,6 +413,8 @@ def main():
     print0(
         f"Instrumented MoE layers: {instrumented_layers} | bias sign: negative | compile: {args.compile}"
     )
+    if device_type == "cuda":
+        print0(f"CUDA compute dtype: {COMPUTE_DTYPE}")
 
     sampling_collector = GateBiasStatsCollector(bias_sign=bias_sign)
     sampling_collector.initialize_stats(None, None)
