@@ -212,12 +212,14 @@ class GateBiasStatsCollector:
             if sampled_delta is not None:
                 sampled_delta_mask = torch.ones_like(sampled_delta, dtype=torch.bool)
                 self.delta_sampler.observe(sampled_delta, sampled_delta_mask)
+        threshold_mask = None
         if self.top10_delta_stats is not None:
-            top10_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.top10_delta_threshold)
-            self.top10_delta_stats.observe(delta_gate, top10_delta_mask)
+            threshold_mask = torch.logical_and(slot_mask, delta_gate >= self.top10_delta_threshold)
+            self.top10_delta_stats.observe(delta_gate, threshold_mask)
         if self.top2_delta_stats is not None:
-            top2_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.top2_delta_threshold)
-            self.top2_delta_stats.observe(delta_gate, top2_delta_mask)
+            threshold_mask = torch.logical_and(slot_mask, delta_gate >= self.top2_delta_threshold)
+            self.top2_delta_stats.observe(delta_gate, threshold_mask)
+        del threshold_mask
 
         safe_gate_base_acts = torch.where(
             gate_base_acts >= 0,
@@ -234,12 +236,14 @@ class GateBiasStatsCollector:
                 if sampled_relative.numel() > 0:
                     sampled_relative_mask = torch.ones_like(sampled_relative, dtype=torch.bool)
                     self.relative_sampler.observe(sampled_relative, sampled_relative_mask)
+        threshold_mask = None
         if self.top10_relative_stats is not None:
-            top10_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.top10_relative_threshold)
-            self.top10_relative_stats.observe(relative_delta, top10_relative_mask)
+            threshold_mask = torch.logical_and(relative_mask, relative_delta >= self.top10_relative_threshold)
+            self.top10_relative_stats.observe(relative_delta, threshold_mask)
         if self.top2_relative_stats is not None:
-            top2_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.top2_relative_threshold)
-            self.top2_relative_stats.observe(relative_delta, top2_relative_mask)
+            threshold_mask = torch.logical_and(relative_mask, relative_delta >= self.top2_relative_threshold)
+            self.top2_relative_stats.observe(relative_delta, threshold_mask)
+        del threshold_mask
 
     def reduce(self):
         self.delta_stats.reduce()
