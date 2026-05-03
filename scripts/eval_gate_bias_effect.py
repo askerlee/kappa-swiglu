@@ -23,8 +23,10 @@ from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 from nanochat.gpt import MOELayer
 
 
-TOP_FRACTION = 0.1
-TOP_QUANTILE = 1.0 - TOP_FRACTION
+TOP10_FRACTION = 0.1
+TOP10_QUANTILE = 1.0 - TOP10_FRACTION
+TOP2_FRACTION = 0.02
+TOP2_QUANTILE = 1.0 - TOP2_FRACTION
 QUANTILE_SAMPLE_SIZE = 131072
 QUANTILE_SLOT_SAMPLE_COUNT = 8
 RELATIVE_DENOM_EPS = 1e-6
@@ -142,14 +144,25 @@ class GateBiasStatsCollector:
         if bias_sign not in (-1, 1):
             raise ValueError(f"bias_sign must be -1 or 1, got {bias_sign}")
         self.bias_sign = bias_sign
+
     @torch.inference_mode()
-    def initialize_stats(self, delta_threshold, relative_threshold):
-        self.delta_threshold = delta_threshold
-        self.relative_threshold = relative_threshold
+    def initialize_stats(
+        self,
+        top10_delta_threshold,
+        top10_relative_threshold,
+        top2_delta_threshold=None,
+        top2_relative_threshold=None,
+    ):
+        self.top10_delta_threshold = top10_delta_threshold
+        self.top10_relative_threshold = top10_relative_threshold
+        self.top2_delta_threshold = top2_delta_threshold
+        self.top2_relative_threshold = top2_relative_threshold
         self.delta_stats = StreamingValueStats()
         self.relative_stats = StreamingValueStats()
-        self.top_delta_stats = StreamingValueStats() if delta_threshold is not None else None
-        self.top_relative_stats = StreamingValueStats() if relative_threshold is not None else None
+        self.top10_delta_stats = StreamingValueStats() if top10_delta_threshold is not None else None
+        self.top10_relative_stats = StreamingValueStats() if top10_relative_threshold is not None else None
+        self.top2_delta_stats = StreamingValueStats() if top2_delta_threshold is not None else None
+        self.top2_relative_stats = StreamingValueStats() if top2_relative_threshold is not None else None
         self.delta_sampler = None
         self.relative_sampler = None
 
@@ -199,9 +212,12 @@ class GateBiasStatsCollector:
             if sampled_delta is not None:
                 sampled_delta_mask = torch.ones_like(sampled_delta, dtype=torch.bool)
                 self.delta_sampler.observe(sampled_delta, sampled_delta_mask)
-        if self.top_delta_stats is not None:
-            top_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.delta_threshold)
-            self.top_delta_stats.observe(delta_gate, top_delta_mask)
+        if self.top10_delta_stats is not None:
+            top10_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.top10_delta_threshold)
+            self.top10_delta_stats.observe(delta_gate, top10_delta_mask)
+        if self.top2_delta_stats is not None:
+            top2_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.top2_delta_threshold)
+            self.top2_delta_stats.observe(delta_gate, top2_delta_mask)
 
         safe_gate_base_acts = torch.where(
             gate_base_acts >= 0,
@@ -218,17 +234,24 @@ class GateBiasStatsCollector:
                 if sampled_relative.numel() > 0:
                     sampled_relative_mask = torch.ones_like(sampled_relative, dtype=torch.bool)
                     self.relative_sampler.observe(sampled_relative, sampled_relative_mask)
-        if self.top_relative_stats is not None:
-            top_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.relative_threshold)
-            self.top_relative_stats.observe(relative_delta, top_relative_mask)
+        if self.top10_relative_stats is not None:
+            top10_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.top10_relative_threshold)
+            self.top10_relative_stats.observe(relative_delta, top10_relative_mask)
+        if self.top2_relative_stats is not None:
+            top2_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.top2_relative_threshold)
+            self.top2_relative_stats.observe(relative_delta, top2_relative_mask)
 
     def reduce(self):
         self.delta_stats.reduce()
         self.relative_stats.reduce()
-        if self.top_delta_stats is not None:
-            self.top_delta_stats.reduce()
-        if self.top_relative_stats is not None:
-            self.top_relative_stats.reduce()
+        if self.top10_delta_stats is not None:
+            self.top10_delta_stats.reduce()
+        if self.top10_relative_stats is not None:
+            self.top10_relative_stats.reduce()
+        if self.top2_delta_stats is not None:
+            self.top2_delta_stats.reduce()
+        if self.top2_relative_stats is not None:
+            self.top2_relative_stats.reduce()
 
     def summary(self):
         delta_summary = self.delta_stats.summary("delta_gate")
@@ -249,8 +272,8 @@ class GateBiasStatsCollector:
             "fraction_positive_relative": relative_summary["fraction_positive_delta_gate / silu(g_base)"],
             "relative_count": relative_summary["count_delta_gate / silu(g_base)"],
         })
-        if self.top_delta_stats is not None:
-            top_delta_summary = self.top_delta_stats.summary("top10_delta_gate")
+        if self.top10_delta_stats is not None:
+            top_delta_summary = self.top10_delta_stats.summary("top10_delta_gate")
             summary.update({
                 "mean(top10_delta_gate)": top_delta_summary["mean(top10_delta_gate)"],
                 "mean(abs(top10_delta_gate))": top_delta_summary["mean(abs(top10_delta_gate))"],
@@ -258,14 +281,32 @@ class GateBiasStatsCollector:
                 "fraction_positive_top10_delta_gate": top_delta_summary["fraction_positive_top10_delta_gate"],
                 "count_top10_delta_gate": top_delta_summary["count_top10_delta_gate"],
             })
-        if self.top_relative_stats is not None:
-            top_relative_summary = self.top_relative_stats.summary("top10_delta_gate / silu(g_base)")
+        if self.top10_relative_stats is not None:
+            top_relative_summary = self.top10_relative_stats.summary("top10_delta_gate / silu(g_base)")
             summary.update({
                 "mean(top10_delta_gate / silu(g_base))": top_relative_summary["mean(top10_delta_gate / silu(g_base))"],
                 "mean(abs(top10_delta_gate / silu(g_base)))": top_relative_summary["mean(abs(top10_delta_gate / silu(g_base)))"],
                 "rms(top10_delta_gate / silu(g_base))": top_relative_summary["rms(top10_delta_gate / silu(g_base))"],
                 "fraction_positive_top10_relative": top_relative_summary["fraction_positive_top10_delta_gate / silu(g_base)"],
                 "count_top10_relative": top_relative_summary["count_top10_delta_gate / silu(g_base)"],
+            })
+        if self.top2_delta_stats is not None:
+            top2_delta_summary = self.top2_delta_stats.summary("top2_delta_gate")
+            summary.update({
+                "mean(top2_delta_gate)": top2_delta_summary["mean(top2_delta_gate)"],
+                "mean(abs(top2_delta_gate))": top2_delta_summary["mean(abs(top2_delta_gate))"],
+                "rms(top2_delta_gate)": top2_delta_summary["rms(top2_delta_gate)"],
+                "fraction_positive_top2_delta_gate": top2_delta_summary["fraction_positive_top2_delta_gate"],
+                "count_top2_delta_gate": top2_delta_summary["count_top2_delta_gate"],
+            })
+        if self.top2_relative_stats is not None:
+            top2_relative_summary = self.top2_relative_stats.summary("top2_delta_gate / silu(g_base)")
+            summary.update({
+                "mean(top2_delta_gate / silu(g_base))": top2_relative_summary["mean(top2_delta_gate / silu(g_base))"],
+                "mean(abs(top2_delta_gate / silu(g_base)))": top2_relative_summary["mean(abs(top2_delta_gate / silu(g_base)))"],
+                "rms(top2_delta_gate / silu(g_base))": top2_relative_summary["rms(top2_delta_gate / silu(g_base))"],
+                "fraction_positive_top2_relative": top2_relative_summary["fraction_positive_top2_delta_gate / silu(g_base)"],
+                "count_top2_relative": top2_relative_summary["count_top2_delta_gate / silu(g_base)"],
             })
         return summary
 
@@ -444,19 +485,28 @@ def main():
     # determine cutoff thresholds, second pass collects stats and summaries based on 
     # those cutoff thresholds
     sampling_collector = GateBiasStatsCollector(bias_sign=bias_sign)
-    sampling_collector.initialize_stats(None, None)
+    sampling_collector.initialize_stats(None, None, None, None)
     sampling_collector.enable_sampling(QUANTILE_SAMPLE_SIZE)
     observer_host.set_collector(sampling_collector)
     sampling_loader = build_loader(tokenizer, args.device_batch_size, sequence_len, args.split, device)
     run_eval_pass(model, sampling_loader, eval_steps, autocast_ctx, pass_name="Sampling pass")
 
-    delta_threshold = compute_global_quantile(sampling_collector.delta_sampler.get_samples(), TOP_QUANTILE)
-    relative_threshold = compute_global_quantile(sampling_collector.relative_sampler.get_samples(), TOP_QUANTILE)
-    print0(f"Top {TOP_FRACTION:.0%} delta_gate threshold: {delta_threshold:.3e}")
-    print0(f"Top {TOP_FRACTION:.0%} relative delta_gate threshold: {relative_threshold:.3e}")
+    top10_delta_threshold = compute_global_quantile(sampling_collector.delta_sampler.get_samples(), TOP10_QUANTILE)
+    top10_relative_threshold = compute_global_quantile(sampling_collector.relative_sampler.get_samples(), TOP10_QUANTILE)
+    top2_delta_threshold = compute_global_quantile(sampling_collector.delta_sampler.get_samples(), TOP2_QUANTILE)
+    top2_relative_threshold = compute_global_quantile(sampling_collector.relative_sampler.get_samples(), TOP2_QUANTILE)
+    print0(f"Top {TOP10_FRACTION:.0%} delta_gate threshold: {top10_delta_threshold:.3e}")
+    print0(f"Top {TOP10_FRACTION:.0%} relative delta_gate threshold: {top10_relative_threshold:.3e}")
+    print0(f"Top {TOP2_FRACTION:.0%} delta_gate threshold: {top2_delta_threshold:.3e}")
+    print0(f"Top {TOP2_FRACTION:.0%} relative delta_gate threshold: {top2_relative_threshold:.3e}")
 
     summary_collector = GateBiasStatsCollector(bias_sign=bias_sign)
-    summary_collector.initialize_stats(delta_threshold, relative_threshold)
+    summary_collector.initialize_stats(
+        top10_delta_threshold,
+        top10_relative_threshold,
+        top2_delta_threshold,
+        top2_relative_threshold,
+    )
     observer_host.set_collector(summary_collector)
     summary_loader = build_loader(tokenizer, args.device_batch_size, sequence_len, args.split, device)
     run_eval_pass(model, summary_loader, eval_steps, autocast_ctx, pass_name="Summary pass")
@@ -484,6 +534,16 @@ def main():
     print0(f"rms(top10_delta_gate / silu(g_base)): {summary['rms(top10_delta_gate / silu(g_base))']:.3e}")
     print0(f"fraction_positive_top10_relative: {summary['fraction_positive_top10_relative']:.3e}")
     print0(f"count_top10_relative: {int(summary['count_top10_relative'])}")
+    print0(f"mean(top2_delta_gate): {summary['mean(top2_delta_gate)']:.3e}")
+    print0(f"mean(abs(top2_delta_gate)): {summary['mean(abs(top2_delta_gate))']:.3e}")
+    print0(f"rms(top2_delta_gate): {summary['rms(top2_delta_gate)']:.3e}")
+    print0(f"fraction_positive_top2_delta_gate: {summary['fraction_positive_top2_delta_gate']:.3e}")
+    print0(f"count_top2_delta_gate: {int(summary['count_top2_delta_gate'])}")
+    print0(f"mean(top2_delta_gate / silu(g_base)): {summary['mean(top2_delta_gate / silu(g_base))']:.3e}")
+    print0(f"mean(abs(top2_delta_gate / silu(g_base))): {summary['mean(abs(top2_delta_gate / silu(g_base)))']:.3e}")
+    print0(f"rms(top2_delta_gate / silu(g_base)): {summary['rms(top2_delta_gate / silu(g_base))']:.3e}")
+    print0(f"fraction_positive_top2_relative: {summary['fraction_positive_top2_relative']:.3e}")
+    print0(f"count_top2_relative: {int(summary['count_top2_relative'])}")
 
     compute_cleanup()
 
