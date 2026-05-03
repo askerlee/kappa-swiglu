@@ -48,7 +48,8 @@ class StreamingValueStats:
     @torch.inference_mode()
     def observe(self, values: torch.Tensor, mask: torch.Tensor):
         self._lazy_init(values.device)
-        masked_values = values[mask]
+        expanded_mask = torch.broadcast_to(mask, values.shape)
+        masked_values = values[expanded_mask]
         if masked_values.numel() == 0:
             return
         self.sum_value.add_(masked_values.sum(dtype=torch.float64))
@@ -99,7 +100,8 @@ class PrioritySampleQuantile:
     def observe(self, values: torch.Tensor, mask: torch.Tensor):
         if self.sample_size <= 0:
             return
-        masked_values = values[mask]
+        expanded_mask = torch.broadcast_to(mask, values.shape)
+        masked_values = values[expanded_mask]
         if masked_values.numel() == 0:
             return
         masked_values = masked_values.detach().float().reshape(-1).cpu()
@@ -139,7 +141,7 @@ class GateBiasStatsCollector:
             raise ValueError(f"bias_sign must be -1 or 1, got {bias_sign}")
         self.bias_sign = bias_sign
     @torch.inference_mode()
-    def __init_top_stats(self, delta_threshold, relative_threshold):
+    def initialize_stats(self, delta_threshold, relative_threshold):
         self.delta_threshold = delta_threshold
         self.relative_threshold = relative_threshold
         self.delta_stats = StreamingValueStats()
@@ -384,8 +386,8 @@ def main():
     )
     model.eval()
 
-    accumulator = ExpertGateBiasDeltaAccumulator(bias_sign=bias_sign)
-    instrumented_layers = install_gate_bias_instrumentation(model, accumulator)
+    observer_host = GateBiasObserverHost()
+    instrumented_layers = install_gate_bias_instrumentation(model, observer_host)
     if instrumented_layers == 0:
         raise RuntimeError("No MoE expert layers with gate_proj_bias were found in the loaded model")
     if args.compile:
@@ -400,31 +402,32 @@ def main():
         )
     actual_tokens = eval_steps * tokens_per_step
 
-    loader = tokenizing_distributed_data_loader_bos_bestfit(
-        tokenizer,
-        args.device_batch_size,
-        sequence_len,
-        split=args.split,
-        device=device,
-    )
-
     print0(f"Evaluating gate bias effect for model step {meta['step']:06d}")
     print0(f"Split: {args.split} | requested tokens: {args.eval_tokens:,} | actual tokens: {actual_tokens:,}")
     print0(
         f"Instrumented MoE layers: {instrumented_layers} | bias sign: negative | compile: {args.compile}"
     )
 
-    batch_iter = iter(loader)
-    with torch.inference_mode():
-        for step_idx in range(eval_steps):
-            x, y = next(batch_iter)
-            with autocast_ctx:
-                model(x, y, loss_reduction="none")
-            if step_idx == 0 or (step_idx + 1) % 50 == 0 or step_idx + 1 == eval_steps:
-                print0(f"Processed {step_idx + 1}/{eval_steps} eval steps")
+    sampling_collector = GateBiasStatsCollector(bias_sign=bias_sign)
+    sampling_collector.initialize_stats(None, None)
+    sampling_collector.enable_sampling(QUANTILE_SAMPLE_SIZE)
+    observer_host.set_collector(sampling_collector)
+    sampling_loader = build_loader(tokenizer, args.device_batch_size, sequence_len, args.split, device)
+    run_eval_pass(model, sampling_loader, eval_steps, autocast_ctx, pass_name="Sampling pass")
 
-    accumulator.reduce()
-    summary = accumulator.summary()
+    delta_threshold = compute_global_quantile(sampling_collector.delta_sampler.get_samples(), TOP_QUANTILE)
+    relative_threshold = compute_global_quantile(sampling_collector.relative_sampler.get_samples(), TOP_QUANTILE)
+    print0(f"Top {TOP_FRACTION:.0%} delta_gate threshold: {delta_threshold:.5e}")
+    print0(f"Top {TOP_FRACTION:.0%} relative delta_gate threshold: {relative_threshold:.5e}")
+
+    summary_collector = GateBiasStatsCollector(bias_sign=bias_sign)
+    summary_collector.initialize_stats(delta_threshold, relative_threshold)
+    observer_host.set_collector(summary_collector)
+    summary_loader = build_loader(tokenizer, args.device_batch_size, sequence_len, args.split, device)
+    run_eval_pass(model, summary_loader, eval_steps, autocast_ctx, pass_name="Summary pass")
+
+    summary_collector.reduce()
+    summary = summary_collector.summary()
     print0("Gate bias activation delta summary:")
     print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.5e}")
     print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.5e}")
@@ -436,6 +439,16 @@ def main():
     print0(f"rms(delta_gate / silu(g_base)): {summary['rms(delta_gate / silu(g_base))']:.5e}")
     print0(f"fraction_positive_relative: {summary['fraction_positive_relative']:.5e}")
     print0(f"relative_count: {int(summary['relative_count'])}")
+    print0(f"mean(top10_delta_gate): {summary['mean(top10_delta_gate)']:.5e}")
+    print0(f"mean(abs(top10_delta_gate)): {summary['mean(abs(top10_delta_gate))']:.5e}")
+    print0(f"rms(top10_delta_gate): {summary['rms(top10_delta_gate)']:.5e}")
+    print0(f"fraction_positive_top10_delta_gate: {summary['fraction_positive_top10_delta_gate']:.5e}")
+    print0(f"count_top10_delta_gate: {int(summary['count_top10_delta_gate'])}")
+    print0(f"mean(top10_delta_gate / silu(g_base)): {summary['mean(top10_delta_gate / silu(g_base))']:.5e}")
+    print0(f"mean(abs(top10_delta_gate / silu(g_base))): {summary['mean(abs(top10_delta_gate / silu(g_base)))']:.5e}")
+    print0(f"rms(top10_delta_gate / silu(g_base)): {summary['rms(top10_delta_gate / silu(g_base))']:.5e}")
+    print0(f"fraction_positive_top10_relative: {summary['fraction_positive_top10_relative']:.5e}")
+    print0(f"count_top10_relative: {int(summary['count_top10_relative'])}")
 
     compute_cleanup()
 
