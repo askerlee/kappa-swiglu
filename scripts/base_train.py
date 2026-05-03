@@ -120,7 +120,7 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
-parser.add_argument("--gate-proj-bias-nolearn-iterations", type=int, default=400,
+parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=400,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
@@ -201,8 +201,8 @@ if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
 if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
-if args.gate_proj_bias_nolearn_iterations < 0:
-    raise ValueError("--gate-proj-bias-nolearn-iterations must be >= 0")
+if args.gate_proj_bias_delay_start_iterations < 0:
+    raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
@@ -627,7 +627,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
     gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
-    gate_proj_bias_nolearn_iterations=args.gate_proj_bias_nolearn_iterations,
+    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_iterations,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
@@ -1024,7 +1024,7 @@ while True:
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
         stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
-        nolearn_iterations=args.gate_proj_bias_nolearn_iterations,
+        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
