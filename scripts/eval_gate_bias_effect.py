@@ -26,6 +26,7 @@ from nanochat.gpt import MOELayer
 TOP_FRACTION = 0.1
 TOP_QUANTILE = 1.0 - TOP_FRACTION
 QUANTILE_SAMPLE_SIZE = 131072
+QUANTILE_SLOT_SAMPLE_COUNT = 8
 RELATIVE_DENOM_EPS = 1e-6
 
 
@@ -156,6 +157,21 @@ class GateBiasStatsCollector:
         self.delta_sampler = PrioritySampleQuantile(sample_size)
         self.relative_sampler = PrioritySampleQuantile(sample_size)
 
+    @torch.inference_mode()
+    def _sample_valid_slot_values(self, values: torch.Tensor, expert_slot_mask: torch.Tensor):
+        valid_slots = torch.nonzero(expert_slot_mask, as_tuple=False)
+        if valid_slots.numel() == 0:
+            return None
+        if valid_slots.size(0) > QUANTILE_SLOT_SAMPLE_COUNT:
+            sampled_idx = torch.randint(
+                valid_slots.size(0),
+                (QUANTILE_SLOT_SAMPLE_COUNT,),
+                device=valid_slots.device,
+            )
+            valid_slots = valid_slots[sampled_idx]
+        sampled_values = values[valid_slots[:, 0], valid_slots[:, 1]]
+        return sampled_values
+
     def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
         experts = layer.experts
         if getattr(experts, "gate_proj_bias", None) is None:
@@ -179,7 +195,10 @@ class GateBiasStatsCollector:
         slot_mask = expert_slot_mask.unsqueeze(-1)
         self.delta_stats.observe(delta_gate, slot_mask)
         if self.delta_sampler is not None:
-            self.delta_sampler.observe(delta_gate, slot_mask)
+            sampled_delta = self._sample_valid_slot_values(delta_gate, expert_slot_mask)
+            if sampled_delta is not None:
+                sampled_delta_mask = torch.ones_like(sampled_delta, dtype=torch.bool)
+                self.delta_sampler.observe(sampled_delta, sampled_delta_mask)
         if self.top_delta_stats is not None:
             top_delta_mask = torch.logical_and(slot_mask, delta_gate >= self.delta_threshold)
             self.top_delta_stats.observe(delta_gate, top_delta_mask)
@@ -193,7 +212,12 @@ class GateBiasStatsCollector:
         relative_mask = torch.logical_and(slot_mask, torch.isfinite(relative_delta))
         self.relative_stats.observe(relative_delta, relative_mask)
         if self.relative_sampler is not None:
-            self.relative_sampler.observe(relative_delta, relative_mask)
+            sampled_relative = self._sample_valid_slot_values(relative_delta, expert_slot_mask)
+            if sampled_relative is not None:
+                sampled_relative = sampled_relative[torch.isfinite(sampled_relative)]
+                if sampled_relative.numel() > 0:
+                    sampled_relative_mask = torch.ones_like(sampled_relative, dtype=torch.bool)
+                    self.relative_sampler.observe(sampled_relative, sampled_relative_mask)
         if self.top_relative_stats is not None:
             top_relative_mask = torch.logical_and(relative_mask, relative_delta >= self.relative_threshold)
             self.top_relative_stats.observe(relative_delta, top_relative_mask)
