@@ -53,6 +53,7 @@ class ExpertGateBiasDeltaAccumulator:
         self.positive_relative_count = torch.zeros((), device=device, dtype=torch.float64)
         self.relative_total_count = torch.zeros((), device=device, dtype=torch.float64)
 
+    @torch._dynamo.disable
     @torch.inference_mode()
     def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
         experts = layer.experts
