@@ -391,7 +391,7 @@ def parse_args():
     parser.add_argument(
         "--compile",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="compile the instrumented model for faster inference",
     )
     return parser.parse_args()
@@ -440,6 +440,9 @@ def main():
     if device_type == "cuda":
         print0(f"CUDA compute dtype: {COMPUTE_DTYPE}")
 
+    # Two-pass approach: first pass collects quantile samples to 
+    # determine cutoff thresholds, second pass collects stats and summaries based on 
+    # those cutoff thresholds
     sampling_collector = GateBiasStatsCollector(bias_sign=bias_sign)
     sampling_collector.initialize_stats(None, None)
     sampling_collector.enable_sampling(QUANTILE_SAMPLE_SIZE)
