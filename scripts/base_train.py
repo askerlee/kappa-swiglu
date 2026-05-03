@@ -120,6 +120,8 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
+parser.add_argument("--gate-proj-bias-nolearn-iterations", type=int, default=400,
+                    help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
@@ -199,6 +201,8 @@ if not (0.0 < args.router_ortho_on_prob <= 1.0):
     raise ValueError("--router-ortho-on-prob must be in (0, 1]")
 if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
+if args.gate_proj_bias_nolearn_iterations < 0:
+    raise ValueError("--gate-proj-bias-nolearn-iterations must be >= 0")
 if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
@@ -623,6 +627,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
     gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
+    gate_proj_bias_nolearn_iterations=args.gate_proj_bias_nolearn_iterations,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
@@ -699,41 +704,51 @@ def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=-1, floor_fr
     return base_weight * anneal_multiplier
 
 
-def get_two_stage_annealed_loss_weight(base_weight, it, total_iterations, stage1_iterations=-1, stage1_floor_frac=0.1, final_floor_frac=0.01):
+def get_two_stage_annealed_loss_weight(base_weight, it, total_iterations, stage1_iterations=-1, stage1_floor_frac=0.1, final_floor_frac=0.01, nolearn_iterations=0):
     total_iterations = max(int(total_iterations), 1)
-    if stage1_iterations <= 0:
-        stage1_iterations = max((total_iterations + 1) // 2, 1)
-    stage1_iterations = min(max(int(stage1_iterations), 0), total_iterations)
-    it = min(max(int(it), 0), total_iterations)
+    effective_nolearn_iterations = min(max(int(nolearn_iterations), 0), total_iterations)
+    if it < effective_nolearn_iterations:
+        return 0.0
 
-    if stage1_iterations > 0 and it <= stage1_iterations:
-        stage1_progress = min(max(it, 0), stage1_iterations) / stage1_iterations
+    effective_total_iterations = max(total_iterations - effective_nolearn_iterations, 1)
+    effective_it = min(max(int(it) - effective_nolearn_iterations, 0), effective_total_iterations)
+    if stage1_iterations <= 0:
+        stage1_iterations = max((effective_total_iterations + 1) // 2, 1)
+    stage1_iterations = min(max(int(stage1_iterations), 0), effective_total_iterations)
+
+    if stage1_iterations > 0 and effective_it <= stage1_iterations:
+        stage1_progress = min(max(effective_it, 0), stage1_iterations) / stage1_iterations
         stage1_multiplier = stage1_floor_frac + (1.0 - stage1_floor_frac) * (1.0 - stage1_progress)
         return base_weight * stage1_multiplier
 
-    if stage1_iterations >= total_iterations:
+    if stage1_iterations >= effective_total_iterations:
         return base_weight * stage1_floor_frac
 
-    stage2_iterations = total_iterations - stage1_iterations
-    stage2_step = it - stage1_iterations
+    stage2_iterations = effective_total_iterations - stage1_iterations
+    stage2_step = effective_it - stage1_iterations
     stage2_progress = min(max(stage2_step, 0), stage2_iterations) / stage2_iterations
     stage2_multiplier = final_floor_frac + (stage1_floor_frac - final_floor_frac) * (1.0 - stage2_progress)
     return base_weight * stage2_multiplier
 
 
-def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000):
+def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000, nolearn_iterations=0):
     num_iterations = max(0, num_iterations)
-    effective_warmup_iterations = min(max(0, warmup_iterations), num_iterations)
+    effective_nolearn_iterations = min(max(0, nolearn_iterations), num_iterations)
+    effective_warmup_iterations = min(max(0, warmup_iterations), max(0, num_iterations - effective_nolearn_iterations))
     it = min(max(it, 0), num_iterations)
 
-    if effective_warmup_iterations > 0 and it < effective_warmup_iterations:
-        return max_scale * it / effective_warmup_iterations
+    if it < effective_nolearn_iterations:
+        return 0.0
 
-    remaining_iterations = num_iterations - effective_warmup_iterations
+    warmup_step = it - effective_nolearn_iterations
+    if effective_warmup_iterations > 0 and warmup_step < effective_warmup_iterations:
+        return max_scale * warmup_step / effective_warmup_iterations
+
+    remaining_iterations = num_iterations - effective_nolearn_iterations - effective_warmup_iterations
     if remaining_iterations <= 0:
         return max_scale
 
-    decay_progress = min(max(it - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
+    decay_progress = min(max(warmup_step - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
     return max_scale + (end_scale - max_scale) * decay_progress
 
 def scalar_loss_to_item(value):
@@ -1009,6 +1024,7 @@ while True:
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
         stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
+        nolearn_iterations=args.gate_proj_bias_nolearn_iterations,
     )
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
@@ -1295,6 +1311,7 @@ while True:
                         num_iterations,
                         end_scale=group.get("lr_scale_end", 1.0),
                         max_scale=group.get("lr_scale_max", 1.0),
+                        nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
                         warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
                     )
                     group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
