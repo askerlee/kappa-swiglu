@@ -12,6 +12,7 @@ Example:
 
 import argparse
 from contextlib import nullcontext
+import time
 from types import MethodType
 
 import torch
@@ -414,13 +415,20 @@ def build_loader(tokenizer, device_batch_size, sequence_len, split, device):
 
 def run_eval_pass(model, loader, eval_steps, autocast_ctx, pass_name):
     batch_iter = iter(loader)
+    last_log_time = time.perf_counter()
     with torch.inference_mode():
         for step_idx in range(eval_steps):
             x, y = next(batch_iter)
             with autocast_ctx:
                 model(x, y, loss_reduction="none")
             if step_idx == 0 or (step_idx + 1) % 50 == 0 or step_idx + 1 == eval_steps:
-                print0(f"{pass_name}: processed {step_idx + 1}/{eval_steps} eval steps")
+                now = time.perf_counter()
+                elapsed_since_last_log = now - last_log_time
+                print0(
+                    f"{pass_name}: processed {step_idx + 1}/{eval_steps} eval steps "
+                    f"({elapsed_since_last_log:.2f}s)"
+                )
+                last_log_time = now
 
 
 def parse_args():
