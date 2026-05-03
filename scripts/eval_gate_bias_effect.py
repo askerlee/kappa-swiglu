@@ -33,6 +33,11 @@ class ExpertGateBiasDeltaAccumulator:
         self.sum_sq_delta = None
         self.positive_count = None
         self.total_count = None
+        self.sum_relative_delta = None
+        self.sum_abs_relative_delta = None
+        self.sum_sq_relative_delta = None
+        self.positive_relative_count = None
+        self.relative_total_count = None
 
     def _lazy_init(self, device):
         if self.sum_delta is not None:
@@ -42,6 +47,11 @@ class ExpertGateBiasDeltaAccumulator:
         self.sum_sq_delta = torch.zeros((), device=device, dtype=torch.float64)
         self.positive_count = torch.zeros((), device=device, dtype=torch.float64)
         self.total_count = torch.zeros((), device=device, dtype=torch.float64)
+        self.sum_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
+        self.sum_abs_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
+        self.sum_sq_relative_delta = torch.zeros((), device=device, dtype=torch.float64)
+        self.positive_relative_count = torch.zeros((), device=device, dtype=torch.float64)
+        self.relative_total_count = torch.zeros((), device=device, dtype=torch.float64)
 
     @torch.inference_mode()
     def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
@@ -61,8 +71,10 @@ class ExpertGateBiasDeltaAccumulator:
             return
 
         bias_term = router_confidence.unsqueeze(-1) * experts.gate_proj_bias.unsqueeze(1)
-        delta_gate = experts.act_fn(gate_base + self.bias_sign * bias_term) - experts.act_fn(gate_base)
+        gate_base_acts = experts.act_fn(gate_base)
+        delta_gate = experts.act_fn(gate_base + self.bias_sign * bias_term) - gate_base_acts
         delta_gate = delta_gate.float()
+        gate_base_acts = gate_base_acts.float()
 
         slot_mask = expert_slot_mask.unsqueeze(-1)
         slot_mask_f = slot_mask.to(dtype=delta_gate.dtype)
@@ -74,6 +86,17 @@ class ExpertGateBiasDeltaAccumulator:
         self.positive_count.add_(torch.logical_and(delta_gate > 0, slot_mask).sum(dtype=torch.float64))
         self.total_count.add_(total_count)
 
+        relative_delta = delta_gate / gate_base_acts
+        finite_relative_mask = torch.logical_and(slot_mask, torch.isfinite(relative_delta))
+        finite_relative_mask_f = finite_relative_mask.to(dtype=relative_delta.dtype)
+        self.sum_relative_delta.add_((relative_delta * finite_relative_mask_f).sum(dtype=torch.float64))
+        self.sum_abs_relative_delta.add_((relative_delta.abs() * finite_relative_mask_f).sum(dtype=torch.float64))
+        self.sum_sq_relative_delta.add_((relative_delta.square() * finite_relative_mask_f).sum(dtype=torch.float64))
+        self.positive_relative_count.add_(
+            torch.logical_and(relative_delta > 0, finite_relative_mask).sum(dtype=torch.float64)
+        )
+        self.relative_total_count.add_(finite_relative_mask.sum(dtype=torch.float64))
+
     def reduce(self):
         if self.sum_delta is None:
             raise RuntimeError("No gate-bias statistics were collected")
@@ -84,6 +107,11 @@ class ExpertGateBiasDeltaAccumulator:
                 self.sum_sq_delta,
                 self.positive_count,
                 self.total_count,
+                self.sum_relative_delta,
+                self.sum_abs_relative_delta,
+                self.sum_sq_relative_delta,
+                self.positive_relative_count,
+                self.relative_total_count,
             ):
                 dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
 
@@ -91,17 +119,35 @@ class ExpertGateBiasDeltaAccumulator:
         total_count = self.total_count.item()
         if total_count == 0:
             raise RuntimeError("Collected zero valid gate activations; no summary can be computed")
+        relative_total_count = self.relative_total_count.item()
         mean_delta = self.sum_delta.item() / total_count
         mean_abs_delta = self.sum_abs_delta.item() / total_count
         rms_delta = (self.sum_sq_delta.item() / total_count) ** 0.5
         fraction_positive = self.positive_count.item() / total_count
-        return {
+        summary = {
             "mean(delta_gate)": mean_delta,
             "mean(abs(delta_gate))": mean_abs_delta,
             "rms(delta_gate)": rms_delta,
             "fraction_positive": fraction_positive,
             "count": total_count,
         }
+        if relative_total_count > 0:
+            summary.update({
+                "mean(delta_gate / silu(g_base))": self.sum_relative_delta.item() / relative_total_count,
+                "mean(abs(delta_gate / silu(g_base)))": self.sum_abs_relative_delta.item() / relative_total_count,
+                "rms(delta_gate / silu(g_base))": (self.sum_sq_relative_delta.item() / relative_total_count) ** 0.5,
+                "fraction_positive_relative": self.positive_relative_count.item() / relative_total_count,
+                "relative_count": relative_total_count,
+            })
+        else:
+            summary.update({
+                "mean(delta_gate / silu(g_base))": float("nan"),
+                "mean(abs(delta_gate / silu(g_base)))": float("nan"),
+                "rms(delta_gate / silu(g_base))": float("nan"),
+                "fraction_positive_relative": float("nan"),
+                "relative_count": 0.0,
+            })
+        return summary
 
 
 def install_gate_bias_instrumentation(model, accumulator: ExpertGateBiasDeltaAccumulator):
@@ -187,22 +233,17 @@ def parse_args():
     parser.add_argument("--eval-capacity", type=float, default=None, help="override MoE eval capacity")
     parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
     parser.add_argument(
-        "--bias-sign",
-        type=str,
-        default="implementation",
-        choices=["implementation", "plus"],
-        help=(
-            "how to apply the bias term inside delta computation: "
-            "'implementation' uses g_base - a*s to match nanochat's current forward, "
-            "'plus' uses g_base + a*s to match the algebra written in the request"
-        ),
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="compile the instrumented model for faster inference",
     )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    bias_sign = -1 if args.bias_sign == "implementation" else 1
+    bias_sign = -1
 
     device_type = autodetect_device_type() if args.device_type == "" else args.device_type
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
@@ -223,6 +264,8 @@ def main():
     instrumented_layers = install_gate_bias_instrumentation(model, accumulator)
     if instrumented_layers == 0:
         raise RuntimeError("No MoE expert layers with gate_proj_bias were found in the loaded model")
+    if args.compile:
+        model = torch.compile(model, dynamic=False)
 
     sequence_len = meta["model_config"]["sequence_len"]
     tokens_per_step = args.device_batch_size * sequence_len * ddp_world_size
@@ -243,7 +286,9 @@ def main():
 
     print0(f"Evaluating gate bias effect for model step {meta['step']:06d}")
     print0(f"Split: {args.split} | requested tokens: {args.eval_tokens:,} | actual tokens: {actual_tokens:,}")
-    print0(f"Instrumented MoE layers: {instrumented_layers} | bias sign mode: {args.bias_sign}")
+    print0(
+        f"Instrumented MoE layers: {instrumented_layers} | bias sign mode: implementation | compile: {args.compile}"
+    )
 
     batch_iter = iter(loader)
     with torch.inference_mode():
@@ -257,11 +302,16 @@ def main():
     accumulator.reduce()
     summary = accumulator.summary()
     print0("Gate bias activation delta summary:")
-    print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.8e}")
-    print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.8e}")
-    print0(f"rms(delta_gate): {summary['rms(delta_gate)']:.8e}")
-    print0(f"fraction_positive: {summary['fraction_positive']:.8e}")
+    print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.5e}")
+    print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.5e}")
+    print0(f"rms(delta_gate): {summary['rms(delta_gate)']:.5e}")
+    print0(f"fraction_positive: {summary['fraction_positive']:.5e}")
     print0(f"count: {int(summary['count'])}")
+    print0(f"mean(delta_gate / silu(g_base)): {summary['mean(delta_gate / silu(g_base))']:.5e}")
+    print0(f"mean(abs(delta_gate / silu(g_base))): {summary['mean(abs(delta_gate / silu(g_base)))']:.5e}")
+    print0(f"rms(delta_gate / silu(g_base)): {summary['rms(delta_gate / silu(g_base))']:.5e}")
+    print0(f"fraction_positive_relative: {summary['fraction_positive_relative']:.5e}")
+    print0(f"relative_count: {int(summary['relative_count'])}")
 
     compute_cleanup()
 
