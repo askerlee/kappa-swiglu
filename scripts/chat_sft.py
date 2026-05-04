@@ -10,6 +10,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-s
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -73,8 +74,14 @@ parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning ra
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
-parser.add_argument("--exp-gate-bias-lr-scale-start", type=float, default=0.1, help="initial LR multiplier for exp gate bias parameters")
-parser.add_argument("--exp-gate-bias-lr-scale-end", type=float, default=0.01, help="final LR multiplier for exp gate bias parameters")
+parser.add_argument("--gate-proj-bias-lr-max-scale", dest="gate_proj_bias_lr_max_scale", type=float, default=0.1,
+                    help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
+parser.add_argument("--gate-proj-bias-lr-final-scale", dest="gate_proj_bias_lr_final_scale", type=float, default=0.01,
+                    help="final LR scale factor for gate_proj_bias params after warming from 0 to --gate-proj-bias-lr-max-scale")
+parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=50,
+                    help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
+parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
+                    help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=0.002, help="weight for exp gate projection bias L2 loss")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
@@ -100,6 +107,10 @@ parser.add_argument("--log-interval", type=int, default=10, help="interval (in s
 args = parser.parse_args()
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
+if args.gate_proj_bias_delay_start_iterations < 0:
+    raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.gate_proj_bias_lr_warmup_iterations < 0:
+    raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
 user_config = vars(args).copy()
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -211,6 +222,10 @@ optimizer = model.setup_optimizer(
     matrix_lr=args.matrix_lr,
     weight_decay=weight_decay_scaled,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
+    gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
+    gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
+    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_iterations,
+    gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 # Override the initial learning rate as a fraction of the base learning rate
 for group in optimizer.param_groups:
@@ -395,9 +410,32 @@ def get_lr_multiplier(progress, lr_base_scale=1.0):
     # first 80% of training: no decay, then linearly ramp down to 0.
     return lr_base_scale if progress < 0.8 else lr_base_scale * (1 - (progress - 0.8) / 0.2)
 
-def get_exp_gate_bias_lr_scale(progress, start_scale=0.1, end_scale=0.01):
-    progress = min(max(progress, 0.0), 1.0)
-    return start_scale + (end_scale - start_scale) * progress
+def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000, nolearn_iterations=0):
+    num_iterations = max(0, num_iterations)
+    effective_nolearn_iterations = min(max(0, nolearn_iterations), num_iterations)
+    effective_warmup_iterations = min(max(0, warmup_iterations), max(0, num_iterations - effective_nolearn_iterations))
+    it = min(max(it, 0), num_iterations)
+
+    if it < effective_nolearn_iterations:
+        return 0.0
+
+    warmup_step = it - effective_nolearn_iterations
+    if effective_warmup_iterations > 0 and warmup_step < effective_warmup_iterations:
+        return max_scale * warmup_step / effective_warmup_iterations
+
+    remaining_iterations = num_iterations - effective_nolearn_iterations - effective_warmup_iterations
+    if remaining_iterations <= 0:
+        return max_scale
+
+    decay_progress = min(max(warmup_step - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
+    return max_scale + (end_scale - max_scale) * decay_progress
+
+def get_gate_proj_bias_schedule_total_iterations(step, progress):
+    if args.num_iterations > 0:
+        return args.num_iterations
+    if progress > 0.0:
+        return max(step + 1, math.ceil((step + 1) / progress))
+    return step + 1
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
@@ -618,14 +656,18 @@ while True:
     lrm = get_lr_multiplier(progress, args.lr_base_scale)
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
-    exp_gate_bias_lr_scale = get_exp_gate_bias_lr_scale(
-        progress,
-        start_scale=args.exp_gate_bias_lr_scale_start,
-        end_scale=args.exp_gate_bias_lr_scale_end,
+    gate_proj_bias_schedule_total_iterations = get_gate_proj_bias_schedule_total_iterations(step, progress)
+    gate_proj_bias_lr_scale = get_linear_lr_scale(
+        step,
+        gate_proj_bias_schedule_total_iterations,
+        end_scale=args.gate_proj_bias_lr_final_scale,
+        max_scale=args.gate_proj_bias_lr_max_scale,
+        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+        warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
     )
     for group in optimizer.param_groups:
         if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
-            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * exp_gate_bias_lr_scale
+            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':
@@ -669,7 +711,8 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
             "train/exp_gate_proj_bias_l2_loss_weight": args.exp_gate_proj_bias_l2_loss_weight,
-            "train/exp_gate_bias_lr_scale": exp_gate_bias_lr_scale,
+            "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
+            "train/exp_gate_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
