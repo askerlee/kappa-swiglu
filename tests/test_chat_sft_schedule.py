@@ -45,3 +45,11 @@ def test_chat_eval_runs_only_on_last_step():
 
     assert "if last_step:\n        model.eval()\n        engine = Engine(orig_model, tokenizer)" in source
     assert "chat_eval_every" not in source
+
+
+def test_gate_proj_bias_l2_anchor_cli_defaults_to_initial_and_wires_load_behavior():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="initial"' in source
+    assert 'refresh_gate_proj_bias_references = args.exp_gate_proj_bias_l2_anchor == "initial"' in source
+    assert 'refresh_gate_proj_bias_references=refresh_gate_proj_bias_references' in source
