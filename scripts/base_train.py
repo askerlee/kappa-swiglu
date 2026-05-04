@@ -161,8 +161,7 @@ parser.add_argument(
 parser.add_argument("--max-auto-grad-accum-steps", type=int, default=64, help="cap gradient accumulation steps when --total-batch-size=-1 (-1 = disable cap)")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
-parser.add_argument("--weight-decay-dense", type=float, default=0.05, help="cautious weight decay for dense Transformer layers in the Muon optimizer (for weights)")
-parser.add_argument("--weight-decay-moe",   type=float, default=0.05, help="cautious weight decay for MoE Transformer layers in the Muon optimizer (for weights)")
+parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for Transformer layer weights in the Muon optimizer")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
@@ -600,15 +599,10 @@ if batch_ratio != 1.0:
     print0(f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,} (reference: {reference_batch_size:,})")
 
 # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2 (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
-weight_decay_dense_scaled = args.weight_decay_dense * (12 / args.depth)**2
-weight_decay_moe_scaled = args.weight_decay_moe * (12 / args.depth)**2
+weight_decay_scaled = args.weight_decay * (12 / args.depth)**2
 if args.depth != 12:
     print0(
-        f"Scaling dense weight decay from {args.weight_decay_dense:.6f} to {weight_decay_dense_scaled:.6f} "
-        f"for depth {args.depth}"
-    )
-    print0(
-        f"Scaling MoE weight decay from {args.weight_decay_moe:.6f} to {weight_decay_moe_scaled:.6f} "
+        f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} "
         f"for depth {args.depth}"
     )
 
@@ -620,8 +614,7 @@ optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr * batch_lr_scale,
     embedding_lr=args.embedding_lr * batch_lr_scale,
     matrix_lr=args.matrix_lr * batch_lr_scale,
-    weight_decay_dense=weight_decay_dense_scaled,
-    weight_decay_moe=weight_decay_moe_scaled,
+    weight_decay=weight_decay_scaled,
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,

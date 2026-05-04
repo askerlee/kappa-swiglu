@@ -1236,7 +1236,7 @@ class GPT(nn.Module):
                 mlp.update_aux_free_load_balancing()
 
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
-                        weight_decay_dense=0.0, weight_decay_moe=0.0,
+                        weight_decay=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
                         gate_proj_bias_lr_final_scale=1.0,
                         gate_proj_bias_lr_max_scale=1.0,
@@ -1322,7 +1322,7 @@ class GPT(nn.Module):
             group_params = [p for p in dense_matrix_params if p.shape == shape]
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay_dense,
+                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
@@ -1330,7 +1330,7 @@ class GPT(nn.Module):
             group_params = [p for p in moe_matrix_params if p.shape == shape]
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay_moe,
+                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))

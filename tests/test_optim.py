@@ -203,8 +203,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
 
     optimizer = model.setup_optimizer(
         matrix_lr=0.01,
-        weight_decay_dense=0.2,
-        weight_decay_moe=0.2,
+        weight_decay=0.2,
     )
 
     moe_params = set()
@@ -247,8 +246,7 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
 
     optimizer = model.setup_optimizer(
         matrix_lr=0.01,
-        weight_decay_dense=0.0,
-        weight_decay_moe=0.0,
+        weight_decay=0.0,
     )
 
     dense_gate_bias = []
@@ -291,8 +289,7 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
     optimizer = model.setup_optimizer(
         embedding_lr=0.2,
         matrix_lr=0.01,
-        weight_decay_dense=0.0,
-        weight_decay_moe=0.0,
+        weight_decay=0.0,
         gate_proj_bias_lr_final_scale=1.0,
         gate_proj_bias_lr_warmup_iterations=1000,
     )
