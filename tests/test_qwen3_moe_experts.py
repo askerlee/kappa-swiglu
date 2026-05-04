@@ -159,11 +159,16 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
 
     base_model = GPT(base_config)
     penalized_model = GPT(penalized_config)
+    base_model.init_weights()
+    penalized_model.init_weights()
     penalized_model.load_state_dict(deepcopy(base_model.state_dict()))
 
     with torch.no_grad():
-        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.zero_()
-        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(3.0)
+        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(1.0)
+    penalized_model.refresh_gate_proj_bias_references()
+
+    with torch.no_grad():
+        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(4.0)
         base_model.load_state_dict(deepcopy(penalized_model.state_dict()))
 
     idx = torch.randint(0, base_config.vocab_size, (2, 4))
@@ -173,11 +178,64 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
     penalized_loss, penalized_losses = penalized_model(idx, targets)
 
     assert penalized_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
-    assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 9.0
+    assert base_losses['exp_gate_proj_bias_l2_loss'].item() == 16.0
     if torch.isnan(base_loss) and torch.isnan(penalized_loss):
         assert True
     else:
         torch.testing.assert_close(penalized_loss, base_loss)
+
+
+def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+
+    assert model.transformer.h[1].mlp.experts.initial_gate_proj_bias is None
+
+    model.refresh_gate_proj_bias_references()
+
+    assert model.transformer.h[1].mlp.experts.initial_gate_proj_bias is not None
+
+
+def test_gate_proj_bias_references_can_auto_refresh_when_config_enabled():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=True,
+        refresh_gate_proj_bias_references=True,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+
+    assert model.transformer.h[1].mlp.experts.initial_gate_proj_bias is not None
 
 
 def test_dense_gate_projection_has_expected_shape():

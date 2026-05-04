@@ -82,7 +82,7 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=0.002, help="weight for exp gate projection bias L2 loss")
+parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=0.005, help="weight for exp gate projection bias L2 loss")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
@@ -152,7 +152,14 @@ wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sf
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
 # NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
-model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+model, tokenizer, meta = load_model(
+    "base",
+    device,
+    phase="train",
+    model_tag=args.model_tag,
+    step=args.model_step,
+    refresh_gate_proj_bias_references=True,
+)
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)

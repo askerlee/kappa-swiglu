@@ -28,6 +28,7 @@ class GPTConfig:
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_start_layer: int = 0,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
+        refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
@@ -91,6 +92,7 @@ class GPTConfig:
                 f"exp_gate_proj_bias_start_layer must be >= 0, got {exp_gate_proj_bias_start_layer}"
             )
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
+        self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight

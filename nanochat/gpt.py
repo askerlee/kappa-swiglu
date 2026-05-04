@@ -709,6 +709,7 @@ class Qwen3MLPExperts(nn.Module):
             self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
         else:
             self.gate_proj_bias = None
+        self.register_buffer("initial_gate_proj_bias", None, persistent=False)
         self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -721,6 +722,13 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_out_acts_normed = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
+
+    @torch.no_grad()
+    def snapshot_gate_proj_bias_reference(self):
+        if self.gate_proj_bias is None:
+            self.initial_gate_proj_bias = None
+            return
+        self.initial_gate_proj_bias = self.gate_proj_bias.detach().clone()
 
     def set_router(self, router):
         self._router_ref = weakref.ref(router)
@@ -1003,11 +1011,32 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if experts is not None and experts.gate_proj_bias is not None:
-                    moe_losses.append(experts.gate_proj_bias.float().square().mean())
+                    gate_proj_bias_delta = experts.gate_proj_bias.float()
+                    if experts.initial_gate_proj_bias is not None:
+                        gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
+                    moe_losses.append(gate_proj_bias_delta.square().mean())
 
         device = self.transformer.wte.weight.device
         moe_loss = torch.stack(moe_losses).mean() if moe_losses else torch.zeros((), device=device)
         return moe_loss
+
+    @torch.no_grad()
+    def refresh_gate_proj_bias_references(self):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                experts = getattr(mlp, 'experts', None)
+                if isinstance(experts, Qwen3MLPExperts):
+                    experts.snapshot_gate_proj_bias_reference()
+
+    def _should_refresh_gate_proj_bias_references(self):
+        return bool(getattr(self.config, 'refresh_gate_proj_bias_references', False))
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
+        if self._should_refresh_gate_proj_bias_references():
+            self.refresh_gate_proj_bias_references()
+        return load_result
 
     @torch.no_grad()
     def init_weights(self):
@@ -1085,6 +1114,9 @@ class GPT(nn.Module):
             self.transformer.wte.to(dtype=torch.bfloat16)
             for ve in self.value_embeds.values():
                 ve.to(dtype=torch.bfloat16)
+
+        if self._should_refresh_gate_proj_bias_references():
+            self.refresh_gate_proj_bias_references()
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         # TODO: bump base theta more? e.g. 100K is more common more recently
