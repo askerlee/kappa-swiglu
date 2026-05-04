@@ -1533,7 +1533,6 @@ while True:
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
-            "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
@@ -1546,7 +1545,10 @@ while True:
             "train/is_chat_sft_step": 1.0 if train_source == "chat_sft" else 0.0,
         }
         if train_source == "chat_sft":
+            log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])
             log_data["train/chat_sft_seen_conversations"] = chat_sft_dataloader_state_dict["seen_conversations"]
+        else:
+            log_data["train/loss_step"] = debiased_smooth_loss
         log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/exp_gate_proj_bias_l2_loss_weight"] = exp_gate_proj_bias_l2_loss_weight

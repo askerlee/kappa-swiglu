@@ -34,3 +34,10 @@ def test_mixed_script_persists_separate_chat_sft_loader_state():
     assert '"chat_sft_dataloader_state_dict": chat_sft_dataloader_state_dict' in source
     assert 'if is_chat_sft_step:' in source
     assert 'checkpoint_dir = os.path.join(base_dir, "base_mixed_checkpoints", output_dirname)' in source
+
+
+def test_mixed_script_logs_chat_sft_loss_separately_from_base_loss():
+    source = BASE_TRAIN_MIXED.read_text()
+
+    assert 'log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses[\'ntp_loss\'])' in source
+    assert 'log_data["train/loss_step"] = debiased_smooth_loss' in source
