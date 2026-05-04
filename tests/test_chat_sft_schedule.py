@@ -32,3 +32,16 @@ def test_exp_gate_bias_lr_schedule_clamps_progress_and_supports_overrides():
 
     assert abs(schedule(-1.0, start_scale=0.2, end_scale=0.05) - 0.2) < 1e-12
     assert abs(schedule(2.0, start_scale=0.2, end_scale=0.05) - 0.05) < 1e-12
+
+
+def test_chat_eval_task_names_default_to_all_tasks():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert 'chat_eval_task_names = ALL_CHAT_EVAL_TASKS if args.chat_eval_task_name is None else args.chat_eval_task_name.split(\'|\')' in source
+
+
+def test_chat_eval_runs_only_on_last_step():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert "if last_step:\n        model.eval()\n        engine = Engine(orig_model, tokenizer)" in source
+    assert "chat_eval_every" not in source

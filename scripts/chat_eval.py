@@ -25,6 +25,16 @@ from tasks.arc import ARC
 from tasks.gsm8k import GSM8K
 from tasks.spellingbee import SpellingBee
 
+ALL_CHAT_EVAL_TASKS = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
+CHAT_EVAL_BASELINE_ACCURACIES = {
+    'ARC-Easy': 0.25, # multiple choice 1 of 4 => 25%
+    'ARC-Challenge': 0.25, # multiple choice 1 of 4 => 25%
+    'MMLU': 0.25, # multiple choice 1 of 4 => 25%
+    'GSM8K': 0.0, # open-ended => 0%
+    'HumanEval': 0.0, # open-ended => 0%
+    'SpellingBee': 0.0, # open-ended => 0%
+}
+
 # -----------------------------------------------------------------------------
 # Generative evaluation loop (we go one problem at a time, sample, evaluate)
 
@@ -178,6 +188,21 @@ def run_chat_eval(task_name, model, tokenizer, engine,
         raise ValueError(f"Unsupported task evaluation type: {task_object.eval_type}")
     return acc
 
+def compute_chatcore_metric(results, baseline_accuracies=None, all_tasks=None):
+    baseline_accuracies = CHAT_EVAL_BASELINE_ACCURACIES if baseline_accuracies is None else baseline_accuracies
+    all_tasks = ALL_CHAT_EVAL_TASKS if all_tasks is None else all_tasks
+    if not all(task_name in results for task_name in all_tasks):
+        return {}
+
+    centered_mean = 0.0
+    for task_name in all_tasks:
+        acc = results[task_name]
+        baseline_acc = baseline_accuracies.get(task_name, 0.0)
+        centered_acc = (acc - baseline_acc) / (1.0 - baseline_acc)
+        centered_mean += centered_acc
+    chatcore_metric = centered_mean / len(all_tasks)
+    return {"ChatCORE metric": chatcore_metric}
+
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
 
@@ -206,16 +231,7 @@ if __name__ == "__main__":
     engine = Engine(model, tokenizer)
 
     # Get the tasks to evaluate on
-    all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
-    baseline_accuracies = {
-        'ARC-Easy': 0.25, # multiple choice 1 of 4 => 25%
-        'ARC-Challenge': 0.25, # multiple choice 1 of 4 => 25%
-        'MMLU': 0.25, # multiple choice 1 of 4 => 25%
-        'GSM8K': 0.0, # open-ended => 0%
-        'HumanEval': 0.0, # open-ended => 0%
-        'SpellingBee': 0.0, # open-ended => 0%
-    }
-    task_names = all_tasks if args.task_name is None else args.task_name.split('|')
+    task_names = ALL_CHAT_EVAL_TASKS if args.task_name is None else args.task_name.split('|')
 
     # Run all the task evaluations sequentially
     results = {}
@@ -236,18 +252,7 @@ if __name__ == "__main__":
 
     # Log to report
     from nanochat.report import get_report
-    all_tasks_were_evaluated = all(task_name in results for task_name in all_tasks)
-    # calculate the ChatCORE metric if we can (similar to CORE, it's the mean centered accuracy)
-    # this way, ChatCORE ranges from 0 (at random baseline) to 1 (peak performance)
-    chatcore_metric_dict = {}
-    if all_tasks_were_evaluated:
-        centered_mean = 0
-        for task_name, acc in results.items():
-            baseline_acc = baseline_accuracies.get(task_name, 0.0)
-            centered_acc = (acc - baseline_acc) / (1.0 - baseline_acc)
-            centered_mean += centered_acc
-        chatcore_metric = centered_mean / len(results)
-        chatcore_metric_dict = {"ChatCORE metric": chatcore_metric}
+    chatcore_metric_dict = compute_chatcore_metric(results)
     get_report().log(section="Chat evaluation " + args.source, data=[
         vars(args), # CLI args
         results,

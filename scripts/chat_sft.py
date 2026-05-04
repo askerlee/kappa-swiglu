@@ -27,6 +27,8 @@ from nanochat.loss_eval import evaluate_bpb
 from nanochat.checkpoint_manager import load_model
 from nanochat.gpt import get_moe_layer_indices
 from nanochat.manager import MANAGER
+from nanochat.engine import Engine
+from scripts.chat_eval import run_chat_eval, compute_chatcore_metric, ALL_CHAT_EVAL_TASKS
 import torch.distributed as dist
 
 # TaskMixture shuffles the datasets at initialization
@@ -98,6 +100,13 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=150, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=20*524288, help="number of tokens to evaluate val loss on")
+parser.add_argument("--chat-eval-task-name", type=str, default=None, help="chat eval task name(s); default = all tasks. Use | to split multiple tasks.")
+parser.add_argument("--chat-eval-temperature", type=float, default=0.0, help="temperature for generative chat eval")
+parser.add_argument("--chat-eval-max-new-tokens", type=int, default=512, help="max new tokens for generative chat eval")
+parser.add_argument("--chat-eval-num-samples", type=int, default=1, help="number of samples for generative chat eval")
+parser.add_argument("--chat-eval-top-k", type=int, default=50, help="top-k for generative chat eval")
+parser.add_argument("--chat-eval-batch-size", type=int, default=8, help="batch size for categorical chat eval")
+parser.add_argument("--chat-eval-max-problems", type=int, default=None, help="max problems per chat eval task")
 # Output
 parser.add_argument("--dry-run", action="store_true", help="log to wandb but skip checkpoints/report")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
@@ -411,6 +420,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 train_loader = sft_data_generator_bos_bestfit("train")
 build_val_loader = lambda: sft_data_generator_bos_bestfit("val")
 progress = 0 # will go from 0 to 1 over the course of the epoch
+chat_eval_task_names = ALL_CHAT_EVAL_TASKS if args.chat_eval_task_name is None else args.chat_eval_task_name.split('|')
 
 # Learning rate scheduler
 def get_lr_multiplier(progress, lr_base_scale=1.0):
@@ -575,6 +585,8 @@ min_val_bpb = float("inf")
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
 total_training_time = 0 # total wall-clock time of training
+latest_chat_eval_results = None
+latest_chat_eval_step = None
 step = 0
 while True:
     flops_so_far = num_flops_per_token * args.total_batch_size * step
@@ -601,6 +613,43 @@ while True:
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
         }, step=step)
+        model.train()
+
+    if last_step:
+        model.eval()
+        engine = Engine(orig_model, tokenizer)
+        chat_eval_results = {}
+        with autocast_ctx:
+            for task_name in chat_eval_task_names:
+                acc = run_chat_eval(
+                    task_name,
+                    orig_model,
+                    tokenizer,
+                    engine,
+                    batch_size=args.chat_eval_batch_size,
+                    num_samples=args.chat_eval_num_samples,
+                    max_new_tokens=args.chat_eval_max_new_tokens,
+                    temperature=args.chat_eval_temperature,
+                    top_k=args.chat_eval_top_k,
+                    max_problems=args.chat_eval_max_problems,
+                )
+                chat_eval_results[task_name] = acc
+                print0(f"Step {step:05d} | {task_name} accuracy: {100 * acc:.2f}%")
+        chatcore_metric_dict = compute_chatcore_metric(chat_eval_results)
+        latest_chat_eval_results = dict(chat_eval_results)
+        latest_chat_eval_results.update(chatcore_metric_dict)
+        latest_chat_eval_step = step
+        wandb_log_data = {
+            "step": step,
+            "total_training_flops": flops_so_far,
+            "total_training_time": total_training_time,
+        }
+        for task_name, acc in chat_eval_results.items():
+            wandb_log_data[f"chat_eval/{task_name}"] = acc
+        if "ChatCORE metric" in chatcore_metric_dict:
+            print0(f"Step {step:05d} | ChatCORE metric: {chatcore_metric_dict['ChatCORE metric']:.4f}")
+            wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
+        wandb_run.log(wandb_log_data, step=step)
         model.train()
 
     # save checkpoint at the end of the run (only on master process)
@@ -798,6 +847,20 @@ if not args.dry_run:
             "Minimum validation bpb": min_val_bpb,
         }
     ])
+    if latest_chat_eval_results is not None:
+        get_report().log(section="Chat evaluation sft", data=[
+            {
+                "step": latest_chat_eval_step,
+                "task_names": chat_eval_task_names,
+                "max_problems": args.chat_eval_max_problems,
+                "batch_size": args.chat_eval_batch_size,
+                "num_samples": args.chat_eval_num_samples,
+                "max_new_tokens": args.chat_eval_max_new_tokens,
+                "temperature": args.chat_eval_temperature,
+                "top_k": args.chat_eval_top_k,
+            },
+            latest_chat_eval_results,
+        ])
 
 # cleanup
 wandb_run.finish() # wandb run finish
