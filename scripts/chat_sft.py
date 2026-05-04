@@ -712,7 +712,6 @@ while True:
             "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
             "train/exp_gate_proj_bias_l2_loss_weight": args.exp_gate_proj_bias_l2_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
-            "train/exp_gate_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
