@@ -12,6 +12,12 @@ If you are only on CPU/Macbook, you'll want to train a much much smaller LLM. Ex
 python -m scripts.base_train_mixed --depth=4 --max-seq-len=512 --device-batch-size=1 
 --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=2000 
 --chat-sft-every=100
+
+chat-SFT steps usually have a much lower expert utilities, 
+which is not because of a different normalization; they are lower 
+because the router is being fed a much narrower and more structured 
+token distribution, and the utility metric counts all routed tokens, 
+not just assistant-loss tokens.
 """
 
 import os
@@ -385,7 +391,7 @@ model.init_weights() # 3) All tensors get initialized
 # If we are resuming, overwrite the model parameters with those of the checkpoint
 base_dir = get_base_dir()
 output_dirname = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d12
-checkpoint_dir = os.path.join(base_dir, "base_mixed_checkpoints", output_dirname)
+checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 load_optimizer_state = False
 saved_optimizer_world_size = 0
