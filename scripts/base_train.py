@@ -1299,6 +1299,7 @@ while True:
                                 args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
+        gate_proj_bias_lr_scale = 1.0
         for group in optimizer.param_groups:
                 if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
                     gate_proj_bias_lr_scale = get_linear_lr_scale(
@@ -1357,6 +1358,7 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
+            "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "lrm": lrm,
             "dt": dt,
             "tok_per_sec": tok_per_sec,
