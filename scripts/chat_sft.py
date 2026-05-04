@@ -634,7 +634,7 @@ while True:
                     max_problems=args.chat_eval_max_problems,
                 )
                 chat_eval_results[task_name] = acc
-                print0(f"Step {step:05d} | {task_name} accuracy: {100 * acc:.2f}%")
+                print0(f"{task_name} accuracy: {100 * acc:.2f}%")
         chatcore_metric_dict = compute_chatcore_metric(chat_eval_results)
         latest_chat_eval_results = dict(chat_eval_results)
         latest_chat_eval_results.update(chatcore_metric_dict)
@@ -647,7 +647,7 @@ while True:
         for task_name, acc in chat_eval_results.items():
             wandb_log_data[f"chat_eval/{task_name}"] = acc
         if "ChatCORE metric" in chatcore_metric_dict:
-            print0(f"Step {step:05d} | ChatCORE metric: {chatcore_metric_dict['ChatCORE metric']:.4f}")
+            print0(f"ChatCORE metric: {chatcore_metric_dict['ChatCORE metric']:.4f}")
             wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
         wandb_run.log(wandb_log_data, step=step)
         model.train()
