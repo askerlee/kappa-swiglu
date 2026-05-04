@@ -9,7 +9,9 @@ or distributed as:
 torchrun --nproc_per_node=8 -m scripts.base_train_mixed
 
 If you are only on CPU/Macbook, you'll want to train a much much smaller LLM. Example:
-python -m scripts.base_train_mixed --depth=4 --max-seq-len=512 --device-batch-size=1 --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=20 --chat-sft-every=10
+python -m scripts.base_train_mixed --depth=4 --max-seq-len=512 --device-batch-size=1 
+--eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=2000 
+--chat-sft-every=100
 """
 
 import os
@@ -655,29 +657,6 @@ if resuming and load_optimizer_state:
     del optimizer_state_dict
 
 # -----------------------------------------------------------------------------
-# Initialize the DataLoaders for train/val
-dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-chat_sft_dataloader_resume_state_dict = None if not resuming else meta_data.get("chat_sft_dataloader_state_dict")
-train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
-build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device)
-identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
-chat_sft_train_dataset = build_chat_sft_train_dataset(args.chat_sft_train_mixture_repeats, identity_conversations_filepath)
-chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(
-    chat_sft_train_dataset,
-    tokenizer,
-    args.device_batch_size,
-    args.max_seq_len,
-    device,
-    device_type,
-    ddp_rank,
-    ddp_world_size,
-    buffer_size=args.chat_sft_buffer_size,
-    resume_state_dict=chat_sft_dataloader_resume_state_dict,
-)
-x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
-chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
-
-# -----------------------------------------------------------------------------
 # Set up hyperparameter schedulers
 
 # Learning rate scheduler
@@ -913,6 +892,29 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
             "iteration": iteration,
             "seen_conversations": consumed + skipped_overlong,
         }
+
+# -----------------------------------------------------------------------------
+# Initialize the DataLoaders for train/val
+dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
+chat_sft_dataloader_resume_state_dict = None if not resuming else meta_data.get("chat_sft_dataloader_state_dict")
+train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+build_val_loader = lambda: tokenizing_distributed_data_loader_bos_bestfit(tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device)
+identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
+chat_sft_train_dataset = build_chat_sft_train_dataset(args.chat_sft_train_mixture_repeats, identity_conversations_filepath)
+chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(
+    chat_sft_train_dataset,
+    tokenizer,
+    args.device_batch_size,
+    args.max_seq_len,
+    device,
+    device_type,
+    ddp_rank,
+    ddp_world_size,
+    buffer_size=args.chat_sft_buffer_size,
+    resume_state_dict=chat_sft_dataloader_resume_state_dict,
+)
+x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
+chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
 
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
