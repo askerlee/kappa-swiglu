@@ -73,6 +73,8 @@ parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning ra
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
+parser.add_argument("--exp-gate-bias-lr-scale-start", type=float, default=0.1, help="initial LR multiplier for exp gate bias parameters")
+parser.add_argument("--exp-gate-bias-lr-scale-end", type=float, default=0.01, help="final LR multiplier for exp gate bias parameters")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
@@ -106,6 +108,9 @@ def combine_router_ortho_sublosses(losses):
     if gate_proj_loss is None:
         return 0.0
     return gate_proj_loss
+
+
+EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT = 0.002
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -392,6 +397,10 @@ def get_lr_multiplier(progress, lr_base_scale=1.0):
     # first 80% of training: no decay, then linearly ramp down to 0.
     return lr_base_scale if progress < 0.8 else lr_base_scale * (1 - (progress - 0.8) / 0.2)
 
+def get_exp_gate_bias_lr_scale(progress, start_scale=0.1, end_scale=0.01):
+    progress = min(max(progress, 0.0), 1.0)
+    return start_scale + (end_scale - start_scale) * progress
+
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
     frac = min(it / 300, 1)
@@ -620,6 +629,10 @@ while True:
         # Most values in losses are detached and for logging only, but router_ortho_loss is not.
         router_ortho_loss = combine_router_ortho_sublosses(losses)
         loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
+        exp_gate_proj_bias_l2_loss = losses.get("exp_gate_proj_bias_l2_loss")
+        if exp_gate_proj_bias_l2_loss is None:
+            exp_gate_proj_bias_l2_loss = 0.0
+        loss = loss + EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT * exp_gate_proj_bias_l2_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -635,8 +648,16 @@ while True:
     lrm = get_lr_multiplier(progress, args.lr_base_scale)
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
+    exp_gate_bias_lr_scale = get_exp_gate_bias_lr_scale(
+        progress,
+        start_scale=args.exp_gate_bias_lr_scale_start,
+        end_scale=args.exp_gate_bias_lr_scale_end,
+    )
     for group in optimizer.param_groups:
-        group["lr"] = group["initial_lr"] * lrm
+        if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
+            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * exp_gate_bias_lr_scale
+        else:
+            group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
@@ -676,6 +697,9 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
+            "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
+            "train/exp_gate_proj_bias_l2_loss_weight": EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT,
+            "train/exp_gate_bias_lr_scale": exp_gate_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,

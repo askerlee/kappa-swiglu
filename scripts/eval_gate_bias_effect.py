@@ -444,7 +444,7 @@ def parse_args():
     parser.add_argument(
         "--compile",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="compile the instrumented model for faster inference",
     )
     return parser.parse_args()
