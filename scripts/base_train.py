@@ -869,6 +869,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 exp_gate_proj_bias = layer.mlp.experts.gate_proj_bias
                 if exp_gate_proj_bias is not None:
                     losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
+                    losses[f'exp_gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -936,6 +937,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         gate_proj_bias = getattr(mlp, 'gate_proj_bias', None)
         if gate_proj_bias is not None:
             losses[f'exp_gate_proj_bias_mean_{i}'] = gate_proj_bias.mean().float().item()
+            losses[f'exp_gate_proj_bias_abs_mean_{i}'] = gate_proj_bias.abs().mean().float().item()
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
@@ -1387,6 +1389,8 @@ while True:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
             if f'exp_gate_proj_bias_mean_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
+            if f'exp_gate_proj_bias_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_proj_bias_abs_mean_{i}": losses[f'exp_gate_proj_bias_abs_mean_{i}']})
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
             if f'router_grad_norm_top_{i}' in losses:

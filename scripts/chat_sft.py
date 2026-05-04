@@ -75,6 +75,7 @@ parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
 parser.add_argument("--exp-gate-bias-lr-scale-start", type=float, default=0.1, help="initial LR multiplier for exp gate bias parameters")
 parser.add_argument("--exp-gate-bias-lr-scale-end", type=float, default=0.01, help="final LR multiplier for exp gate bias parameters")
+parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=0.002, help="weight for exp gate projection bias L2 loss")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
@@ -108,9 +109,6 @@ def combine_router_ortho_sublosses(losses):
     if gate_proj_loss is None:
         return 0.0
     return gate_proj_loss
-
-
-EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT = 0.002
 
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
@@ -456,6 +454,10 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
+                exp_gate_proj_bias = layer.mlp.experts.gate_proj_bias
+                if exp_gate_proj_bias is not None:
+                    losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
+                    losses[f'exp_gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -614,7 +616,7 @@ while True:
         exp_gate_proj_bias_l2_loss = losses.get("exp_gate_proj_bias_l2_loss")
         if exp_gate_proj_bias_l2_loss is None:
             exp_gate_proj_bias_l2_loss = 0.0
-        loss = loss + EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT * exp_gate_proj_bias_l2_loss
+        loss = loss + args.exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -680,7 +682,7 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
-            "train/exp_gate_proj_bias_l2_loss_weight": EXP_GATE_PROJ_BIAS_L2_LOSS_WEIGHT,
+            "train/exp_gate_proj_bias_l2_loss_weight": args.exp_gate_proj_bias_l2_loss_weight,
             "train/exp_gate_bias_lr_scale": exp_gate_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
@@ -711,6 +713,10 @@ while True:
                 log_data[f"inspect/expert_utility_mean_{i}"] = layer_expert_utilities.mean().item()
             if f'router_row_norm_{i}' in losses:
                 log_data[f"inspect/router_row_norm_{i}"] = losses[f'router_row_norm_{i}']
+            if f'exp_gate_proj_bias_mean_{i}' in losses:
+                log_data[f"inspect/exp_gate_proj_bias_mean_{i}"] = losses[f'exp_gate_proj_bias_mean_{i}']
+            if f'exp_gate_proj_bias_abs_mean_{i}' in losses:
+                log_data[f"inspect/exp_gate_proj_bias_abs_mean_{i}"] = losses[f'exp_gate_proj_bias_abs_mean_{i}']
             if f'router_grad_norm_top_{i}' in losses:
                 log_data[f"inspect/router_grad_norm_top_{i}"] = losses[f'router_grad_norm_top_{i}']
             if f'router_grad_norm_bottom_{i}' in losses:
