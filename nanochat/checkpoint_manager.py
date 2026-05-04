@@ -56,6 +56,31 @@ def _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs):
     if missing_dense_gate_proj:
         log0("Patching missing use_qwen3_dense_mlp in model config to False")
 
+
+def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
+    """Infer expert gate-projection bias config for checkpoints with sparse metadata."""
+    if "use_exp_gate_proj_bias" in model_config_kwargs:
+        return
+
+    gate_proj_bias_layers = []
+    gate_proj_bias_pattern = re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias$")
+    for key in model_data:
+        match = gate_proj_bias_pattern.match(key)
+        if match is not None:
+            gate_proj_bias_layers.append(int(match.group(1)))
+
+    use_exp_gate_proj_bias = bool(gate_proj_bias_layers)
+    model_config_kwargs["use_exp_gate_proj_bias"] = use_exp_gate_proj_bias
+    if not use_exp_gate_proj_bias:
+        return
+
+    inferred_start_layer = min(gate_proj_bias_layers)
+    model_config_kwargs.setdefault("exp_gate_proj_bias_start_layer", inferred_start_layer)
+    log0(
+        "Patching missing expert gate_proj_bias config in model config to "
+        f"enabled from layer {model_config_kwargs['exp_gate_proj_bias_start_layer']}"
+    )
+
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
@@ -572,6 +597,7 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)
     _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
+    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)

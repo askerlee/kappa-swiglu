@@ -564,6 +564,7 @@ while True:
         if args.model_save_tag:
             output_dirname += f"-{args.model_save_tag}"
         checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
+        model_config_kwargs = orig_model.config.__dict__.copy()
 
         save_checkpoint(
             checkpoint_dir,
@@ -574,22 +575,7 @@ while True:
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
-                "model_config": {
-                    "sequence_len": args.max_seq_len,
-                    "vocab_size": tokenizer.get_vocab_size(),
-                    "n_layer": depth,
-                    "n_head": model.config.n_head,
-                    "n_kv_head": model.config.n_kv_head,
-                    "n_embd": model.config.n_embd,
-                    "window_pattern": model.config.window_pattern,
-                    "n_exp": model.config.n_exp,
-                    "moe_start_layer": model.config.moe_start_layer,
-                    "num_moe_layers": getattr(model.config, "num_moe_layers", -1),
-                    "moe_top_k": model.config.moe_top_k,
-                    "use_aux_loss": model.config.use_aux_loss,
-                    "use_aux_free_load_balancing": model.config.use_aux_free_load_balancing,
-                    "aux_free_load_balancing_bias_update_speed": model.config.aux_free_load_balancing_bias_update_speed,
-                },
+                "model_config": model_config_kwargs,
                 "user_config": user_config, # inputs to the training script
             }
         )
