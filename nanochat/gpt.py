@@ -434,9 +434,8 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def _normalize_top_k_scores(self, top_k_logits):
-        normalized_scores = F.normalize(top_k_logits.float(), dim=-1, eps=1e-6)
-        return normalized_scores.to(dtype=top_k_logits.dtype)
+    def _get_top_k_scores(self, top_k_logits):
+        return top_k_logits
 
     def forward(self, x):
         """
@@ -508,7 +507,7 @@ class Router(nn.Module):
                 top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
-            top_k_scores = top_k_logits #self._normalize_top_k_scores(top_k_logits)
+            top_k_scores = self._get_top_k_scores(top_k_logits)
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
@@ -858,7 +857,7 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
-        # top_k_scores: [B*T, k], normalized within top-k and only used as one possible
+        # top_k_scores: [B*T, k], raw selected router scores and one possible
         # gate-bias confidence input. router_probs is the other possible input.
         expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(x)
 

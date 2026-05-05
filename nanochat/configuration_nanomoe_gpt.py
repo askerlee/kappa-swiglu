@@ -87,7 +87,7 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
-        valid_exp_gate_proj_bias_inputs = {"normalized_scores", "router_probs"}
+        valid_exp_gate_proj_bias_inputs = {"top_logits", "router_probs"}
         if exp_gate_proj_bias_input not in valid_exp_gate_proj_bias_inputs:
             raise ValueError(
                 "exp_gate_proj_bias_input must be one of "
