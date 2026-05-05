@@ -104,7 +104,7 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=0.005, help="weight for the Switch-style router auxiliary load-balancing loss")
 parser.add_argument("--aux-loss-weight-final-frac", type=float, default=0.1, help="final fraction of --aux-loss-weight reached by the end of training")
 # router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
-parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-4, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
@@ -123,7 +123,7 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
-parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=400,
+parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=0,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")

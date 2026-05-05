@@ -508,7 +508,7 @@ class Router(nn.Module):
                 top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
-            top_k_scores = self._normalize_top_k_scores(top_k_logits)
+            top_k_scores = top_k_logits #self._normalize_top_k_scores(top_k_logits)
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
