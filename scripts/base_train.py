@@ -76,13 +76,19 @@ def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metri
     return last_core_eval_step
 
 
-sigterm_requested = False
+shutdown_requested = False
+shutdown_signal_name = None
 
 
-def handle_sigterm(signum, frame):
-    del signum, frame
-    global sigterm_requested
-    sigterm_requested = True
+def handle_shutdown_signal(signum, frame):
+    del frame
+    global shutdown_requested
+    global shutdown_signal_name
+    shutdown_requested = True
+    try:
+        shutdown_signal_name = signal.Signals(signum).name
+    except ValueError:
+        shutdown_signal_name = f"signal {signum}"
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -995,13 +1001,14 @@ if args.mockup_mode:
 
 core_results = {}
 
-signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGTERM, handle_shutdown_signal)
+signal.signal(signal.SIGINT, handle_shutdown_signal)
 
 # -----------------------------------------------------------------------------
 # Training loop
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
-    should_terminate_after_checkpoint = sigterm_requested and not is_last_step
+    should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
     router_ortho_num_anneal_iterations = num_iterations
@@ -1080,7 +1087,8 @@ while True:
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if should_terminate_after_checkpoint and master_process:
-        print0(f"SIGTERM received; saving checkpoint at step {step:06d} before exit.")
+        signal_label = shutdown_signal_name or "shutdown signal"
+        print0(f"{signal_label} received; saving checkpoint at step {step:06d} before exit.")
 
     if should_terminate_after_checkpoint or is_last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
         expected_optimizer_ranks = range(ddp_world_size) if args.save_optimizer_state else None
