@@ -2,7 +2,7 @@ import torch
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
+from nanochat.gpt import GPT, MANAGER, Qwen3MLP, Qwen3MLPExperts, Router
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -81,6 +81,30 @@ def test_dynamic_gate_projection_bias_backprops_into_selected_router_scores():
     out.backward()
 
     assert selected_router_scores.grad is not None
+
+
+def test_router_returns_top_k_normalized_selected_scores():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=4,
+        moe_top_k=2,
+        n_embd=4,
+        use_noisy_top_k=False,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    router = Router(config)
+    x = torch.randn(2, 3, config.n_embd)
+
+    _, router_probs, selected_router_scores, _, _ = router(x)
+
+    valid_mask = router_probs.gt(0).all(dim=-1)
+    valid_scores = selected_router_scores[valid_mask]
+    score_norms = valid_scores.norm(dim=-1)
+    torch.testing.assert_close(score_norms, torch.ones_like(score_norms), atol=1e-5, rtol=1e-5)
+    MANAGER._selected_scores_buffer = None
+    MANAGER._selected_scores_size = 0
 
 
 def test_dense_qwen3_gate_projection_has_no_bias_parameter():

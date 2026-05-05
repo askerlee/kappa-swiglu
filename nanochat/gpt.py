@@ -434,6 +434,10 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
+    def _normalize_top_k_scores(self, top_k_logits):
+        normalized_scores = F.normalize(top_k_logits.float(), dim=-1, eps=1e-6)
+        return normalized_scores.to(dtype=top_k_logits.dtype)
+
     def forward(self, x):
         """
         Computes routing information for tokens, including which experts to use,
@@ -504,6 +508,8 @@ class Router(nn.Module):
                 top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
+            top_k_scores = self._normalize_top_k_scores(top_k_logits)
+
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
 
@@ -555,7 +561,7 @@ class Router(nn.Module):
             # We check if the token was assigned to any expert in its k-th slot.
             probs_mask = (final_expert_mask.sum(dim=-1) > 0) # [B*T, k]
             router_probs_masked = router_probs * probs_mask
-            top_k_logits_masked = top_k_logits * probs_mask
+            top_k_scores_masked = top_k_scores * probs_mask
 
             # The final rank is collapsed to a single value per top-k choice.
             # It adds across the expert dimension, since only one expert per top-k slot is selected,
@@ -566,7 +572,7 @@ class Router(nn.Module):
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
             # Their memory usage all scale linearly with (B * T).
-            return final_expert_mask, router_probs_masked, top_k_logits_masked, top_k_indices, final_rank
+            return final_expert_mask, router_probs_masked, top_k_scores_masked, top_k_indices, final_rank
     
     def compute_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor):
         """
@@ -849,9 +855,9 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
-        expert_mask, router_probs, top_k_logits, top_k_indices, rank = self.router(x)
+        expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(x)
 
-        # expert_mask: [B*T, k, n_exp], router_probs/top_k_logits: [B*T, k], etc.
+        # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
             router_ortho_ctx = torch.no_grad if self.router_ortho_loss_weight == 0 else nullcontext
             with router_ortho_ctx():
@@ -878,7 +884,7 @@ class MOELayer(nn.Module):
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
             expert_router_scores = torch.zeros(
-                self.n_exp, exp_capacity, dtype=top_k_logits.dtype, device=top_k_logits.device
+                self.n_exp, exp_capacity, dtype=top_k_scores.dtype, device=top_k_scores.device
             )
         self._build_expert_inputs(
             x_flat,
@@ -886,7 +892,7 @@ class MOELayer(nn.Module):
             exp_capacity,
             flat_token_indices,
             flat_top_k_indices,
-            top_k_logits.view(-1),
+            top_k_scores.view(-1),
             expert_inputs,
             expert_router_scores,
         )
