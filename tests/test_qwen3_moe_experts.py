@@ -138,6 +138,25 @@ def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
     override_moe = Qwen3MLPExperts(override_config)
 
 
+def test_gate_proj_bias_input_defaults_and_overrides_from_config():
+    default_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    override_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_input="router_probs",
+        debug=False,
+    )
+
+    assert default_config.exp_gate_proj_bias_input == "normalized_scores"
+    assert override_config.exp_gate_proj_bias_input == "router_probs"
+
+
 def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
     torch.manual_seed(0)
     base_config = GPTConfig(

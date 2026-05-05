@@ -820,12 +820,15 @@ class MOELayer(nn.Module):
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
+        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'normalized_scores')
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
 
     @torch._dynamo.disable
-    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, flat_router_scores, expert_inputs, expert_router_scores):
+    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, 
+                             flat_top_k_indices, flat_router_scores, expert_inputs, 
+                             expert_router_scores):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
@@ -855,6 +858,8 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
+        # top_k_scores: [B*T, k], normalized within top-k and only used as one possible
+        # gate-bias confidence input. router_probs is the other possible input.
         expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(x)
 
         # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
@@ -881,10 +886,13 @@ class MOELayer(nn.Module):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
+        selected_gate_confidence = top_k_scores
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
+            if self.exp_gate_proj_bias_input == 'router_probs':
+                selected_gate_confidence = router_probs
             expert_router_scores = torch.zeros(
-                self.n_exp, exp_capacity, dtype=top_k_scores.dtype, device=top_k_scores.device
+                self.n_exp, exp_capacity, dtype=selected_gate_confidence.dtype, device=selected_gate_confidence.device
             )
         self._build_expert_inputs(
             x_flat,
@@ -892,7 +900,7 @@ class MOELayer(nn.Module):
             exp_capacity,
             flat_token_indices,
             flat_top_k_indices,
-            top_k_scores.view(-1),
+            selected_gate_confidence.view(-1),
             expert_inputs,
             expert_router_scores,
         )

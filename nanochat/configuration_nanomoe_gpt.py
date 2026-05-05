@@ -26,6 +26,7 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
+        exp_gate_proj_bias_input: str = "normalized_scores",
         exp_gate_proj_bias_start_layer: int = 0,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         refresh_gate_proj_bias_references: bool = False,
@@ -86,6 +87,13 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
+        valid_exp_gate_proj_bias_inputs = {"normalized_scores", "router_probs"}
+        if exp_gate_proj_bias_input not in valid_exp_gate_proj_bias_inputs:
+            raise ValueError(
+                "exp_gate_proj_bias_input must be one of "
+                f"{sorted(valid_exp_gate_proj_bias_inputs)}, got {exp_gate_proj_bias_input!r}"
+            )
+        self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
         self.exp_gate_proj_bias_start_layer = int(exp_gate_proj_bias_start_layer)
         if self.exp_gate_proj_bias_start_layer < 0:
             raise ValueError(
