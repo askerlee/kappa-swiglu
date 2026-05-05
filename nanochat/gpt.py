@@ -555,6 +555,7 @@ class Router(nn.Module):
             # We check if the token was assigned to any expert in its k-th slot.
             probs_mask = (final_expert_mask.sum(dim=-1) > 0) # [B*T, k]
             router_probs_masked = router_probs * probs_mask
+            top_k_logits_masked = top_k_logits * probs_mask
 
             # The final rank is collapsed to a single value per top-k choice.
             # It adds across the expert dimension, since only one expert per top-k slot is selected,
@@ -565,7 +566,7 @@ class Router(nn.Module):
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
             # Their memory usage all scale linearly with (B * T).
-            return final_expert_mask, router_probs_masked, top_k_indices, final_rank
+            return final_expert_mask, router_probs_masked, top_k_logits_masked, top_k_indices, final_rank
     
     def compute_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor):
         """
@@ -666,7 +667,7 @@ class MLPExperts(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
 
-    def forward(self, x, selected_router_probs=None):
+    def forward(self, x, selected_router_scores=None):
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -739,14 +740,14 @@ class Qwen3MLPExperts(nn.Module):
         assert router is not None, "Router reference is no longer valid"
         return router
 
-    def _compute_router_confidence_gate_scale(self, selected_router_probs, grad_scale=0.1):
-        if self.gate_proj_bias is None or selected_router_probs is None:
+    def _compute_router_confidence_gate_scale(self, selected_router_scores, grad_scale=0.1):
+        if self.gate_proj_bias is None or selected_router_scores is None:
             return None
-        selected_router_probs = selected_router_probs.float()
-        selected_router_probs = scale_grad(selected_router_probs, grad_scale)
-        return selected_router_probs.to(dtype=self.gate_proj.dtype)
+        selected_router_scores = selected_router_scores.float()
+        selected_router_scores = scale_grad(selected_router_scores, grad_scale)
+        return selected_router_scores.to(dtype=self.gate_proj.dtype)
 
-    def forward(self, x, selected_router_probs=None):
+    def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
@@ -754,7 +755,7 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         router_confidence_gate_scale = self._compute_router_confidence_gate_scale(
-            selected_router_probs,
+            selected_router_scores,
             grad_scale=self.router_confidence_gate_bias_grad_scale,
         )
         if router_confidence_gate_scale is not None:
@@ -818,13 +819,14 @@ class MOELayer(nn.Module):
         self.router.update_aux_free_load_balancing()
 
     @torch._dynamo.disable
-    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, flat_router_probs, expert_inputs, expert_router_probs):
+    def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, flat_router_scores, expert_inputs, expert_router_scores):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
-        expert_router_probs[valid_expert_indices, valid_ranks] = flat_router_probs[valid_mask]
+        if expert_router_scores is not None:
+            expert_router_scores[valid_expert_indices, valid_ranks] = flat_router_scores[valid_mask]
 
     @torch._dynamo.disable
     def _combine_expert_outputs(self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, router_probs, rank):
@@ -847,9 +849,9 @@ class MOELayer(nn.Module):
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
-        expert_mask, router_probs, top_k_indices, rank = self.router(x)
+        expert_mask, router_probs, top_k_logits, top_k_indices, rank = self.router(x)
 
-        # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
+        # expert_mask: [B*T, k, n_exp], router_probs/top_k_logits: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
             router_ortho_ctx = torch.no_grad if self.router_ortho_loss_weight == 0 else nullcontext
             with router_ortho_ctx():
@@ -873,10 +875,10 @@ class MOELayer(nn.Module):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
-        expert_router_probs = None
+        expert_router_scores = None
         if self.use_qwen3_moe_mlp:
-            expert_router_probs = torch.zeros(
-                self.n_exp, exp_capacity, dtype=router_probs.dtype, device=router_probs.device
+            expert_router_scores = torch.zeros(
+                self.n_exp, exp_capacity, dtype=top_k_logits.dtype, device=top_k_logits.device
             )
         self._build_expert_inputs(
             x_flat,
@@ -884,13 +886,13 @@ class MOELayer(nn.Module):
             exp_capacity,
             flat_token_indices,
             flat_top_k_indices,
-            router_probs.view(-1),
+            top_k_logits.view(-1),
             expert_inputs,
-            expert_router_probs,
+            expert_router_scores,
         )
 
         # --- Run experts ---
-        expert_outputs = self.experts(expert_inputs, selected_router_probs=expert_router_probs) # [n_exp, exp_capacity, C]
+        expert_outputs = self.experts(expert_inputs, selected_router_scores=expert_router_scores) # [n_exp, exp_capacity, C]
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
