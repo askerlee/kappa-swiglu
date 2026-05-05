@@ -149,12 +149,12 @@ def test_gate_proj_bias_input_defaults_and_overrides_from_config():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_input="top_logits",
+        exp_gate_proj_bias_input="router_probs",
         debug=False,
     )
 
-    assert default_config.exp_gate_proj_bias_input == "router_probs"
-    assert override_config.exp_gate_proj_bias_input == "top_logits"
+    assert default_config.exp_gate_proj_bias_input == "top_logits"
+    assert override_config.exp_gate_proj_bias_input == "router_probs"
 
 
 def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():

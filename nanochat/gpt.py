@@ -819,7 +819,7 @@ class MOELayer(nn.Module):
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
-        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'router_probs')
+        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
         self.router_ortho_loss_grad_scale = 0.1
 
     def update_aux_free_load_balancing(self):
