@@ -762,6 +762,20 @@ def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup
     decay_progress = min(max(warmup_step - effective_warmup_iterations, 0), remaining_iterations) / remaining_iterations
     return max_scale + (end_scale - max_scale) * decay_progress
 
+
+def get_gate_proj_bias_lr_scale(optimizer, step, num_iterations):
+    for group in optimizer.param_groups:
+        if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
+            return get_linear_lr_scale(
+                step,
+                num_iterations,
+                end_scale=group.get("lr_scale_end", 1.0),
+                max_scale=group.get("lr_scale_max", 1.0),
+                nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
+                warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
+            )
+    return 1.0
+
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
         return value.detach().item()
@@ -1438,6 +1452,8 @@ while True:
         synchronize()
         t0 = time.time()
         step_losses = None
+        gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
+        orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
         is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
@@ -1479,17 +1495,8 @@ while True:
                                 args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
-        gate_proj_bias_lr_scale = 1.0
         for group in optimizer.param_groups:
                 if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
-                    gate_proj_bias_lr_scale = get_linear_lr_scale(
-                        step,
-                        num_iterations,
-                        end_scale=group.get("lr_scale_end", 1.0),
-                        max_scale=group.get("lr_scale_max", 1.0),
-                        nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
-                        warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
-                    )
                     group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
                 else:
                     group["lr"] = group["initial_lr"] * lrm

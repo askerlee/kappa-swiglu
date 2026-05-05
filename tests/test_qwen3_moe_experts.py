@@ -178,6 +178,38 @@ def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
     override_moe = Qwen3MLPExperts(override_config)
 
 
+def test_gpt_sets_router_confidence_gate_bias_grad_scale_for_all_qwen3_moe_experts():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=0,
+        num_moe_layers=2,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=True,
+        use_qwen3_moe_mlp=True,
+        debug=False,
+    )
+
+    model = GPT(config)
+    model.set_router_confidence_gate_bias_grad_scale(0.125)
+
+    found_experts = 0
+    for block in model.transformer.h:
+        mlp = getattr(block, 'mlp', None)
+        if hasattr(mlp, 'experts') and isinstance(mlp.experts, Qwen3MLPExperts):
+            found_experts += 1
+            assert mlp.experts.router_confidence_gate_bias_grad_scale == 0.125
+
+    assert found_experts == 2
+
+
 def test_gate_proj_bias_input_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,

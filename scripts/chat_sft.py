@@ -465,6 +465,18 @@ def get_gate_proj_bias_schedule_total_iterations(step, progress):
         return max(step + 1, math.ceil((step + 1) / progress))
     return step + 1
 
+
+def get_gate_proj_bias_lr_scale(step, progress):
+    gate_proj_bias_schedule_total_iterations = get_gate_proj_bias_schedule_total_iterations(step, progress)
+    return get_linear_lr_scale(
+        step,
+        gate_proj_bias_schedule_total_iterations,
+        end_scale=args.gate_proj_bias_lr_final_scale,
+        max_scale=args.gate_proj_bias_lr_max_scale,
+        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+        warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
+    )
+
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
     frac = min(it / 300, 1)
@@ -697,6 +709,8 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
+    gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(step, max(progress, approx_progress))
+    orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
             loss, losses = model(x, y)
@@ -723,15 +737,6 @@ while True:
     lrm = get_lr_multiplier(progress, args.lr_base_scale)
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
-    gate_proj_bias_schedule_total_iterations = get_gate_proj_bias_schedule_total_iterations(step, progress)
-    gate_proj_bias_lr_scale = get_linear_lr_scale(
-        step,
-        gate_proj_bias_schedule_total_iterations,
-        end_scale=args.gate_proj_bias_lr_final_scale,
-        max_scale=args.gate_proj_bias_lr_max_scale,
-        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
-        warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
-    )
     for group in optimizer.param_groups:
         if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale

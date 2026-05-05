@@ -1068,6 +1068,15 @@ class GPT(nn.Module):
         moe_loss = torch.stack(moe_losses).mean() if moe_losses else torch.zeros((), device=device)
         return moe_loss
 
+    def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
+        grad_scale = float(grad_scale)
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                experts = getattr(mlp, 'experts', None)
+                if isinstance(experts, Qwen3MLPExperts):
+                    experts.router_confidence_gate_bias_grad_scale = grad_scale
+
     @torch.no_grad()
     def refresh_gate_proj_bias_references(self):
         for block in self.transformer.h:
