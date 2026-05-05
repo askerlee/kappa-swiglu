@@ -26,7 +26,7 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        exp_gate_proj_bias_input: str = "normalized_scores",
+        exp_gate_proj_bias_input: str = "router_probs",
         exp_gate_proj_bias_start_layer: int = 0,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         refresh_gate_proj_bias_references: bool = False,

@@ -115,7 +115,7 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-input", type=str, choices=("normalized_scores", "router_probs"), default="normalized_scores",
+parser.add_argument("--exp-gate-proj-bias-input", type=str, choices=("normalized_scores", "router_probs"), default="router_probs",
                     help="input used to compute MoE gate confidence for gate_proj_bias: normalized selected router scores or selected router probabilities")
 parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
