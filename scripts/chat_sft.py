@@ -812,6 +812,14 @@ while True:
                 log_data[f"inspect/exp_gate_proj_bias_mean_{i}"] = losses[f'exp_gate_proj_bias_mean_{i}']
             if f'exp_gate_proj_bias_abs_mean_{i}' in losses:
                 log_data[f"inspect/exp_gate_proj_bias_abs_mean_{i}"] = losses[f'exp_gate_proj_bias_abs_mean_{i}']
+            if f'mean_abs_gate_{i}' in losses:
+                log_data[f"inspect/mean_abs_gate_{i}"] = losses[f'mean_abs_gate_{i}']
+            if f'active_frac_gate_{i}' in losses:
+                log_data[f"inspect/active_frac_gate_{i}"] = losses[f'active_frac_gate_{i}']
+            if f'topk_share_gate_{i}' in losses:
+                log_data[f"inspect/topk_share_gate_{i}"] = losses[f'topk_share_gate_{i}']
+            if f'entropy_gate_{i}' in losses:
+                log_data[f"inspect/entropy_gate_{i}"] = losses[f'entropy_gate_{i}']
             if f'router_grad_norm_top_{i}' in losses:
                 log_data[f"inspect/router_grad_norm_top_{i}"] = losses[f'router_grad_norm_top_{i}']
             if f'router_grad_norm_bottom_{i}' in losses:

@@ -28,6 +28,8 @@ class GPTConfig:
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "top_logits",
         exp_gate_proj_bias_start_layer: int = 0,
+        gate_stats_threshold: float = 0.1,
+        gate_stats_topk: int = 16,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
@@ -99,6 +101,10 @@ class GPTConfig:
             raise ValueError(
                 f"exp_gate_proj_bias_start_layer must be >= 0, got {exp_gate_proj_bias_start_layer}"
             )
+        self.gate_stats_threshold = float(gate_stats_threshold)
+        self.gate_stats_topk = int(gate_stats_topk)
+        if self.gate_stats_topk <= 0:
+            raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k

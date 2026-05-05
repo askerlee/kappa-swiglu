@@ -66,6 +66,46 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_scores
     torch.testing.assert_close(actual, expected)
 
 
+def test_gate_activation_stats_match_logged_formulas():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        gate_stats_threshold=0.2,
+        gate_stats_topk=3,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+
+    _ = experts(x)
+
+    gate = experts.act_fn(torch.bmm(x, experts.gate_proj)).abs().float()
+    gate_sum = gate.sum(dim=-1)
+    gate_probs = gate / gate_sum.clamp_min(1e-8).unsqueeze(-1)
+    expected_mean_abs_gate = gate.mean()
+    expected_active_frac = gate.gt(config.gate_stats_threshold).float().mean()
+    expected_topk_share = (
+        gate.topk(config.gate_stats_topk, dim=-1).values.sum(dim=-1)
+        / gate_sum.clamp_min(1e-8)
+    ).mean()
+    expected_entropy = -(
+        gate_probs * gate_probs.clamp_min(1e-8).log()
+    ).sum(dim=-1).mean()
+
+    assert experts.last_gate_stats is not None
+    torch.testing.assert_close(experts.last_gate_stats['mean_abs_gate'], expected_mean_abs_gate)
+    torch.testing.assert_close(experts.last_gate_stats['active_frac'], expected_active_frac)
+    torch.testing.assert_close(experts.last_gate_stats['topk_share'], expected_topk_share)
+    torch.testing.assert_close(experts.last_gate_stats['entropy'], expected_entropy)
+
+
 def test_dynamic_gate_projection_bias_backprops_into_selected_router_scores():
     torch.manual_seed(0)
     config = GPTConfig(

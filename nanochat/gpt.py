@@ -704,6 +704,8 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
+        self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
+        self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         gate_proj_bias_start_layer = int(getattr(config, 'exp_gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
@@ -726,6 +728,7 @@ class Qwen3MLPExperts(nn.Module):
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
+        self.last_gate_stats = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -752,6 +755,20 @@ class Qwen3MLPExperts(nn.Module):
         selected_router_scores = scale_grad(selected_router_scores, grad_scale)
         return selected_router_scores.to(dtype=self.gate_proj.dtype)
 
+    def _update_gate_stats(self, gate_out_acts):
+        abs_gate = gate_out_acts.abs().float()
+        topk = min(self.gate_stats_topk, abs_gate.size(-1))
+        abs_gate_sum = abs_gate.sum(dim=-1)
+        gate_probs = abs_gate / abs_gate_sum.clamp_min(1e-8).unsqueeze(-1)
+        entropy = -(gate_probs * gate_probs.clamp_min(1e-8).log()).sum(dim=-1)
+        topk_share = abs_gate.topk(topk, dim=-1).values.sum(dim=-1) / abs_gate_sum.clamp_min(1e-8)
+        self.last_gate_stats = {
+            'mean_abs_gate': abs_gate.mean().detach(),
+            'active_frac': abs_gate.gt(self.gate_stats_threshold).float().mean().detach(),
+            'topk_share': topk_share.mean().detach(),
+            'entropy': entropy.mean().detach(),
+        }
+
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
@@ -770,6 +787,7 @@ class Qwen3MLPExperts(nn.Module):
                 value=-1,
             )
         gate_out_acts = self.act_fn(gate_out_raw)
+        self._update_gate_stats(gate_out_acts)
 
         if self.debug:
             router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
@@ -1459,6 +1477,14 @@ class GPT(nn.Module):
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
+        for layer_idx in get_moe_layer_indices(self.config):
+            experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
+            if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
+                continue
+            losses[f'mean_abs_gate_{layer_idx}'] = experts.last_gate_stats['mean_abs_gate'].item()
+            losses[f'active_frac_gate_{layer_idx}'] = experts.last_gate_stats['active_frac'].item()
+            losses[f'topk_share_gate_{layer_idx}'] = experts.last_gate_stats['topk_share'].item()
+            losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
         
         if targets is not None:
             loss = _chunked_cross_entropy(
