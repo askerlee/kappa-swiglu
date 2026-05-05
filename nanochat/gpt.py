@@ -724,7 +724,7 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.router_confidence_gate_bias_grad_scale = 0.1
+        self.router_confidence_gate_bias_grad_scale = 0 #0.1
         self.gate_out_acts_normed = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
