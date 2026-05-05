@@ -724,7 +724,7 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.router_confidence_gate_bias_grad_scale = 0 #0.1
+        self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
@@ -820,6 +820,7 @@ class MOELayer(nn.Module):
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'router_probs')
+        self.router_ortho_loss_grad_scale = 0.1
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -951,6 +952,8 @@ class MOELayer(nn.Module):
             return zero, sub_losses
 
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
+        # Reduce the grad to router_weights by 0.1 to avoid blowing up the router.
+        router_weights = scale_grad(router_weights, self.router_ortho_loss_grad_scale)
         expert_weights = self.experts.gate_proj
         # Use cosine instead of unnormalized dot product. Otherwise, the loss
         # will reduce itself by suppressing the increase of the magnitudes of
