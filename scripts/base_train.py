@@ -104,7 +104,7 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=0.005, help="weight for the Switch-style router auxiliary load-balancing loss")
 parser.add_argument("--aux-loss-weight-final-frac", type=float, default=0.1, help="final fraction of --aux-loss-weight reached by the end of training")
 # router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
-parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-4, help="weight for router orthogonality loss")
+parser.add_argument("--router-ortho-loss-weight", type=float, default=1e-5, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
 parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
 parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
@@ -115,7 +115,7 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-input", type=str, choices=("top_logits", "router_probs"), default="router_probs",
+parser.add_argument("--exp-gate-proj-bias-input", type=str, choices=("top_logits", "router_probs"), default="top_logits",
                     help="input used to compute MoE gate confidence for gate_proj_bias: selected top-k router scores or selected router probabilities")
 parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
