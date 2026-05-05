@@ -1,9 +1,8 @@
 import torch
-from torch.nn import functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts, Router
+from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -40,23 +39,19 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_w
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
-    router = Router(config)
-    experts.set_router(router)
 
     x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_probs = torch.rand(config.n_exp, 5)
 
     with torch.no_grad():
         experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
         experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-        router.w_g.weight.copy_(torch.randn_like(router.w_g.weight))
         raw_gate_out = torch.bmm(x, experts.gate_proj)
-        router_scores = (x * router.w_g.weight.unsqueeze(1)).sum(dim=-1)
-        normalized_router_scores = F.normalize(router_scores.float(), dim=1, eps=1e-6).to(dtype=x.dtype)
         raw_gate_out = torch.baddbmm(
             raw_gate_out,
-            normalized_router_scores.unsqueeze(-1),
+            selected_router_probs.unsqueeze(-1),
             experts.gate_proj_bias.unsqueeze(1),
             beta=1,
             alpha=-1,
@@ -66,11 +61,11 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_bias_w
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 
-    actual = experts(x)
+    actual = experts(x, selected_router_probs=selected_router_probs)
     torch.testing.assert_close(actual, expected)
 
 
-def test_dynamic_gate_projection_bias_backprops_into_router_weights():
+def test_dynamic_gate_projection_bias_backprops_into_selected_router_probs():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -79,14 +74,13 @@ def test_dynamic_gate_projection_bias_backprops_into_router_weights():
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
-    router = Router(config)
-    experts.set_router(router)
 
     x = torch.randn(config.n_exp, 5, config.n_embd, requires_grad=True)
-    out = experts(x).sum()
+    selected_router_probs = torch.rand(config.n_exp, 5, requires_grad=True)
+    out = experts(x, selected_router_probs=selected_router_probs).sum()
     out.backward()
 
-    assert router.w_g.weight.grad is not None
+    assert selected_router_probs.grad is not None
 
 
 def test_dense_qwen3_gate_projection_has_no_bias_parameter():

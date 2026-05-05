@@ -30,3 +30,4 @@ base_train*.o*
 pbs*.err
 pbs*.out
 *debug.log
+figures/

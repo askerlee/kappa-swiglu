@@ -7,6 +7,13 @@ python -m scripts.chat_sft
 Or torchrun for training:
 
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16
+
+chat_sft.py inherits a lot of configs from the base model, for example
+aux_loss_weight. The subtle part is which value gets saved into the base checkpoint. 
+In pretraining, aux_loss_weight is annealed, then written back into orig_model.config.aux_loss_weight, 
+and checkpoint metadata saves model_config. So chat_sft.py inherits 
+the value stored in the base checkpoint config, which should be the last saved annealed value, 
+not necessarily the original --aux-loss-weight CLI value from base training.
 """
 
 import argparse
