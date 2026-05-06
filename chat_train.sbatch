@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH -p testqueue
 #SBATCH -A aicloud-testgroup
-#SBATCH -t 02:00:00
+#SBATCH -t 03:00:00
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
 export PYTHONUNBUFFERED=1

@@ -3,7 +3,7 @@
 #PBS -q normal
 #PBS -P 11610002
 #PBS -l select=1:ngpus=1
-#PBS -l walltime=02:00:00
+#PBS -l walltime=03:00:00
 
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
