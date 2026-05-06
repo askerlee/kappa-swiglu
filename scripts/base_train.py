@@ -107,7 +107,9 @@ parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of Mo
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
-parser.add_argument("--aux-loss-weight", type=float, default=1e-3, help="weight for the Switch-style router auxiliary load-balancing loss")
+parser.add_argument("--aux-loss-weight", type=float, default=1e-3, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
+parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
+parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 # router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
 parser.add_argument("--router-ortho-loss-weight", type=float, default=0, help="weight for router orthogonality loss")
 parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
@@ -210,6 +212,10 @@ if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.aux_loss_weight_init_scale <= 0.0:
+    raise ValueError("--aux-loss-weight-init-scale must be > 0")
+if args.aux_loss_weight_init_anneal_iterations < 0:
+    raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
 if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
@@ -697,6 +703,14 @@ def get_router_ortho_loss_weight(base_weight, it, num_warmup_iterations=0, num_a
     return warmup_weight * anneal_multiplier
 
 
+def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=500, final_weight=1e-3):
+    if num_anneal_iterations <= 0 or base_weight <= final_weight:
+        return final_weight if base_weight <= final_weight else base_weight
+
+    anneal_progress = min(max(it, 0), num_anneal_iterations) / num_anneal_iterations
+    return base_weight + (final_weight - base_weight) * anneal_progress
+
+
 def get_two_stage_annealed_loss_weight(base_weight, it, total_iterations, stage1_iterations=-1, stage1_floor_frac=0.1, final_floor_frac=0.01, nolearn_iterations=0):
     total_iterations = max(int(total_iterations), 1)
     effective_nolearn_iterations = min(max(int(nolearn_iterations), 0), total_iterations)
@@ -1026,6 +1040,12 @@ while True:
         num_anneal_iterations=router_ortho_num_anneal_iterations,
         floor_frac=args.router_ortho_loss_floor_frac,
     )
+    aux_loss_weight = get_annealed_loss_weight(
+        args.aux_loss_weight * args.aux_loss_weight_init_scale,
+        step,
+        num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations,
+        final_weight=args.aux_loss_weight,
+    )
     gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
     exp_gate_proj_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
         args.exp_gate_proj_bias_l2_loss_weight,
@@ -1282,6 +1302,9 @@ while True:
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
         orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
+        orig_model.config.aux_loss_weight = aux_loss_weight
+        if model is not orig_model and hasattr(model, "config"):
+            model.config.aux_loss_weight = aux_loss_weight
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
                 MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
@@ -1375,7 +1398,7 @@ while True:
             "epoch": epoch,
         }
         log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
-        log_data["train/aux_loss_weight"] = args.aux_loss_weight
+        log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/exp_gate_proj_bias_l2_loss_weight"] = exp_gate_proj_bias_l2_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
