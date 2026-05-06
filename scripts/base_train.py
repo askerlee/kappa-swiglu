@@ -844,6 +844,31 @@ def get_dense_gate_proj_bias_stat_layer_indices(model):
         if (layer_idx + 1) % stride == 0
     ][:2]
 
+def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):
+    sign_snapshots = {}
+    with torch.inference_mode():
+        for layer_idx in moe_layer_indices:
+            layer = model.transformer.h[layer_idx]
+            experts = getattr(layer.mlp, 'experts', None)
+            if experts is None:
+                continue
+            router_weight = layer.mlp.router.w_g.weight.float()  # [n_exp, d_model]
+            exp_gate_weight = experts.gate_proj.float()  # [n_exp, hidden_size, d_model]
+            normalized_router_weight = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
+            normalized_exp_gate_weight = torch.nn.functional.normalize(exp_gate_weight, dim=2, eps=1e-12)
+            implicit_bias = (normalized_exp_gate_weight * normalized_router_weight.unsqueeze(1)).sum(dim=2)
+            sign_snapshots[layer_idx] = torch.sign(implicit_bias).to(device='cpu', dtype=torch.int8)
+    return sign_snapshots
+
+def collect_exp_gate_implicit_bias_flip_rates(model, moe_layer_indices, previous_sign_snapshots, losses):
+    current_sign_snapshots = snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices)
+    for layer_idx, current_signs in current_sign_snapshots.items():
+        previous_signs = previous_sign_snapshots.get(layer_idx)
+        if previous_signs is None or previous_signs.shape != current_signs.shape:
+            continue
+        losses[f'exp_gate_implicit_bias_flip_rate_{layer_idx}'] = current_signs.ne(previous_signs).float().mean().item()
+    return current_sign_snapshots
+
 def collect_weight_grad_stats(model, losses, moe_layer_indices):
     # weight: [n_exp, n_rows, row_dim]
     # returns: [n_exp, n_rows], the ratio of the mean component to the overall norm 
@@ -1016,6 +1041,7 @@ if args.mockup_mode:
     print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
 
 core_results = {}
+prev_exp_gate_implicit_bias_signs = {}
 
 signal.signal(signal.SIGTERM, handle_shutdown_signal)
 signal.signal(signal.SIGINT, handle_shutdown_signal)
@@ -1381,6 +1407,12 @@ while True:
     epoch = dataloader_state_dict["epoch"]
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
     if step % args.log_interval == 0:
+        prev_exp_gate_implicit_bias_signs = collect_exp_gate_implicit_bias_flip_rates(
+            orig_model,
+            moe_layer_indices,
+            prev_exp_gate_implicit_bias_signs,
+            losses,
+        )
         log_data = {
             "step": step,
             "tokens_seen": tokens_seen,
@@ -1426,6 +1458,8 @@ while True:
                 log_data.update({f"inspect/exp_gate_proj_bias_mean_{i}": losses[f'exp_gate_proj_bias_mean_{i}']})
             if f'exp_gate_proj_bias_abs_mean_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_proj_bias_abs_mean_{i}": losses[f'exp_gate_proj_bias_abs_mean_{i}']})
+            if f'exp_gate_implicit_bias_flip_rate_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_implicit_bias_flip_rate_{i}": losses[f'exp_gate_implicit_bias_flip_rate_{i}']})
             if f'mean_abs_gate_{i}' in losses:
                 log_data.update({f"inspect/mean_abs_gate_{i}": losses[f'mean_abs_gate_{i}']})
             if f'active_frac_gate_{i}' in losses:
