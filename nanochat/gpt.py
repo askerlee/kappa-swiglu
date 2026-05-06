@@ -716,7 +716,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.use_gate_proj_bias:
             self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
         else:
-            self.gate_proj_bias = None
+            self.register_parameter("gate_proj_bias", None)
         self.register_buffer("initial_gate_proj_bias", None, persistent=False)
         self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
