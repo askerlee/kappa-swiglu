@@ -47,6 +47,15 @@ def test_chat_eval_runs_only_on_last_step():
     assert "chat_eval_every" not in source
 
 
+def test_final_checkpoint_is_saved_before_final_chat_eval():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    save_index = source.index("    # save checkpoint at the end of the run before the expensive final chat eval")
+    chat_eval_index = source.index("    if last_step:\n        model.eval()\n        engine = Engine(orig_model, tokenizer)")
+
+    assert save_index < chat_eval_index
+
+
 def test_gate_proj_bias_l2_anchor_cli_defaults_to_initial_and_wires_load_behavior():
     source = CHAT_SFT.read_text(encoding="utf-8")
 

@@ -640,6 +640,28 @@ while True:
         }, step=step)
         model.train()
 
+    # save checkpoint at the end of the run before the expensive final chat eval
+    if master_process and last_step and not args.dry_run:
+        output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
+        if args.model_save_tag:
+            output_dirname += f"-{args.model_save_tag}"
+        checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
+        model_config_kwargs = orig_model.config.__dict__.copy()
+
+        save_checkpoint(
+            checkpoint_dir,
+            step,
+            orig_model.state_dict(),
+            # No need to save the optimizer stats, as currently our chat sft models are used one-off.
+            None, # optimizer.state_dict(),
+            {
+                "step": step,
+                "val_bpb": val_bpb, # loss at last step
+                "model_config": model_config_kwargs,
+                "user_config": user_config, # inputs to the training script
+            }
+        )
+
     if last_step:
         model.eval()
         engine = Engine(orig_model, tokenizer)
@@ -676,28 +698,6 @@ while True:
             wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
         wandb_run.log(wandb_log_data, step=step)
         model.train()
-
-    # save checkpoint at the end of the run (only on master process)
-    if master_process and last_step and not args.dry_run:
-        output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
-        if args.model_save_tag:
-            output_dirname += f"-{args.model_save_tag}"
-        checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
-        model_config_kwargs = orig_model.config.__dict__.copy()
-
-        save_checkpoint(
-            checkpoint_dir,
-            step,
-            orig_model.state_dict(),
-            # No need to save the optimizer stats, as currently our chat sft models are used one-off.
-            None, # optimizer.state_dict(),
-            {
-                "step": step,
-                "val_bpb": val_bpb, # loss at last step
-                "model_config": model_config_kwargs,
-                "user_config": user_config, # inputs to the training script
-            }
-        )
 
     if last_step:
         break
