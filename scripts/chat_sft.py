@@ -693,9 +693,12 @@ while True:
         }
         for task_name, acc in chat_eval_results.items():
             wandb_log_data[f"chat_eval/{task_name}"] = acc
+        for metric_name, metric_value in chatcore_metric_dict.items():
+            print0(f"{metric_name}: {metric_value:.4f}")
         if "ChatCORE metric" in chatcore_metric_dict:
-            print0(f"ChatCORE metric: {chatcore_metric_dict['ChatCORE metric']:.4f}")
             wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
+        if "ChatCORE metric (without SpellingBee)" in chatcore_metric_dict:
+            wandb_log_data["chat_eval/ChatCORE_without_SpellingBee"] = chatcore_metric_dict["ChatCORE metric (without SpellingBee)"]
         wandb_run.log(wandb_log_data, step=step)
         model.train()
 

@@ -15,6 +15,7 @@ from contextlib import nullcontext
 import torch
 import torch.distributed as dist
 
+from nanochat.chatcore import ALL_CHAT_EVAL_TASKS, compute_chatcore_metric
 from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
 from nanochat.engine import Engine
@@ -24,16 +25,6 @@ from tasks.mmlu import MMLU
 from tasks.arc import ARC
 from tasks.gsm8k import GSM8K
 from tasks.spellingbee import SpellingBee
-
-ALL_CHAT_EVAL_TASKS = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
-CHAT_EVAL_BASELINE_ACCURACIES = {
-    'ARC-Easy': 0.25, # multiple choice 1 of 4 => 25%
-    'ARC-Challenge': 0.25, # multiple choice 1 of 4 => 25%
-    'MMLU': 0.25, # multiple choice 1 of 4 => 25%
-    'GSM8K': 0.0, # open-ended => 0%
-    'HumanEval': 0.0, # open-ended => 0%
-    'SpellingBee': 0.0, # open-ended => 0%
-}
 
 # -----------------------------------------------------------------------------
 # Generative evaluation loop (we go one problem at a time, sample, evaluate)
@@ -188,22 +179,6 @@ def run_chat_eval(task_name, model, tokenizer, engine,
         raise ValueError(f"Unsupported task evaluation type: {task_object.eval_type}")
     return acc
 
-def compute_chatcore_metric(results, baseline_accuracies=None, all_tasks=None):
-    baseline_accuracies = CHAT_EVAL_BASELINE_ACCURACIES if baseline_accuracies is None else baseline_accuracies
-    all_tasks = ALL_CHAT_EVAL_TASKS if all_tasks is None else all_tasks
-    if not all(task_name in results for task_name in all_tasks):
-        return {}
-
-    centered_mean = 0.0
-    for task_name in all_tasks:
-        acc = results[task_name]
-        baseline_acc = baseline_accuracies.get(task_name, 0.0)
-        centered_acc = (acc - baseline_acc) / (1.0 - baseline_acc)
-        centered_mean += centered_acc
-    chatcore_metric = centered_mean / len(all_tasks)
-    return {"ChatCORE metric": chatcore_metric}
-
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
 
     # Parse command-line arguments
@@ -253,6 +228,8 @@ if __name__ == "__main__":
     # Log to report
     from nanochat.report import get_report
     chatcore_metric_dict = compute_chatcore_metric(results)
+    for metric_name, metric_value in chatcore_metric_dict.items():
+        print0(f"{metric_name}: {metric_value:.4f}")
     get_report().log(section="Chat evaluation " + args.source, data=[
         vars(args), # CLI args
         results,
