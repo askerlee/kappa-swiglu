@@ -853,10 +853,10 @@ def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):
             if experts is None:
                 continue
             router_weight = layer.mlp.router.w_g.weight.float()  # [n_exp, d_model]
-            exp_gate_weight = experts.gate_proj.float()  # [n_exp, hidden_size, d_model]
+            exp_gate_weight = experts.gate_proj.float()  # [n_exp, d_model, intermediate_size]
             normalized_router_weight = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
-            normalized_exp_gate_weight = torch.nn.functional.normalize(exp_gate_weight, dim=2, eps=1e-12)
-            implicit_bias = (normalized_exp_gate_weight * normalized_router_weight.unsqueeze(1)).sum(dim=2)
+            normalized_exp_gate_weight = torch.nn.functional.normalize(exp_gate_weight, dim=1, eps=1e-12)
+            implicit_bias = (normalized_exp_gate_weight * normalized_router_weight.unsqueeze(2)).sum(dim=1)
             sign_snapshots[layer_idx] = torch.sign(implicit_bias).to(device='cpu', dtype=torch.int8)
     return sign_snapshots
 
