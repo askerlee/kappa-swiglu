@@ -94,9 +94,9 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
-parser.add_argument("--exp-gate-proj-bias-abs-mean-max", type=float, default=0.12,
-                    help="upper limit for expert gate_proj_bias.abs().mean(); <= 0 disables the hinge loss")
-parser.add_argument("--exp-gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=1.0,
+parser.add_argument("--exp-gate-proj-bias-shift-abs-mean-max", type=float, default=0.36,
+                    help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
+parser.add_argument("--exp-gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.3,
                     help="scale factor applied to the L2 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
@@ -135,10 +135,10 @@ if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
-if args.exp_gate_proj_bias_abs_mean_max > 0:
-    args.exp_gate_proj_bias_abs_mean_max = float(args.exp_gate_proj_bias_abs_mean_max)
+if args.exp_gate_proj_bias_shift_abs_mean_max > 0:
+    args.exp_gate_proj_bias_shift_abs_mean_max = float(args.exp_gate_proj_bias_shift_abs_mean_max)
 else:
-    args.exp_gate_proj_bias_abs_mean_max = None
+    args.exp_gate_proj_bias_shift_abs_mean_max = None
 if args.exp_gate_proj_bias_abs_mean_loss_weight_scale < 0:
     raise ValueError("--exp-gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
@@ -206,13 +206,13 @@ else:
         f"{args.use_aux_free_load_balancing}"
     )
 model.set_aux_free_load_balancing(args.use_aux_free_load_balancing)
-model.config.exp_gate_proj_bias_abs_mean_max = args.exp_gate_proj_bias_abs_mean_max
+model.config.exp_gate_proj_bias_shift_abs_mean_max = args.exp_gate_proj_bias_shift_abs_mean_max
 user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "use_aux_free_load_balancing": args.use_aux_free_load_balancing,
-            "exp_gate_proj_bias_abs_mean_max": args.exp_gate_proj_bias_abs_mean_max,
+            "exp_gate_proj_bias_shift_abs_mean_max": args.exp_gate_proj_bias_shift_abs_mean_max,
         },
         allow_val_change=True,
     )

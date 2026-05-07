@@ -31,7 +31,7 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         exp_gate_proj_bias_l2_loss_weight: float = 0.0,
-        exp_gate_proj_bias_abs_mean_max: float | None = None,
+        exp_gate_proj_bias_shift_abs_mean_max: float | None = None,
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -84,7 +84,6 @@ class GPTConfig:
                 f"{sorted(valid_router_ortho_loss_targets)}, got {router_ortho_loss_target!r}"
             )
         self.router_ortho_loss_target = router_ortho_loss_target
-        legacy_gate_proj_bias_grad_scale = kwargs.pop('gate_proj_bias_grad_scale', None)
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
@@ -105,14 +104,14 @@ class GPTConfig:
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
         self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
-        if exp_gate_proj_bias_abs_mean_max is None:
-            self.exp_gate_proj_bias_abs_mean_max = None
+        if exp_gate_proj_bias_shift_abs_mean_max is None:
+            self.exp_gate_proj_bias_shift_abs_mean_max = None
         else:
-            self.exp_gate_proj_bias_abs_mean_max = float(exp_gate_proj_bias_abs_mean_max)
-            if self.exp_gate_proj_bias_abs_mean_max <= 0:
+            self.exp_gate_proj_bias_shift_abs_mean_max = float(exp_gate_proj_bias_shift_abs_mean_max)
+            if self.exp_gate_proj_bias_shift_abs_mean_max <= 0:
                 raise ValueError(
-                    "exp_gate_proj_bias_abs_mean_max must be > 0 when specified, "
-                    f"got {exp_gate_proj_bias_abs_mean_max}"
+                    "exp_gate_proj_bias_shift_abs_mean_max must be > 0 when specified, "
+                    f"got {exp_gate_proj_bias_shift_abs_mean_max}"
                 )
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
@@ -121,9 +120,6 @@ class GPTConfig:
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        legacy_stride = kwargs.pop('stride', None)
-        if legacy_stride is not None:
-            moe_layer_stride = legacy_stride
         self.train_capacity = train_capacity
         self.eval_capacity = eval_capacity
         self.min_capacity = min_capacity

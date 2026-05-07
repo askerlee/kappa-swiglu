@@ -769,6 +769,25 @@ class Qwen3MLPExperts(nn.Module):
             'entropy': entropy.mean().detach(),
         }
 
+    def _update_gate_proj_bias_shift_stats(self, selected_router_scores):
+        if self.gate_proj_bias is None or selected_router_scores is None:
+            return
+
+        max_abs_mean = getattr(self.config, 'exp_gate_proj_bias_shift_abs_mean_max', None)
+        score_abs = selected_router_scores.detach().float().abs()
+        active_mask = score_abs > 0
+        if not active_mask.any():
+            return
+
+        shift_abs = score_abs.unsqueeze(-1) * self.gate_proj_bias.float().abs().unsqueeze(1)
+        # Exclude inactive tokens from the mean calculation, 
+        # otherwise it will introduce unnecessary variance.
+        shift_abs_active = shift_abs[active_mask]
+        shift_abs_mean = shift_abs_active.mean()
+        MANAGER.add("exp_gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
+        if max_abs_mean is not None:
+            MANAGER.add("exp_gate_proj_bias_abs_mean_loss", F.relu(shift_abs_mean - max_abs_mean).square())
+
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
@@ -786,6 +805,7 @@ class Qwen3MLPExperts(nn.Module):
                 self.gate_proj_bias.unsqueeze(1),
                 value=-1,
             )
+        self._update_gate_proj_bias_shift_stats(selected_router_scores)
         gate_out_acts = self.act_fn(gate_out_raw)
         self._update_gate_stats(gate_out_acts)
 
@@ -1054,8 +1074,6 @@ class GPT(nn.Module):
 
     def compute_gate_proj_bias_magnitude_losses(self):
         moe_l2_losses = []
-        moe_abs_mean_losses = []
-        max_abs_mean = getattr(self.config, 'exp_gate_proj_bias_abs_mean_max', None)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
@@ -1066,16 +1084,12 @@ class GPT(nn.Module):
                     if experts.initial_gate_proj_bias is not None:
                         gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
                     moe_l2_losses.append(gate_proj_bias_delta.square().mean())
-                    if max_abs_mean is not None:
-                        abs_mean = gate_proj_bias.abs().mean()
-                        moe_abs_mean_losses.append(F.relu(abs_mean - max_abs_mean).square())
 
         device = self.transformer.wte.weight.device
         l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
-        abs_mean_loss = (
-            torch.stack(moe_abs_mean_losses).mean()
-            if moe_abs_mean_losses else torch.zeros((), device=device)
-        )
+        abs_mean_loss = MANAGER.aggregate("exp_gate_proj_bias_abs_mean_loss")
+        if abs_mean_loss is None:
+            abs_mean_loss = torch.zeros((), device=device)
         return l2_loss, abs_mean_loss
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
@@ -1494,10 +1508,13 @@ class GPT(nn.Module):
         drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
         losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")
+        moe_layer_indices = get_moe_layer_indices(self.config)
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
-        for layer_idx in get_moe_layer_indices(self.config):
+        gate_proj_bias_shift_abs_mean = MANAGER.aggregate("exp_gate_proj_bias_shift_abs_mean")
+        MANAGER.reset("exp_gate_proj_bias_shift_abs_mean")
+        for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
             if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
                 continue
@@ -1505,6 +1522,10 @@ class GPT(nn.Module):
             losses[f'active_frac_gate_{layer_idx}'] = experts.last_gate_stats['active_frac'].item()
             losses[f'topk_share_gate_{layer_idx}'] = experts.last_gate_stats['topk_share'].item()
             losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
+            if gate_proj_bias_shift_abs_mean is not None and stats_idx < gate_proj_bias_shift_abs_mean.shape[0]:
+                losses[f'exp_gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
+                    gate_proj_bias_shift_abs_mean[stats_idx].item()
+                )
         
         if targets is not None:
             loss = _chunked_cross_entropy(
@@ -1545,6 +1566,7 @@ class GPT(nn.Module):
             losses['exp_gate_proj_bias_l2_loss'], losses['exp_gate_proj_bias_abs_mean_loss'] = (
                 self.compute_gate_proj_bias_magnitude_losses()
             )
+            MANAGER.reset("exp_gate_proj_bias_abs_mean_loss")
         else:
             # inference: just return the logits directly
             return logits

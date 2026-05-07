@@ -310,7 +310,7 @@ def test_gate_proj_bias_abs_mean_hinge_loss_is_reported_when_over_threshold():
         use_router_z_loss=False,
         use_router_ortho_loss=False,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_abs_mean_max=3.0,
+        exp_gate_proj_bias_shift_abs_mean_max=3.0,
         debug=False,
     )
 
