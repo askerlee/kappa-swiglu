@@ -8,4 +8,4 @@
 #SBATCH -e slurm-%j.err
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
-python -m scripts.chat_sft --model-tag "$SLURM_JOB_ID" "$@"
+python -m scripts.chat_sft --wandb-api-key-file ~/.wandb_key_sh --model-tag "$SLURM_JOB_ID" "$@"
