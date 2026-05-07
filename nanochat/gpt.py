@@ -1052,21 +1052,31 @@ class GPT(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
-    def compute_gate_proj_bias_l2_losses(self):
-        moe_losses = []
+    def compute_gate_proj_bias_magnitude_losses(self):
+        moe_l2_losses = []
+        moe_abs_mean_losses = []
+        max_abs_mean = getattr(self.config, 'exp_gate_proj_bias_abs_mean_max', None)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if experts is not None and experts.gate_proj_bias is not None:
+                    gate_proj_bias = experts.gate_proj_bias.float()
                     gate_proj_bias_delta = experts.gate_proj_bias.float()
                     if experts.initial_gate_proj_bias is not None:
                         gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
-                    moe_losses.append(gate_proj_bias_delta.square().mean())
+                    moe_l2_losses.append(gate_proj_bias_delta.square().mean())
+                    if max_abs_mean is not None:
+                        abs_mean = gate_proj_bias.abs().mean()
+                        moe_abs_mean_losses.append(F.relu(abs_mean - max_abs_mean).square())
 
         device = self.transformer.wte.weight.device
-        moe_loss = torch.stack(moe_losses).mean() if moe_losses else torch.zeros((), device=device)
-        return moe_loss
+        l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
+        abs_mean_loss = (
+            torch.stack(moe_abs_mean_losses).mean()
+            if moe_abs_mean_losses else torch.zeros((), device=device)
+        )
+        return l2_loss, abs_mean_loss
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1469,6 +1479,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'exp_gate_proj_bias_l2_loss': 0,
+                   'exp_gate_proj_bias_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -1531,7 +1542,9 @@ class GPT(nn.Module):
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
 
-            losses['exp_gate_proj_bias_l2_loss'] = self.compute_gate_proj_bias_l2_losses()
+            losses['exp_gate_proj_bias_l2_loss'], losses['exp_gate_proj_bias_abs_mean_loss'] = (
+                self.compute_gate_proj_bias_magnitude_losses()
+            )
         else:
             # inference: just return the logits directly
             return logits

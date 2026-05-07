@@ -294,6 +294,39 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         torch.testing.assert_close(penalized_loss, base_loss)
 
 
+def test_gate_proj_bias_abs_mean_hinge_loss_is_reported_when_over_threshold():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_abs_mean_max=3.0,
+        debug=False,
+    )
+
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(4.0)
+
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
+
+    _, losses = model(idx, targets)
+
+    assert losses['exp_gate_proj_bias_abs_mean_loss'].item() == 1.0
+
+
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():
     torch.manual_seed(0)
     config = GPTConfig(
