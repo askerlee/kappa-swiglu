@@ -726,6 +726,11 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
+        self.exp_gate_proj_bias_shift_abs_mean_max = getattr(
+            config,
+            'exp_gate_proj_bias_shift_abs_mean_max',
+            None,
+        )
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
         self.last_gate_stats = None
@@ -773,7 +778,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_bias is None or selected_router_scores is None:
             return
 
-        max_abs_mean = getattr(self.config, 'exp_gate_proj_bias_shift_abs_mean_max', None)
+        max_abs_mean = self.exp_gate_proj_bias_shift_abs_mean_max
         score_abs = selected_router_scores.detach().float().abs()
         active_mask = score_abs > 0
         if not active_mask.any():
