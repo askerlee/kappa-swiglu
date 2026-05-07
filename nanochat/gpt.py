@@ -791,7 +791,7 @@ class Qwen3MLPExperts(nn.Module):
         shift_abs_mean = shift_abs_active.mean()
         MANAGER.add("exp_gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
         if max_abs_mean is not None:
-            MANAGER.add("exp_gate_proj_bias_abs_mean_loss", F.relu(shift_abs_mean - max_abs_mean).square())
+            MANAGER.add("exp_gate_proj_bias_shift_abs_mean_loss", F.relu(shift_abs_mean - max_abs_mean).square())
 
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
@@ -1092,7 +1092,7 @@ class GPT(nn.Module):
 
         device = self.transformer.wte.weight.device
         l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
-        abs_mean_loss = MANAGER.aggregate("exp_gate_proj_bias_abs_mean_loss")
+        abs_mean_loss = MANAGER.aggregate("exp_gate_proj_bias_shift_abs_mean_loss")
         if abs_mean_loss is None:
             abs_mean_loss = torch.zeros((), device=device)
         return l2_loss, abs_mean_loss
@@ -1498,7 +1498,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'exp_gate_proj_bias_l2_loss': 0,
-                   'exp_gate_proj_bias_abs_mean_loss': 0,
+                                     'exp_gate_proj_bias_shift_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -1568,10 +1568,10 @@ class GPT(nn.Module):
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
 
-            losses['exp_gate_proj_bias_l2_loss'], losses['exp_gate_proj_bias_abs_mean_loss'] = (
+            losses['exp_gate_proj_bias_l2_loss'], losses['exp_gate_proj_bias_shift_abs_mean_loss'] = (
                 self.compute_gate_proj_bias_magnitude_losses()
             )
-            MANAGER.reset("exp_gate_proj_bias_abs_mean_loss")
+            MANAGER.reset("exp_gate_proj_bias_shift_abs_mean_loss")
         else:
             # inference: just return the logits directly
             return logits

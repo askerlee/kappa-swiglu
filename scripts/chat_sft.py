@@ -729,7 +729,7 @@ while True:
     synchronize()
     t0 = time.time()
     gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(step, max(progress, approx_progress))
-    exp_gate_proj_bias_abs_mean_loss_weight = (
+    exp_gate_proj_bias_shift_abs_mean_loss_weight = (
         args.exp_gate_proj_bias_l2_loss_weight * args.exp_gate_proj_bias_abs_mean_loss_weight_scale
     )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
@@ -744,10 +744,10 @@ while True:
         if exp_gate_proj_bias_l2_loss is None:
             exp_gate_proj_bias_l2_loss = 0.0
         loss = loss + args.exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
-        exp_gate_proj_bias_abs_mean_loss = losses.get("exp_gate_proj_bias_abs_mean_loss")
-        if exp_gate_proj_bias_abs_mean_loss is None:
-            exp_gate_proj_bias_abs_mean_loss = 0.0
-        loss = loss + exp_gate_proj_bias_abs_mean_loss_weight * exp_gate_proj_bias_abs_mean_loss
+        exp_gate_proj_bias_shift_abs_mean_loss = losses.get("exp_gate_proj_bias_shift_abs_mean_loss")
+        if exp_gate_proj_bias_shift_abs_mean_loss is None:
+            exp_gate_proj_bias_shift_abs_mean_loss = 0.0
+        loss = loss + exp_gate_proj_bias_shift_abs_mean_loss_weight * exp_gate_proj_bias_shift_abs_mean_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -808,9 +808,9 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
-            "train/exp_gate_proj_bias_abs_mean_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_abs_mean_loss']),
+            "train/exp_gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_shift_abs_mean_loss']),
             "train/exp_gate_proj_bias_l2_loss_weight": args.exp_gate_proj_bias_l2_loss_weight,
-            "train/exp_gate_proj_bias_abs_mean_loss_weight": exp_gate_proj_bias_abs_mean_loss_weight,
+            "train/exp_gate_proj_bias_shift_abs_mean_loss_weight": exp_gate_proj_bias_shift_abs_mean_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,

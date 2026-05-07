@@ -1091,7 +1091,7 @@ while True:
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
-    exp_gate_proj_bias_abs_mean_loss_weight = (
+    exp_gate_proj_bias_shift_abs_mean_loss_weight = (
         exp_gate_proj_bias_l2_loss_weight * args.exp_gate_proj_bias_abs_mean_loss_weight_scale
     )
     router_ortho_blockwise_active = False
@@ -1330,7 +1330,7 @@ while True:
             router_ortho_loss_name: 0.0,
             'router_ortho_loss_gate_proj': 0.0,
             'exp_gate_proj_bias_l2_loss': 0.0,
-            'exp_gate_proj_bias_abs_mean_loss': 0.0,
+            'exp_gate_proj_bias_shift_abs_mean_loss': 0.0,
             'drop_rate_per_ks': None,
         }
         train_loss_f = 0.0
@@ -1360,10 +1360,10 @@ while True:
             if exp_gate_proj_bias_l2_loss is None:
                 exp_gate_proj_bias_l2_loss = 0.0
             loss = loss + exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
-            exp_gate_proj_bias_abs_mean_loss = micro_losses.get("exp_gate_proj_bias_abs_mean_loss")
-            if exp_gate_proj_bias_abs_mean_loss is None:
-                exp_gate_proj_bias_abs_mean_loss = 0.0
-            loss = loss + exp_gate_proj_bias_abs_mean_loss_weight * exp_gate_proj_bias_abs_mean_loss
+            exp_gate_proj_bias_shift_abs_mean_loss = micro_losses.get("exp_gate_proj_bias_shift_abs_mean_loss")
+            if exp_gate_proj_bias_shift_abs_mean_loss is None:
+                exp_gate_proj_bias_shift_abs_mean_loss = 0.0
+            loss = loss + exp_gate_proj_bias_shift_abs_mean_loss_weight * exp_gate_proj_bias_shift_abs_mean_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1439,7 +1439,7 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": losses['exp_gate_proj_bias_l2_loss'],
-            "train/exp_gate_proj_bias_abs_mean_loss_step": losses['exp_gate_proj_bias_abs_mean_loss'],
+            "train/exp_gate_proj_bias_shift_abs_mean_loss_step": losses['exp_gate_proj_bias_shift_abs_mean_loss'],
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "lrm": lrm,
             "dt": dt,
@@ -1451,7 +1451,7 @@ while True:
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/exp_gate_proj_bias_l2_loss_weight"] = exp_gate_proj_bias_l2_loss_weight
-        log_data["train/exp_gate_proj_bias_abs_mean_loss_weight"] = exp_gate_proj_bias_abs_mean_loss_weight
+        log_data["train/exp_gate_proj_bias_shift_abs_mean_loss_weight"] = exp_gate_proj_bias_shift_abs_mean_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
             if sub_loss is not None:

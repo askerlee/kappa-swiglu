@@ -15,7 +15,7 @@ class MOEManager:
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
-            "exp_gate_proj_bias_abs_mean_loss": [],
+            "exp_gate_proj_bias_shift_abs_mean_loss": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],

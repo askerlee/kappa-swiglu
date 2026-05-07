@@ -324,7 +324,7 @@ def test_gate_proj_bias_abs_mean_hinge_loss_is_reported_when_over_threshold():
 
     _, losses = model(idx, targets)
 
-    assert losses['exp_gate_proj_bias_abs_mean_loss'].item() == 1.0
+    assert losses['exp_gate_proj_bias_shift_abs_mean_loss'].item() == 1.0
 
 
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():
