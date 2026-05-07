@@ -45,8 +45,6 @@ class GPTConfig:
         moe_layer_stride: int = 1,  # one in every stride layers are converted to an MoE
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
-        use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
-        switch_tfm_init_scale: float = 1.0,
         router_use_full_prec: bool = False,  # use float32 precision in the router
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
@@ -124,8 +122,6 @@ class GPTConfig:
         if int(num_moe_layers) < -1:
             raise ValueError(f"num_moe_layers must be >= -1, got {num_moe_layers}")
         self.num_moe_layers = int(num_moe_layers)
-        self.use_switch_tfm_init = use_switch_tfm_init
-        self.switch_tfm_init_scale = switch_tfm_init_scale
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
