@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH --gres=gpu:2
+#SBATCH -p testqueue
+#SBATCH -A aicloud-testgroup
+#SBATCH -t 03:00:00
+#SBATCH -o slurm-%j.out
+#SBATCH -e slurm-%j.err
+
+export PYTHONUNBUFFERED=1
+export NANOCHAT_BASE_DIR=output
+torchrun --standalone --nproc_per_node=2 -m scripts.chat_sft --wandb-api-key-file ~/.wandb_key_sh --model-tag "$SLURM_JOB_ID" "$@"
