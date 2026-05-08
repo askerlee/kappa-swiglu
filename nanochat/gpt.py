@@ -797,10 +797,13 @@ class Qwen3MLPExperts(nn.Module):
             # Normalize by the active confidence scale so one threshold transfers better
             # across architectures whose selected-score magnitudes differ.
             normalized_shift_abs_mean = shift_abs_mean / score_abs_mean
+            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
             MANAGER.add(
                 "gate_proj_bias_shift_abs_mean_loss",
                 F.relu(normalized_shift_abs_mean - max_abs_mean).square(),
             )
+        else:
+            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())
 
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
@@ -1507,6 +1510,7 @@ class GPT(nn.Module):
                    'router_ortho_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
+                   'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
@@ -1533,6 +1537,13 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_mean")
+        gate_proj_bias_shift_abs_mean_normalized = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
+        losses['gate_proj_bias_shift_abs_mean_normalized'] = (
+            gate_proj_bias_shift_abs_mean_normalized.mean().detach()
+            if gate_proj_bias_shift_abs_mean_normalized is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
             if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
@@ -1544,6 +1555,13 @@ class GPT(nn.Module):
             if gate_proj_bias_shift_abs_mean is not None and stats_idx < gate_proj_bias_shift_abs_mean.shape[0]:
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean[stats_idx].item()
+                )
+            if (
+                gate_proj_bias_shift_abs_mean_normalized is not None
+                and stats_idx < gate_proj_bias_shift_abs_mean_normalized.shape[0]
+            ):
+                losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
+                    gate_proj_bias_shift_abs_mean_normalized[stats_idx].item()
                 )
         
         if targets is not None:

@@ -20,6 +20,7 @@ class MOEManager:
             "expert_utilities": [],
             "selected_scores": [],
             "gate_proj_bias_shift_abs_mean": [],
+            "gate_proj_bias_shift_abs_mean_normalized": [],
         }
         self._tensor_var_capacity = 32
         self._drop_rate_buffer = None
@@ -30,6 +31,8 @@ class MOEManager:
         self._selected_scores_size = 0
         self._gate_proj_bias_shift_abs_mean_buffer = None
         self._gate_proj_bias_shift_abs_mean_size = 0
+        self._gate_proj_bias_shift_abs_mean_normalized_buffer = None
+        self._gate_proj_bias_shift_abs_mean_normalized_size = 0
         self._start_frac_names = {
             "router_ortho_loss",
             "router_ortho_loss_gate_proj",
@@ -37,7 +40,8 @@ class MOEManager:
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
                                      "selected_scores",
-                                     "gate_proj_bias_shift_abs_mean"])
+                                     "gate_proj_bias_shift_abs_mean",
+                                     "gate_proj_bias_shift_abs_mean_normalized"])
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
@@ -51,6 +55,9 @@ class MOEManager:
             return
         if name == "gate_proj_bias_shift_abs_mean":
             self._gate_proj_bias_shift_abs_mean_size = 0
+            return
+        if name == "gate_proj_bias_shift_abs_mean_normalized":
+            self._gate_proj_bias_shift_abs_mean_normalized_size = 0
             return
         self._values[name] = []
 
@@ -106,6 +113,20 @@ class MOEManager:
                 ].copy_(value.reshape(1))
                 self._gate_proj_bias_shift_abs_mean_size = new_size
             return
+        if name == "gate_proj_bias_shift_abs_mean_normalized":
+            with torch.inference_mode(False):
+                if self._gate_proj_bias_shift_abs_mean_normalized_buffer is None:
+                    self._gate_proj_bias_shift_abs_mean_normalized_buffer = torch.empty(
+                        (self._tensor_var_capacity,),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._gate_proj_bias_shift_abs_mean_normalized_size + 1
+                self._gate_proj_bias_shift_abs_mean_normalized_buffer[
+                    self._gate_proj_bias_shift_abs_mean_normalized_size:new_size
+                ].copy_(value.reshape(1))
+                self._gate_proj_bias_shift_abs_mean_normalized_size = new_size
+            return
         self._values[name].append(value)
 
     def aggregate(self, name):
@@ -137,6 +158,16 @@ class MOEManager:
             if self._gate_proj_bias_shift_abs_mean_buffer is None or self._gate_proj_bias_shift_abs_mean_size == 0:
                 return None
             values = self._gate_proj_bias_shift_abs_mean_buffer[:self._gate_proj_bias_shift_abs_mean_size]
+            return values
+        elif name == "gate_proj_bias_shift_abs_mean_normalized":
+            if (
+                self._gate_proj_bias_shift_abs_mean_normalized_buffer is None
+                or self._gate_proj_bias_shift_abs_mean_normalized_size == 0
+            ):
+                return None
+            values = self._gate_proj_bias_shift_abs_mean_normalized_buffer[
+                :self._gate_proj_bias_shift_abs_mean_normalized_size
+            ]
             return values
         else:
             return sum(values)

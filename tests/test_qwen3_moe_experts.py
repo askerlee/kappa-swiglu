@@ -317,11 +317,14 @@ def test_gate_proj_bias_shift_abs_mean_loss_uses_confidence_normalized_mean():
     experts._update_gate_proj_bias_shift_stats(selected_router_scores)
 
     shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
+    shift_abs_mean_normalized = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
     shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     assert shift_abs_mean.item() == 8.0
+    assert shift_abs_mean_normalized.item() == 4.0
     assert shift_abs_mean_loss.item() == 1.0
 
 
@@ -355,12 +358,20 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
     _, losses = model(idx, targets)
 
     assert 'gate_proj_bias_shift_abs_mean' in losses
+    assert 'gate_proj_bias_shift_abs_mean_normalized' in losses
     assert 'gate_proj_bias_shift_abs_mean_1' in losses
+    assert 'gate_proj_bias_shift_abs_mean_normalized_1' in losses
     assert torch.isfinite(losses['gate_proj_bias_shift_abs_mean'])
+    assert torch.isfinite(losses['gate_proj_bias_shift_abs_mean_normalized'])
     assert losses['gate_proj_bias_shift_abs_mean'].item() >= 0.0
+    assert losses['gate_proj_bias_shift_abs_mean_normalized'].item() >= 0.0
     torch.testing.assert_close(
         losses['gate_proj_bias_shift_abs_mean'],
         torch.tensor(losses['gate_proj_bias_shift_abs_mean_1']),
+    )
+    torch.testing.assert_close(
+        losses['gate_proj_bias_shift_abs_mean_normalized'],
+        torch.tensor(losses['gate_proj_bias_shift_abs_mean_normalized_1']),
     )
 
 
