@@ -787,13 +787,17 @@ class Qwen3MLPExperts(nn.Module):
             return
 
         shift_abs = score_abs.unsqueeze(-1) * self.gate_proj_bias.float().abs().unsqueeze(1)
-        # Exclude inactive tokens from the mean calculation, 
-        # otherwise it will introduce unnecessary variance.
-        shift_abs_active = shift_abs[active_mask]
-        shift_abs_mean = shift_abs_active.mean()
+        # Keep this reduction shape-stable for torch.compile(dynamic=False).
+        # Boolean indexing here would create a variable-length tensor whose size
+        # changes with the number of active tokens and triggers recompilation.
+        active_mask_f = active_mask.to(dtype=shift_abs.dtype).unsqueeze(-1)
+        active_token_count = active_mask_f.sum()
+        active_element_count = active_token_count * shift_abs.shape[-1]
+        shift_abs_mean = (shift_abs * active_mask_f).sum() / active_element_count.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
         if max_abs_mean is not None:
-            score_abs_mean = score_abs[active_mask].mean().clamp_min(1e-6)
+            score_abs_mean = (score_abs * active_mask.to(dtype=score_abs.dtype)).sum() / active_token_count.clamp_min(1)
+            score_abs_mean = score_abs_mean.clamp_min(1e-6)
             # Normalize by the active confidence scale so one threshold transfers better
             # across architectures whose selected-score magnitudes differ.
             normalized_shift_abs_mean = shift_abs_mean / score_abs_mean
