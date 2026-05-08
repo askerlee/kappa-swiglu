@@ -178,6 +178,13 @@ if args.model_save_tag:
 wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
+if not use_dummy_wandb:
+    wandb.define_metric("step")
+    wandb.define_metric("tokens_seen")
+    wandb.define_metric("train/*", step_metric="step")
+    wandb.define_metric("val/*", step_metric="step")
+    wandb.define_metric("chat_eval/*", step_metric="step")
+    wandb.define_metric("inspect/*", step_metric="step")
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.

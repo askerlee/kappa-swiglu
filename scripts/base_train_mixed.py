@@ -321,9 +321,10 @@ if args.wandb_api_key_file:
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe", name=wandb_run_name, config=user_config)
 # logging
 if not use_dummy_wandb:
+    wandb.define_metric("step")
     wandb.define_metric("tokens_seen")
-    wandb.define_metric("train/*", step_metric="tokens_seen")
-    wandb.define_metric("val/*", step_metric="tokens_seen")
+    wandb.define_metric("train/*", step_metric="step")
+    wandb.define_metric("val/*", step_metric="step")
 
 # Flash Attention status
 if HAS_FLASH_ATTN:
