@@ -96,7 +96,7 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
 parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.12,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=1,
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=10,
                     help="scale factor applied to the L2 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
