@@ -132,14 +132,20 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.1,
-                    help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=10,
-                    help="scale factor applied to the L2 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
+# L2 and hinge losses on gate_proj_bias.
+# The L2 loss is typicall 0.01~0.04. The hinge loss is typically 0.0001~0.0002.
+# Therefore the hinge loss is ~ 1/100 of the L2 loss.
+# Since both are quadratic, the grad scale is roughly 10:1.
+# So we set the default weight of the hinge loss to 10x the L2 loss weight 
+# to make the grad scale of the hinge loss comparable to that of the L2 loss. 
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.1,
+                    help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=10,
+                    help="scale factor applied to the L2 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")

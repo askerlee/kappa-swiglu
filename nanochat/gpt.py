@@ -801,6 +801,25 @@ class Qwen3MLPExperts(nn.Module):
             # Normalize by the active confidence scale so one threshold transfers better
             # across architectures whose selected-score magnitudes differ.
             normalized_shift_abs_mean = shift_abs_mean / score_abs_mean
+            '''
+            NOTE:
+            You can observe spikes of gate_proj_bias_shift_abs_mean_loss right after CORE eval.
+            During CORE, the model runs many targets=None forwards in core_eval.py:145.
+            In each forward, gpt.py still calls _update_gate_proj_bias_shift_stats(...), which does:
+            MANAGER.add("gate_proj_bias_shift_abs_mean", ...)
+            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", ...)
+            MANAGER.add("gate_proj_bias_shift_abs_mean_loss", ...)
+            In GPT.forward(), the first two inference stats are aggregated and reset 
+            even when targets is None.
+            But gate_proj_bias_shift_abs_mean_loss is only reset in the targets is 
+            not None branch.
+            So CORE eval can accumulate a big gate_proj_bias_shift_abs_mean_loss buffer 
+            across many inference examples, and then the very next training forward reads 
+            that leftover buffer via compute_gate_proj_bias_magnitude_losses() at gpt.py 
+            and logs it as if it were a training-step value.
+            The buffer is **intentionally** not reset to remind us how different the inference
+            distribution can be from training.
+            '''
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
             MANAGER.add(
                 "gate_proj_bias_shift_abs_mean_loss",
