@@ -31,7 +31,7 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
-        gate_proj_bias_shift_abs_mean_max: float | None = None,
+        gate_proj_bias_shift_abs_mean_max: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)

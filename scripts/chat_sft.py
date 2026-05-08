@@ -85,18 +85,18 @@ parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning ra
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
-parser.add_argument("--gate-proj-bias-lr-max-scale", dest="gate_proj_bias_lr_max_scale", type=float, default=0.1,
+parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-lr-final-scale", dest="gate_proj_bias_lr_final_scale", type=float, default=0.01,
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to --gate-proj-bias-lr-max-scale")
 parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=50,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", "--exp-gate-proj-bias-l2-loss-weight", dest="gate_proj_bias_l2_loss_weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
-parser.add_argument("--gate-proj-bias-shift-abs-mean-max", "--exp-gate-proj-bias-shift-abs-mean-max", dest="gate_proj_bias_shift_abs_mean_max", type=float, default=0.36,
+parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.12,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", "--exp-gate-proj-bias-abs-mean-loss-weight-scale", dest="gate_proj_bias_abs_mean_loss_weight_scale", type=float, default=0.3,
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=1,
                     help="scale factor applied to the L2 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")

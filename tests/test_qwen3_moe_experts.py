@@ -294,37 +294,35 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         torch.testing.assert_close(penalized_loss, base_loss)
 
 
-def test_gate_proj_bias_abs_mean_hinge_loss_is_reported_when_over_threshold():
-    torch.manual_seed(0)
+def test_gate_proj_bias_shift_abs_mean_loss_uses_confidence_normalized_mean():
     config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=3,
-        moe_start_layer=1,
-        num_moe_layers=1,
-        moe_layer_stride=1,
         n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-        use_router_ortho_loss=False,
+        n_embd=4,
         use_exp_gate_proj_bias=True,
         exp_gate_proj_bias_shift_abs_mean_max=3.0,
         debug=False,
     )
+    experts = Qwen3MLPExperts(config)
 
-    model = GPT(config)
-    model.init_weights()
     with torch.no_grad():
-        model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(4.0)
+        experts.gate_proj_bias.fill_(4.0)
 
-    idx = torch.randint(0, config.vocab_size, (2, 4))
-    targets = torch.randint(0, config.vocab_size, (2, 4))
+    MANAGER.reset("exp_gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("exp_gate_proj_bias_shift_abs_mean_loss")
 
-    _, losses = model(idx, targets)
+    selected_router_scores = torch.tensor([
+        [1.0, 3.0, 0.0],
+        [2.0, 0.0, 0.0],
+    ])
+    experts._update_gate_proj_bias_shift_stats(selected_router_scores)
 
-    assert losses['exp_gate_proj_bias_shift_abs_mean_loss'].item() == 1.0
+    shift_abs_mean = MANAGER.aggregate("exp_gate_proj_bias_shift_abs_mean")
+    shift_abs_mean_loss = MANAGER.aggregate("exp_gate_proj_bias_shift_abs_mean_loss")
+    MANAGER.reset("exp_gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("exp_gate_proj_bias_shift_abs_mean_loss")
+
+    assert shift_abs_mean.item() == 8.0
+    assert shift_abs_mean_loss.item() == 1.0
 
 
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():

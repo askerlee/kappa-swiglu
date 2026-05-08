@@ -793,7 +793,14 @@ class Qwen3MLPExperts(nn.Module):
         shift_abs_mean = shift_abs_active.mean()
         MANAGER.add("exp_gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
         if max_abs_mean is not None:
-            MANAGER.add("exp_gate_proj_bias_shift_abs_mean_loss", F.relu(shift_abs_mean - max_abs_mean).square())
+            score_abs_mean = score_abs[active_mask].mean().clamp_min(1e-6)
+            # Normalize by the active confidence scale so one threshold transfers better
+            # across architectures whose selected-score magnitudes differ.
+            normalized_shift_abs_mean = shift_abs_mean / score_abs_mean
+            MANAGER.add(
+                "exp_gate_proj_bias_shift_abs_mean_loss",
+                F.relu(normalized_shift_abs_mean - max_abs_mean).square(),
+            )
 
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
@@ -1086,7 +1093,6 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if experts is not None and experts.gate_proj_bias is not None:
-                    gate_proj_bias = experts.gate_proj_bias.float()
                     gate_proj_bias_delta = experts.gate_proj_bias.float()
                     if experts.initial_gate_proj_bias is not None:
                         gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
