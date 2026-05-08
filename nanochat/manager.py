@@ -15,11 +15,11 @@ class MOEManager:
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
-            "exp_gate_proj_bias_shift_abs_mean_loss": [],
+            "gate_proj_bias_shift_abs_mean_loss": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
-            "exp_gate_proj_bias_shift_abs_mean": [],
+            "gate_proj_bias_shift_abs_mean": [],
         }
         self._tensor_var_capacity = 32
         self._drop_rate_buffer = None
@@ -28,8 +28,8 @@ class MOEManager:
         self._expert_utilities_size = 0
         self._selected_scores_buffer = None
         self._selected_scores_size = 0
-        self._exp_gate_proj_bias_shift_abs_mean_buffer = None
-        self._exp_gate_proj_bias_shift_abs_mean_size = 0
+        self._gate_proj_bias_shift_abs_mean_buffer = None
+        self._gate_proj_bias_shift_abs_mean_size = 0
         self._start_frac_names = {
             "router_ortho_loss",
             "router_ortho_loss_gate_proj",
@@ -37,7 +37,7 @@ class MOEManager:
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
                                      "selected_scores",
-                                     "exp_gate_proj_bias_shift_abs_mean"])
+                                     "gate_proj_bias_shift_abs_mean"])
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
@@ -49,8 +49,8 @@ class MOEManager:
         if name == "selected_scores":
             self._selected_scores_size = 0
             return
-        if name == "exp_gate_proj_bias_shift_abs_mean":
-            self._exp_gate_proj_bias_shift_abs_mean_size = 0
+        if name == "gate_proj_bias_shift_abs_mean":
+            self._gate_proj_bias_shift_abs_mean_size = 0
             return
         self._values[name] = []
 
@@ -92,19 +92,19 @@ class MOEManager:
                 self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
                 self._selected_scores_size = new_size
             return
-        if name == "exp_gate_proj_bias_shift_abs_mean":
+        if name == "gate_proj_bias_shift_abs_mean":
             with torch.inference_mode(False):
-                if self._exp_gate_proj_bias_shift_abs_mean_buffer is None:
-                    self._exp_gate_proj_bias_shift_abs_mean_buffer = torch.empty(
+                if self._gate_proj_bias_shift_abs_mean_buffer is None:
+                    self._gate_proj_bias_shift_abs_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._exp_gate_proj_bias_shift_abs_mean_size + 1
-                self._exp_gate_proj_bias_shift_abs_mean_buffer[
-                    self._exp_gate_proj_bias_shift_abs_mean_size:new_size
+                new_size = self._gate_proj_bias_shift_abs_mean_size + 1
+                self._gate_proj_bias_shift_abs_mean_buffer[
+                    self._gate_proj_bias_shift_abs_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._exp_gate_proj_bias_shift_abs_mean_size = new_size
+                self._gate_proj_bias_shift_abs_mean_size = new_size
             return
         self._values[name].append(value)
 
@@ -133,10 +133,10 @@ class MOEManager:
                 return None
             values = self._selected_scores_buffer[:self._selected_scores_size]
             return values
-        elif name == "exp_gate_proj_bias_shift_abs_mean":
-            if self._exp_gate_proj_bias_shift_abs_mean_buffer is None or self._exp_gate_proj_bias_shift_abs_mean_size == 0:
+        elif name == "gate_proj_bias_shift_abs_mean":
+            if self._gate_proj_bias_shift_abs_mean_buffer is None or self._gate_proj_bias_shift_abs_mean_size == 0:
                 return None
-            values = self._exp_gate_proj_bias_shift_abs_mean_buffer[:self._exp_gate_proj_bias_shift_abs_mean_size]
+            values = self._gate_proj_bias_shift_abs_mean_buffer[:self._gate_proj_bias_shift_abs_mean_size]
             return values
         else:
             return sum(values)
