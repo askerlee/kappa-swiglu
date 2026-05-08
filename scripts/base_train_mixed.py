@@ -143,8 +143,8 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.1,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=10,
-                    help="scale factor applied to the L2 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
+                    help="scale factor applied to the L1 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2")

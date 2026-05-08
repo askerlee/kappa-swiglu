@@ -823,7 +823,7 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
             MANAGER.add(
                 "gate_proj_bias_shift_abs_mean_loss",
-                F.relu(normalized_shift_abs_mean - max_abs_mean).square(),
+                F.relu(normalized_shift_abs_mean - max_abs_mean),
             )
         else:
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())

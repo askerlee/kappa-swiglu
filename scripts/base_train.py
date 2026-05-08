@@ -144,8 +144,8 @@ parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2")
 parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.1,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=1,
-                    help="scale factor applied to the L2 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
+                    help="scale factor applied to the L1 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
