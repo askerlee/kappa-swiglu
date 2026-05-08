@@ -27,11 +27,11 @@ class GPTConfig:
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "top_logits",
-        exp_gate_proj_bias_start_layer: int = 0,
+        gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
-        exp_gate_proj_bias_l2_loss_weight: float = 0.0,
-        exp_gate_proj_bias_shift_abs_mean_max: float | None = None,
+        gate_proj_bias_l2_loss_weight: float = 0.0,
+        gate_proj_bias_shift_abs_mean_max: float | None = None,
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -59,6 +59,15 @@ class GPTConfig:
     ):        
         kwargs.pop('use_experts_gate_output_loss', None)
         kwargs.pop('experts_gate_output_loss_weight', None)
+        legacy_gate_proj_bias_start_layer = kwargs.pop('exp_gate_proj_bias_start_layer', None)
+        if legacy_gate_proj_bias_start_layer is not None:
+            gate_proj_bias_start_layer = legacy_gate_proj_bias_start_layer
+        legacy_gate_proj_bias_l2_loss_weight = kwargs.pop('exp_gate_proj_bias_l2_loss_weight', None)
+        if legacy_gate_proj_bias_l2_loss_weight is not None:
+            gate_proj_bias_l2_loss_weight = legacy_gate_proj_bias_l2_loss_weight
+        legacy_gate_proj_bias_shift_abs_mean_max = kwargs.pop('exp_gate_proj_bias_shift_abs_mean_max', None)
+        if legacy_gate_proj_bias_shift_abs_mean_max is not None:
+            gate_proj_bias_shift_abs_mean_max = legacy_gate_proj_bias_shift_abs_mean_max
         self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
@@ -94,25 +103,29 @@ class GPTConfig:
                 f"{sorted(valid_exp_gate_proj_bias_inputs)}, got {exp_gate_proj_bias_input!r}"
             )
         self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
-        self.exp_gate_proj_bias_start_layer = int(exp_gate_proj_bias_start_layer)
-        if self.exp_gate_proj_bias_start_layer < 0:
+        self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
+        if self.gate_proj_bias_start_layer < 0:
             raise ValueError(
-                f"exp_gate_proj_bias_start_layer must be >= 0, got {exp_gate_proj_bias_start_layer}"
+                f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
             )
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
-        self.exp_gate_proj_bias_l2_loss_weight = float(exp_gate_proj_bias_l2_loss_weight)
-        if exp_gate_proj_bias_shift_abs_mean_max is None:
-            self.exp_gate_proj_bias_shift_abs_mean_max = None
+        self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
+        if gate_proj_bias_shift_abs_mean_max is None:
+            self.gate_proj_bias_shift_abs_mean_max = None
         else:
-            self.exp_gate_proj_bias_shift_abs_mean_max = float(exp_gate_proj_bias_shift_abs_mean_max)
-            if self.exp_gate_proj_bias_shift_abs_mean_max <= 0:
+            self.gate_proj_bias_shift_abs_mean_max = float(gate_proj_bias_shift_abs_mean_max)
+            if self.gate_proj_bias_shift_abs_mean_max <= 0:
                 raise ValueError(
-                    "exp_gate_proj_bias_shift_abs_mean_max must be > 0 when specified, "
-                    f"got {exp_gate_proj_bias_shift_abs_mean_max}"
+                    "gate_proj_bias_shift_abs_mean_max must be > 0 when specified, "
+                    f"got {gate_proj_bias_shift_abs_mean_max}"
                 )
+        # Backward-compatible aliases for old call sites and serialized configs.
+        self.exp_gate_proj_bias_start_layer = self.gate_proj_bias_start_layer
+        self.exp_gate_proj_bias_l2_loss_weight = self.gate_proj_bias_l2_loss_weight
+        self.exp_gate_proj_bias_shift_abs_mean_max = self.gate_proj_bias_shift_abs_mean_max
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight

@@ -93,10 +93,10 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
-parser.add_argument("--exp-gate-proj-bias-shift-abs-mean-max", type=float, default=0.36,
+parser.add_argument("--gate-proj-bias-l2-loss-weight", "--exp-gate-proj-bias-l2-loss-weight", dest="gate_proj_bias_l2_loss_weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-max", "--exp-gate-proj-bias-shift-abs-mean-max", dest="gate_proj_bias_shift_abs_mean_max", type=float, default=0.36,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--exp-gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.3,
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", "--exp-gate-proj-bias-abs-mean-loss-weight-scale", dest="gate_proj_bias_abs_mean_loss_weight_scale", type=float, default=0.3,
                     help="scale factor applied to the L2 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
@@ -135,12 +135,12 @@ if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
-if args.exp_gate_proj_bias_shift_abs_mean_max > 0:
-    args.exp_gate_proj_bias_shift_abs_mean_max = float(args.exp_gate_proj_bias_shift_abs_mean_max)
+if args.gate_proj_bias_shift_abs_mean_max > 0:
+    args.gate_proj_bias_shift_abs_mean_max = float(args.gate_proj_bias_shift_abs_mean_max)
 else:
-    args.exp_gate_proj_bias_shift_abs_mean_max = None
-if args.exp_gate_proj_bias_abs_mean_loss_weight_scale < 0:
-    raise ValueError("--exp-gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
+    args.gate_proj_bias_shift_abs_mean_max = None
+if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
+    raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -206,13 +206,13 @@ else:
         f"{args.use_aux_free_load_balancing}"
     )
 model.set_aux_free_load_balancing(args.use_aux_free_load_balancing)
-model.config.exp_gate_proj_bias_shift_abs_mean_max = args.exp_gate_proj_bias_shift_abs_mean_max
+model.config.gate_proj_bias_shift_abs_mean_max = args.gate_proj_bias_shift_abs_mean_max
 user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "use_aux_free_load_balancing": args.use_aux_free_load_balancing,
-            "exp_gate_proj_bias_shift_abs_mean_max": args.exp_gate_proj_bias_shift_abs_mean_max,
+            "gate_proj_bias_shift_abs_mean_max": args.gate_proj_bias_shift_abs_mean_max,
         },
         allow_val_change=True,
     )
@@ -730,7 +730,7 @@ while True:
     t0 = time.time()
     gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(step, max(progress, approx_progress))
     exp_gate_proj_bias_shift_abs_mean_loss_weight = (
-        args.exp_gate_proj_bias_l2_loss_weight * args.exp_gate_proj_bias_abs_mean_loss_weight_scale
+        args.gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
     )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
     for micro_step in range(grad_accum_steps):
@@ -743,7 +743,7 @@ while True:
         exp_gate_proj_bias_l2_loss = losses.get("exp_gate_proj_bias_l2_loss")
         if exp_gate_proj_bias_l2_loss is None:
             exp_gate_proj_bias_l2_loss = 0.0
-        loss = loss + args.exp_gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
+        loss = loss + args.gate_proj_bias_l2_loss_weight * exp_gate_proj_bias_l2_loss
         exp_gate_proj_bias_shift_abs_mean_loss = losses.get("exp_gate_proj_bias_shift_abs_mean_loss")
         if exp_gate_proj_bias_shift_abs_mean_loss is None:
             exp_gate_proj_bias_shift_abs_mean_loss = 0.0
@@ -809,7 +809,7 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/exp_gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_l2_loss']),
             "train/exp_gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['exp_gate_proj_bias_shift_abs_mean_loss']),
-            "train/exp_gate_proj_bias_l2_loss_weight": args.exp_gate_proj_bias_l2_loss_weight,
+            "train/exp_gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
             "train/exp_gate_proj_bias_shift_abs_mean_loss_weight": exp_gate_proj_bias_shift_abs_mean_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,

@@ -122,7 +122,7 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-start-layer", type=int, default=None,
+parser.add_argument("--gate-proj-bias-start-layer", "--exp-gate-proj-bias-start-layer", dest="gate_proj_bias_start_layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
@@ -132,10 +132,10 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--exp-gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
-parser.add_argument("--exp-gate-proj-bias-shift-abs-mean-max", type=float, default=0.3,
+parser.add_argument("--gate-proj-bias-l2-loss-weight", "--exp-gate-proj-bias-l2-loss-weight", dest="gate_proj_bias_l2_loss_weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-max", "--exp-gate-proj-bias-shift-abs-mean-max", dest="gate_proj_bias_shift_abs_mean_max", type=float, default=0.3,
                     help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
-parser.add_argument("--exp-gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.3,
+parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", "--exp-gate-proj-bias-abs-mean-loss-weight-scale", dest="gate_proj_bias_abs_mean_loss_weight_scale", type=float, default=0.3,
                     help="scale factor applied to the L2 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", "--gate-proj-bias-l2-loss-floor-frac", dest="gate_proj_bias_l2_loss_stage1_frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
@@ -214,12 +214,12 @@ if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
-if args.exp_gate_proj_bias_shift_abs_mean_max > 0:
-    args.exp_gate_proj_bias_shift_abs_mean_max = float(args.exp_gate_proj_bias_shift_abs_mean_max)
+if args.gate_proj_bias_shift_abs_mean_max > 0:
+    args.gate_proj_bias_shift_abs_mean_max = float(args.gate_proj_bias_shift_abs_mean_max)
 else:
-    args.exp_gate_proj_bias_shift_abs_mean_max = None
-if args.exp_gate_proj_bias_abs_mean_loss_weight_scale < 0:
-    raise ValueError("--exp-gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
+    args.gate_proj_bias_shift_abs_mean_max = None
+if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
+    raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
@@ -251,7 +251,7 @@ if args.use_moe_adjusted_scaling_params and effective_moe_layer_count < args.dep
         "Disabling --use-moe-adjusted-scaling-params because the effective number of MoE layers "
         f"({effective_moe_layer_count}) is less than one fifth of depth ({args.depth / 5:.2f})."
     )
-if args.exp_gate_proj_bias_start_layer is None:
+if args.gate_proj_bias_start_layer is None:
     if args.num_moe_layers != 0:
         # If depth = 4, start layer = 2; if depth = 6, start layer = 3;
         # If depth = 8, start layer = 4; 
@@ -260,11 +260,11 @@ if args.exp_gate_proj_bias_start_layer is None:
         # moe_start_layer + 2: at most skip the first 2 moe layers, 
         # to avoid missing too many moe layers.
         # If depth = 10 and moe_start_layer = 2, then bias starts at layer 4 instead of 5.
-        args.exp_gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
+        args.gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
-        args.exp_gate_proj_bias_start_layer = 0
-if args.exp_gate_proj_bias_start_layer < 0:
-    raise ValueError("--exp-gate-proj-bias-start-layer must be >= 0")
+        args.gate_proj_bias_start_layer = 0
+if args.gate_proj_bias_start_layer < 0:
+    raise ValueError("--gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.use_aux_free_load_balancing:
@@ -363,9 +363,9 @@ def build_model_meta(depth):
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         exp_gate_proj_bias_input="top_logits",
-        exp_gate_proj_bias_start_layer=args.exp_gate_proj_bias_start_layer,
-        exp_gate_proj_bias_l2_loss_weight=args.exp_gate_proj_bias_l2_loss_weight,
-        exp_gate_proj_bias_shift_abs_mean_max=args.exp_gate_proj_bias_shift_abs_mean_max,
+        gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
+        gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
+        gate_proj_bias_shift_abs_mean_max=args.gate_proj_bias_shift_abs_mean_max,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1083,7 +1083,7 @@ while True:
     )
     gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
     exp_gate_proj_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.exp_gate_proj_bias_l2_loss_weight,
+        args.gate_proj_bias_l2_loss_weight,
         step,
         total_iterations=num_iterations,
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
@@ -1092,7 +1092,7 @@ while True:
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
     exp_gate_proj_bias_shift_abs_mean_loss_weight = (
-        exp_gate_proj_bias_l2_loss_weight * args.exp_gate_proj_bias_abs_mean_loss_weight_scale
+        exp_gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
     )
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:

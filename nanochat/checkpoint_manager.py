@@ -75,10 +75,10 @@ def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
         return
 
     inferred_start_layer = min(gate_proj_bias_layers)
-    model_config_kwargs.setdefault("exp_gate_proj_bias_start_layer", inferred_start_layer)
+    model_config_kwargs.setdefault("gate_proj_bias_start_layer", inferred_start_layer)
     log0(
         "Patching missing expert gate_proj_bias config in model config to "
-        f"enabled from layer {model_config_kwargs['exp_gate_proj_bias_start_layer']}"
+        f"enabled from layer {model_config_kwargs['gate_proj_bias_start_layer']}"
     )
 
 def _patch_missing_keys(model_data, model_config):

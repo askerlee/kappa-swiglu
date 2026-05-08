@@ -706,7 +706,9 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
-        gate_proj_bias_start_layer = int(getattr(config, 'exp_gate_proj_bias_start_layer', 0))
+        gate_proj_bias_start_layer = int(
+            getattr(config, 'gate_proj_bias_start_layer', getattr(config, 'exp_gate_proj_bias_start_layer', 0))
+        )
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
@@ -726,10 +728,10 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.exp_gate_proj_bias_shift_abs_mean_max = getattr(
+        self.gate_proj_bias_shift_abs_mean_max = getattr(
             config,
-            'exp_gate_proj_bias_shift_abs_mean_max',
-            None,
+            'gate_proj_bias_shift_abs_mean_max',
+            getattr(config, 'exp_gate_proj_bias_shift_abs_mean_max', None),
         )
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
@@ -778,7 +780,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_bias is None or selected_router_scores is None:
             return
 
-        max_abs_mean = self.exp_gate_proj_bias_shift_abs_mean_max
+        max_abs_mean = self.gate_proj_bias_shift_abs_mean_max
         score_abs = selected_router_scores.detach().float().abs()
         active_mask = score_abs > 0
         if not active_mask.any():
@@ -1498,7 +1500,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'exp_gate_proj_bias_l2_loss': 0,
-                                     'exp_gate_proj_bias_shift_abs_mean_loss': 0,
+                   'exp_gate_proj_bias_shift_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
