@@ -81,6 +81,27 @@ def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
         f"enabled from layer {model_config_kwargs['gate_proj_bias_start_layer']}"
     )
 
+
+def _override_disabled_exp_gate_proj_bias_with_zeros(model_data, model_kwargs):
+    """Keep checkpoint gate_proj_bias params loadable when a caller overrides them off."""
+    if model_kwargs.get("use_exp_gate_proj_bias") is not False:
+        return model_kwargs
+
+    gate_proj_bias_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias$")
+    gate_proj_bias_keys = [key for key in model_data if gate_proj_bias_pattern.match(key)]
+    if not gate_proj_bias_keys:
+        return model_kwargs
+
+    model_kwargs = dict(model_kwargs)
+    model_kwargs.pop("use_exp_gate_proj_bias", None)
+    for key in gate_proj_bias_keys:
+        model_data[key] = torch.zeros_like(model_data[key])
+    log0(
+        "Preserving checkpoint expert gate_proj_bias parameters for loading and zeroing them "
+        "because use_exp_gate_proj_bias was overridden to False"
+    )
+    return model_kwargs
+
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
@@ -592,6 +613,7 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
         }
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
+    kwargs = _override_disabled_exp_gate_proj_bias_with_zeros(model_data, kwargs)
     model_config_kwargs = meta_data["model_config"]
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _override_disabled_exp_gate_proj_bias_with_zeros, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -246,6 +246,22 @@ def test_infer_use_qwen3_dense_mlp_keeps_gated_dense_mlp_when_gate_proj_exists()
     _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
 
     assert model_config_kwargs["use_qwen3_dense_mlp"] is True
+
+
+def test_override_disabled_exp_gate_proj_bias_keeps_loadable_zero_bias_tensors():
+    model_data = {
+        "transformer.h.0.mlp.experts.gate_proj_bias": torch.randn(4, 8),
+        "transformer.h.1.mlp.experts.gate_proj_bias": torch.randn(4, 8),
+        "transformer.h.1.mlp.experts.gate_proj": torch.randn(4, 8, 16),
+    }
+    model_kwargs = {"use_exp_gate_proj_bias": False, "eval_capacity": 1.5}
+
+    sanitized_kwargs = _override_disabled_exp_gate_proj_bias_with_zeros(model_data, model_kwargs)
+
+    assert "use_exp_gate_proj_bias" not in sanitized_kwargs
+    assert sanitized_kwargs["eval_capacity"] == 1.5
+    assert torch.count_nonzero(model_data["transformer.h.0.mlp.experts.gate_proj_bias"]) == 0
+    assert torch.count_nonzero(model_data["transformer.h.1.mlp.experts.gate_proj_bias"]) == 0
 
 
 def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):
