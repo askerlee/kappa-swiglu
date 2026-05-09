@@ -93,9 +93,10 @@ def handle_shutdown_signal(signum, frame):
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
+DEFAULT_SEED = 26
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
-parser.add_argument("--seed", type=int, default=26, help="random seed for initialization")
+parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
 # FP8 training
 parser.add_argument("--fp8", type=str2bool, nargs='?', const=True, default=False, help="enable FP8 training (requires H100+ GPU and torchao)")
@@ -211,6 +212,8 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+if args.model_tag is not None and args.seed != DEFAULT_SEED:
+    args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
     args.compile = False
 
