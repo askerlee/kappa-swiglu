@@ -799,16 +799,23 @@ class Qwen3MLPExperts(nn.Module):
         # Boolean indexing here would create a variable-length tensor whose size
         # changes with the number of active tokens and triggers recompilation.
         active_mask_f = active_mask.to(dtype=shift_abs.dtype).unsqueeze(-1)
-        active_token_count = active_mask_f.sum()
-        active_element_count = active_token_count * shift_abs.shape[-1]
-        shift_abs_mean = (shift_abs * active_mask_f).sum() / active_element_count.clamp_min(1)
+        active_token_counts = active_mask_f.sum(dim=1).squeeze(-1)
+        active_element_counts = active_token_counts * shift_abs.shape[-1]
+        shift_abs_mean_per_expert = (shift_abs * active_mask_f).sum(dim=(1, 2)) / active_element_counts.clamp_min(1)
+        total_active_tokens = active_token_counts.sum()
+        shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
         if half_slope_start is not None:
-            score_abs_mean = (score_abs * active_mask.to(dtype=score_abs.dtype)).sum() / active_token_count.clamp_min(1)
-            score_abs_mean = score_abs_mean.clamp_min(1e-6)
+            score_abs_mean_per_expert = (
+                score_abs * active_mask.to(dtype=score_abs.dtype)
+            ).sum(dim=1) / active_token_counts.clamp_min(1)
+            score_abs_mean_per_expert = score_abs_mean_per_expert.clamp_min(1e-6)
             # Normalize by the active confidence scale so one threshold transfers better
             # across architectures whose selected-score magnitudes differ.
-            normalized_shift_abs_mean = shift_abs_mean / score_abs_mean
+            normalized_shift_abs_mean_per_expert = shift_abs_mean_per_expert / score_abs_mean_per_expert
+            normalized_shift_abs_mean = (
+                normalized_shift_abs_mean_per_expert * active_token_counts
+            ).sum() / total_active_tokens.clamp_min(1)
             '''
             NOTE:
             You can observe spikes of gate_proj_bias_shift_abs_mean_loss right after CORE eval.
@@ -828,11 +835,14 @@ class Qwen3MLPExperts(nn.Module):
             The buffer is **intentionally** not reset to remind us how different the inference
             distribution can be from training.
             '''
+            gate_proj_bias_shift_abs_mean_loss_per_expert = band_hinge_loss(
+                normalized_shift_abs_mean_per_expert,
+                half_slope_start,
+                full_slope_start,
+            ) * active_token_counts
+            gate_proj_bias_shift_abs_mean_loss = gate_proj_bias_shift_abs_mean_loss_per_expert.sum() / total_active_tokens.clamp_min(1)
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
-            MANAGER.add(
-                "gate_proj_bias_shift_abs_mean_loss",
-                band_hinge_loss(normalized_shift_abs_mean, half_slope_start, full_slope_start),
-            )
+            MANAGER.add("gate_proj_bias_shift_abs_mean_loss", gate_proj_bias_shift_abs_mean_loss)
         else:
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())
 
