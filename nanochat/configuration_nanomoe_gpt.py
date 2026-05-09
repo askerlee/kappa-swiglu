@@ -31,7 +31,8 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
-        gate_proj_bias_shift_abs_mean_max: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
+        gate_proj_bias_shift_abs_mean_half_slope_start: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
+        gate_proj_bias_shift_abs_mean_full_slope_start: float | None = None,  # band loss: no penalty below half-slope start, half-slope until this point, then full slope
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -59,15 +60,6 @@ class GPTConfig:
     ):        
         kwargs.pop('use_experts_gate_output_loss', None)
         kwargs.pop('experts_gate_output_loss_weight', None)
-        legacy_gate_proj_bias_start_layer = kwargs.pop('exp_gate_proj_bias_start_layer', None)
-        if legacy_gate_proj_bias_start_layer is not None:
-            gate_proj_bias_start_layer = legacy_gate_proj_bias_start_layer
-        legacy_gate_proj_bias_l2_loss_weight = kwargs.pop('exp_gate_proj_bias_l2_loss_weight', None)
-        if legacy_gate_proj_bias_l2_loss_weight is not None:
-            gate_proj_bias_l2_loss_weight = legacy_gate_proj_bias_l2_loss_weight
-        legacy_gate_proj_bias_shift_abs_mean_max = kwargs.pop('exp_gate_proj_bias_shift_abs_mean_max', None)
-        if legacy_gate_proj_bias_shift_abs_mean_max is not None:
-            gate_proj_bias_shift_abs_mean_max = legacy_gate_proj_bias_shift_abs_mean_max
         self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
@@ -113,19 +105,25 @@ class GPTConfig:
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
         self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
-        if gate_proj_bias_shift_abs_mean_max is None:
-            self.gate_proj_bias_shift_abs_mean_max = None
+        if gate_proj_bias_shift_abs_mean_half_slope_start is None:
+            self.gate_proj_bias_shift_abs_mean_half_slope_start = None
+            self.gate_proj_bias_shift_abs_mean_full_slope_start = None
         else:
-            self.gate_proj_bias_shift_abs_mean_max = float(gate_proj_bias_shift_abs_mean_max)
-            if self.gate_proj_bias_shift_abs_mean_max <= 0:
+            self.gate_proj_bias_shift_abs_mean_half_slope_start = float(gate_proj_bias_shift_abs_mean_half_slope_start)
+            if self.gate_proj_bias_shift_abs_mean_half_slope_start <= 0:
                 raise ValueError(
-                    "gate_proj_bias_shift_abs_mean_max must be > 0 when specified, "
-                    f"got {gate_proj_bias_shift_abs_mean_max}"
+                    "gate_proj_bias_shift_abs_mean_half_slope_start must be > 0 when specified, "
+                    f"got {gate_proj_bias_shift_abs_mean_half_slope_start}"
                 )
-        # Backward-compatible aliases for old call sites and serialized configs.
-        self.exp_gate_proj_bias_start_layer = self.gate_proj_bias_start_layer
-        self.exp_gate_proj_bias_l2_loss_weight = self.gate_proj_bias_l2_loss_weight
-        self.exp_gate_proj_bias_shift_abs_mean_max = self.gate_proj_bias_shift_abs_mean_max
+            if gate_proj_bias_shift_abs_mean_full_slope_start is None:
+                self.gate_proj_bias_shift_abs_mean_full_slope_start = 1.3 * self.gate_proj_bias_shift_abs_mean_half_slope_start
+            else:
+                self.gate_proj_bias_shift_abs_mean_full_slope_start = float(gate_proj_bias_shift_abs_mean_full_slope_start)
+                if self.gate_proj_bias_shift_abs_mean_full_slope_start <= self.gate_proj_bias_shift_abs_mean_half_slope_start:
+                    raise ValueError(
+                        "gate_proj_bias_shift_abs_mean_full_slope_start must be > gate_proj_bias_shift_abs_mean_half_slope_start, "
+                        f"got lower={self.gate_proj_bias_shift_abs_mean_half_slope_start} and upper={gate_proj_bias_shift_abs_mean_full_slope_start}"
+                    )
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight

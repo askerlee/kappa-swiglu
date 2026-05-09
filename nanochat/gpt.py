@@ -89,6 +89,10 @@ def scale_grad(x, alpha: float):
     return x.detach() + alpha * (x - x.detach())
 
 
+def band_hinge_loss(value, half_slope_start, full_slope_start):
+    return 0.5 * F.relu(value - half_slope_start) + 0.5 * F.relu(value - full_slope_start)
+
+
 class SoftcapInPlace(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, softcap):
@@ -706,9 +710,7 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
-        gate_proj_bias_start_layer = int(
-            getattr(config, 'gate_proj_bias_start_layer', getattr(config, 'exp_gate_proj_bias_start_layer', 0))
-        )
+        gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
@@ -728,10 +730,15 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.gate_proj_bias_shift_abs_mean_max = getattr(
+        self.gate_proj_bias_shift_abs_mean_half_slope_start = getattr(
             config,
-            'gate_proj_bias_shift_abs_mean_max',
-            getattr(config, 'exp_gate_proj_bias_shift_abs_mean_max', None),
+            'gate_proj_bias_shift_abs_mean_half_slope_start',
+            None,
+        )
+        self.gate_proj_bias_shift_abs_mean_full_slope_start = getattr(
+            config,
+            'gate_proj_bias_shift_abs_mean_full_slope_start',
+            None,
         )
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
@@ -780,7 +787,8 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_bias is None or selected_router_scores is None:
             return
 
-        max_abs_mean = self.gate_proj_bias_shift_abs_mean_max
+        half_slope_start = self.gate_proj_bias_shift_abs_mean_half_slope_start
+        full_slope_start = self.gate_proj_bias_shift_abs_mean_full_slope_start
         score_abs = selected_router_scores.detach().float().abs()
         active_mask = score_abs > 0
         if not active_mask.any():
@@ -795,7 +803,7 @@ class Qwen3MLPExperts(nn.Module):
         active_element_count = active_token_count * shift_abs.shape[-1]
         shift_abs_mean = (shift_abs * active_mask_f).sum() / active_element_count.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
-        if max_abs_mean is not None:
+        if half_slope_start is not None:
             score_abs_mean = (score_abs * active_mask.to(dtype=score_abs.dtype)).sum() / active_token_count.clamp_min(1)
             score_abs_mean = score_abs_mean.clamp_min(1e-6)
             # Normalize by the active confidence scale so one threshold transfers better
@@ -823,7 +831,7 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
             MANAGER.add(
                 "gate_proj_bias_shift_abs_mean_loss",
-                F.relu(normalized_shift_abs_mean - max_abs_mean),
+                band_hinge_loss(normalized_shift_abs_mean, half_slope_start, full_slope_start),
             )
         else:
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())

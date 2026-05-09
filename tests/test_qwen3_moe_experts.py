@@ -245,7 +245,7 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         use_router_z_loss=False,
         use_router_ortho_loss=False,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_l2_loss_weight=0.0,
+        gate_proj_bias_l2_loss_weight=0.0,
         debug=False,
     )
     penalized_config = GPTConfig(
@@ -262,7 +262,7 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         use_router_z_loss=False,
         use_router_ortho_loss=False,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_l2_loss_weight=0.7,
+        gate_proj_bias_l2_loss_weight=0.7,
         debug=False,
     )
 
@@ -294,38 +294,45 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         torch.testing.assert_close(penalized_loss, base_loss)
 
 
-def test_gate_proj_bias_shift_abs_mean_loss_uses_confidence_normalized_mean():
+def test_gate_proj_bias_shift_abs_mean_loss_uses_piecewise_linear_band():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_shift_abs_mean_max=3.0,
+        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
+        gate_proj_bias_shift_abs_mean_full_slope_start=4.5,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
 
-    with torch.no_grad():
-        experts.gate_proj_bias.fill_(4.0)
+    def run_case(bias_value):
+        with torch.no_grad():
+            experts.gate_proj_bias.fill_(bias_value)
+        MANAGER.reset("gate_proj_bias_shift_abs_mean")
+        MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+        MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+        experts._update_gate_proj_bias_shift_stats(torch.tensor([[1.0], [0.0]]))
+        return (
+            MANAGER.aggregate("gate_proj_bias_shift_abs_mean").item(),
+            MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized").item(),
+            MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss").item(),
+        )
 
-    MANAGER.reset("gate_proj_bias_shift_abs_mean")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+    _, normalized_below, loss_below = run_case(2.0)
+    _, normalized_mid, loss_mid = run_case(3.5)
+    shift_abs_mean_above, normalized_above, loss_above = run_case(6.0)
 
-    selected_router_scores = torch.tensor([
-        [1.0, 3.0, 0.0],
-        [2.0, 0.0, 0.0],
-    ])
-    experts._update_gate_proj_bias_shift_stats(selected_router_scores)
-
-    shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
-    shift_abs_mean_normalized = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
-    shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
-    assert shift_abs_mean.item() == 8.0
-    assert shift_abs_mean_normalized.item() == 4.0
-    assert shift_abs_mean_loss.item() == 1.0
+    assert normalized_below == 2.0
+    assert loss_below == 0.0
+    assert normalized_mid == 3.5
+    assert loss_mid == 0.25
+    assert shift_abs_mean_above == 6.0
+    assert normalized_above == 6.0
+    assert loss_above == 2.25
 
 
 def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
@@ -463,7 +470,7 @@ def test_gate_projection_bias_respects_start_layer_cutoff():
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_start_layer=3,
+        gate_proj_bias_start_layer=3,
         debug=False,
     )
 

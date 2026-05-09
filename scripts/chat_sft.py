@@ -94,8 +94,10 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
-parser.add_argument("--gate-proj-bias-shift-abs-mean-max", type=float, default=0.12,
-                    help="upper limit for the mean abs confidence-weighted gate shift |score * gate_proj_bias|; <= 0 disables the hinge loss")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-half-slope-start", type=float, default=0.12,
+                    help="lower threshold a for the normalized gate-proj-bias band loss; below this there is no penalty, and <= 0 disables the loss")
+parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=float, default=0.156,
+                    help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
 parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
                     help="scale factor applied to the L1 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
@@ -135,10 +137,22 @@ if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
-if args.gate_proj_bias_shift_abs_mean_max > 0:
-    args.gate_proj_bias_shift_abs_mean_max = float(args.gate_proj_bias_shift_abs_mean_max)
+if args.gate_proj_bias_shift_abs_mean_half_slope_start > 0:
+    args.gate_proj_bias_shift_abs_mean_half_slope_start = float(args.gate_proj_bias_shift_abs_mean_half_slope_start)
 else:
-    args.gate_proj_bias_shift_abs_mean_max = None
+    args.gate_proj_bias_shift_abs_mean_half_slope_start = None
+if args.gate_proj_bias_shift_abs_mean_full_slope_start > 0:
+    args.gate_proj_bias_shift_abs_mean_full_slope_start = float(args.gate_proj_bias_shift_abs_mean_full_slope_start)
+else:
+    args.gate_proj_bias_shift_abs_mean_full_slope_start = None
+if (
+    args.gate_proj_bias_shift_abs_mean_half_slope_start is not None
+    and args.gate_proj_bias_shift_abs_mean_full_slope_start is not None
+    and args.gate_proj_bias_shift_abs_mean_full_slope_start <= args.gate_proj_bias_shift_abs_mean_half_slope_start
+):
+    raise ValueError(
+        "--gate-proj-bias-shift-abs-mean-full-slope-start must be > --gate-proj-bias-shift-abs-mean-half-slope-start"
+    )
 if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
     raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
@@ -213,13 +227,15 @@ else:
         f"{args.use_aux_free_load_balancing}"
     )
 model.set_aux_free_load_balancing(args.use_aux_free_load_balancing)
-model.config.gate_proj_bias_shift_abs_mean_max = args.gate_proj_bias_shift_abs_mean_max
+model.config.gate_proj_bias_shift_abs_mean_half_slope_start = args.gate_proj_bias_shift_abs_mean_half_slope_start
+model.config.gate_proj_bias_shift_abs_mean_full_slope_start = args.gate_proj_bias_shift_abs_mean_full_slope_start
 user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "use_aux_free_load_balancing": args.use_aux_free_load_balancing,
-            "gate_proj_bias_shift_abs_mean_max": args.gate_proj_bias_shift_abs_mean_max,
+            "gate_proj_bias_shift_abs_mean_half_slope_start": args.gate_proj_bias_shift_abs_mean_half_slope_start,
+            "gate_proj_bias_shift_abs_mean_full_slope_start": args.gate_proj_bias_shift_abs_mean_full_slope_start,
         },
         allow_val_change=True,
     )
