@@ -199,6 +199,12 @@ def build_parser():
     parser.add_argument('--max-examples', type=int, default=-1, help='Max BoolQ examples to evaluate (-1 = all)')
     parser.add_argument('--tau', type=float, default=0.0, help='Predict yes when margin logp_yes - logp_no is greater than tau')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
+    parser.add_argument(
+        '--use-exp-gate-proj-bias',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Override the checkpoint config for expert gate_proj_bias on nanochat checkpoints',
+    )
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     return parser
 
@@ -225,6 +231,7 @@ def main():
             model_tag=args.model_tag,
             step=args.step,
             eval_capacity=args.eval_capacity,
+            use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         )
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
