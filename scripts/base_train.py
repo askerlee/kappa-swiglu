@@ -20,6 +20,7 @@ import math
 import argparse
 import sys
 import signal
+import shlex
 from contextlib import nullcontext, contextmanager
 import re
 
@@ -89,6 +90,57 @@ def handle_shutdown_signal(signum, frame):
         shutdown_signal_name = signal.Signals(signum).name
     except ValueError:
         shutdown_signal_name = f"signal {signum}"
+
+
+def build_chat_sft_exec_argv(
+    python_executable,
+    model_tag,
+    model_step,
+    extra_args_text="",
+    launched_with_torchrun=False,
+    local_world_size=1,
+    world_size=1,
+    node_rank=0,
+    master_addr=None,
+    master_port=None,
+):
+    import shlex
+
+    if launched_with_torchrun:
+        nnodes = max(world_size // max(local_world_size, 1), 1)
+        argv = [
+            python_executable,
+            "-m",
+            "torch.distributed.run",
+            f"--nproc_per_node={local_world_size}",
+            f"--nnodes={nnodes}",
+            f"--node_rank={node_rank}",
+        ]
+        if master_addr is not None:
+            argv.append(f"--master_addr={master_addr}")
+        if master_port is not None:
+            argv.append(f"--master_port={master_port}")
+        argv.extend([
+            "-m",
+            "scripts.chat_sft",
+            "--model-tag",
+            model_tag,
+            "--model-step",
+            str(model_step),
+        ])
+    else:
+        argv = [
+            python_executable,
+            "-m",
+            "scripts.chat_sft",
+            "--model-tag",
+            model_tag,
+            "--model-step",
+            str(model_step),
+        ]
+    if extra_args_text:
+        argv.extend(shlex.split(extra_args_text))
+    return argv
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -204,6 +256,8 @@ parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints
 parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=True, help="save optimizer shards alongside model checkpoints")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
+parser.add_argument("--continue-to-chat-sft", action="store_true", help="after a successful base training run, exec scripts.chat_sft from the final base checkpoint")
+parser.add_argument("--continue-to-chat-sft-args", type=str, default="", help="extra CLI args forwarded to scripts.chat_sft when --continue-to-chat-sft is set")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
@@ -1596,5 +1650,28 @@ get_report().log(section="Base model training", data=[
 ])
 
 # cleanup
+should_continue_to_chat_sft = args.continue_to_chat_sft and step == num_iterations
 wandb_run.finish() # wandb run finish
 compute_cleanup()
+
+if should_continue_to_chat_sft:
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", ddp_world_size))
+    should_launch_chat_sft = (not ddp) or ddp_local_rank == 0
+    if should_launch_chat_sft:
+        node_rank = int(os.environ.get("GROUP_RANK", os.environ.get("NODE_RANK", ddp_rank // max(local_world_size, 1))))
+        chat_sft_argv = build_chat_sft_exec_argv(
+            sys.executable,
+            output_dirname,
+            step,
+            args.continue_to_chat_sft_args,
+            launched_with_torchrun=ddp,
+            local_world_size=local_world_size,
+            world_size=ddp_world_size,
+            node_rank=node_rank,
+            master_addr=os.environ.get("MASTER_ADDR"),
+            master_port=os.environ.get("MASTER_PORT"),
+        )
+        print0(f"Continuing into chat_sft: {shlex.join(chat_sft_argv)}")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execvp(chat_sft_argv[0], chat_sft_argv)

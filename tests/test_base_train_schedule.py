@@ -36,17 +36,84 @@ def test_gate_proj_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final
     assert get_two_stage_annealed_loss_weight(1.0, 10, total_iterations=10) == 0.01
 
 
+def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
+    build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
+
+    argv = build_chat_sft_exec_argv(
+        "/usr/bin/python3",
+        "d8",
+        120,
+        "--device-batch-size 8 --model-save-tag after-base",
+    )
+
+    assert argv == [
+        "/usr/bin/python3",
+        "-m",
+        "scripts.chat_sft",
+        "--model-tag",
+        "d8",
+        "--model-step",
+        "120",
+        "--device-batch-size",
+        "8",
+        "--model-save-tag",
+        "after-base",
+    ]
+
+
+def test_build_chat_sft_exec_argv_uses_torchrun_with_same_local_world_size():
+    build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
+
+    argv = build_chat_sft_exec_argv(
+        "/usr/bin/python3",
+        "d8",
+        120,
+        "--device-batch-size 8",
+        launched_with_torchrun=True,
+        local_world_size=8,
+        world_size=16,
+        node_rank=1,
+        master_addr="127.0.0.1",
+        master_port="29500",
+    )
+
+    assert argv == [
+        "/usr/bin/python3",
+        "-m",
+        "torch.distributed.run",
+        "--nproc_per_node=8",
+        "--nnodes=2",
+        "--node_rank=1",
+        "--master_addr=127.0.0.1",
+        "--master_port=29500",
+        "-m",
+        "scripts.chat_sft",
+        "--model-tag",
+        "d8",
+        "--model-step",
+        "120",
+        "--device-batch-size",
+        "8",
+    ]
+
+
 def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     source = BASE_TRAIN.read_text()
 
     assert 'parser.add_argument("--aux-loss-weight", type=float, default=1e-3' in source
     assert 'parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0' in source
-    assert 'parser.add_argument("--aux-loss-weight--init-anneal-iterations", type=int, default=500' in source
+    assert 'parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500' in source
     assert 'orig_model.config.aux_loss_weight = aux_loss_weight' in source
     assert 'log_data["train/aux_loss_weight"] = aux_loss_weight' in source
     assert 'args.aux_loss_weight * args.aux_loss_weight_init_scale' in source
-    assert 'num_anneal_iterations=args.aux_loss_weight__init_anneal_iterations' in source
+    assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", "--gate-proj-bias-l2-loss-floor-frac", dest="gate_proj_bias_l2_loss_stage1_frac", type=float, default=0.1' in source
+    assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
     assert '--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
+    assert 'parser.add_argument("--continue-to-chat-sft", action="store_true"' in source
+    assert 'parser.add_argument("--continue-to-chat-sft-args", type=str, default=""' in source
+    assert 'should_continue_to_chat_sft = args.continue_to_chat_sft and step == num_iterations' in source
+    assert 'should_launch_chat_sft = (not ddp) or ddp_local_rank == 0' in source
+    assert '"torch.distributed.run"' in source
+    assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
