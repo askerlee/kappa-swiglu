@@ -9,4 +9,4 @@
 
 export PYTHONUNBUFFERED=1
 export NANOCHAT_BASE_DIR=output
-python -m scripts.base_train --save-every 8889 --wandb-api-key-file ~/.wandb_key_sh --model-tag "$SLURM_JOB_ID" "$@"
+python -m scripts.base_train --save-every 8889 --wandb-api-key-file ~/.wandb_key_sh --continue-to-chat-sft --model-tag "$SLURM_JOB_ID" "$@"
