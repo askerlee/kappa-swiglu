@@ -335,7 +335,7 @@ def test_gate_proj_bias_shift_abs_mean_loss_uses_piecewise_linear_band():
     assert loss_above == 2.25
 
 
-def test_gate_proj_bias_shift_abs_mean_loss_is_expert_specific_then_token_weighted():
+def test_gate_proj_bias_shift_abs_mean_metrics_are_expert_specific_then_sqrt_token_weighted():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -369,8 +369,10 @@ def test_gate_proj_bias_shift_abs_mean_loss_is_expert_specific_then_token_weight
     MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     torch.testing.assert_close(shift_abs_mean, torch.tensor([10.0 / 3.0]))
-    torch.testing.assert_close(normalized_shift_abs_mean, torch.tensor([10.0 / 3.0]))
-    torch.testing.assert_close(shift_abs_mean_loss, torch.tensor(0.75))
+    expected_normalized = torch.tensor([(2.0 * (2.0**0.5) + 6.0) / ((2.0**0.5) + 1.0)])
+    torch.testing.assert_close(normalized_shift_abs_mean, expected_normalized)
+    expected_loss = torch.tensor(2.25 / (2.0**0.5 + 1.0))
+    torch.testing.assert_close(shift_abs_mean_loss, expected_loss)
 
 
 def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
