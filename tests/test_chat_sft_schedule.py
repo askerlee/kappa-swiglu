@@ -47,3 +47,12 @@ def test_gate_proj_bias_l2_anchor_cli_defaults_to_initial_and_wires_load_behavio
     assert 'parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero"' in source
     assert 'refresh_gate_proj_bias_references = args.exp_gate_proj_bias_l2_anchor == "initial"' in source
     assert 'refresh_gate_proj_bias_references=refresh_gate_proj_bias_references' in source
+
+
+def test_matrix_optimizer_inherits_from_base_checkpoint_unless_explicitly_set():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert "matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')" in source
+    assert 'args.matrix_optimizer = meta.get("user_config", {}).get("matrix_optimizer", "muon")' in source
+    assert 'print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")' in source
+    assert 'print0(f"Specified matrix_optimizer: {args.matrix_optimizer}")' in source

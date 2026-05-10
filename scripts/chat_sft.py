@@ -157,6 +157,7 @@ if (
 if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
     raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
+matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
 
@@ -243,6 +244,14 @@ if not use_dummy_wandb:
 pretrain_batch_size = meta.get("device_batch_size", None)
 if pretrain_batch_size is not None and args.device_batch_size > pretrain_batch_size:
     print0(f"FOOTGUN WARNING: base model training used device_batch_size {pretrain_batch_size}, did you pass in a good --device-batch-size to this script?")
+if matrix_optimizer_was_specified:
+    print0(f"Specified matrix_optimizer: {args.matrix_optimizer}")
+else:
+    args.matrix_optimizer = meta.get("user_config", {}).get("matrix_optimizer", "muon")
+    print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")
+user_config["matrix_optimizer"] = args.matrix_optimizer
+if not use_dummy_wandb:
+    wandb_run.config.update({"matrix_optimizer": args.matrix_optimizer}, allow_val_change=True)
 if router_z_loss_weight_was_specified:
     model.config.router_z_loss_weight = args.router_z_loss_weight
     print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
