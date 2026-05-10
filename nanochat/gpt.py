@@ -744,6 +744,11 @@ class Qwen3MLPExperts(nn.Module):
             'gate_proj_bias_shift_abs_mean_full_slope_start',
             None,
         )
+        # Since we update router_confidence_gate_bias_grad_scale 
+        # continuously during training, if it's just a float, Dynamo would
+        # compile guards around its value and recompile whenever it changes.
+        # So we change it to a buffer tensor, and Dynamo will treat it as an input
+        # to the compiled region, avoiding recompiles on value changes.
         self.register_buffer(
             "router_confidence_gate_bias_grad_scale",
             torch.tensor(0.1),
@@ -833,6 +838,15 @@ class Qwen3MLPExperts(nn.Module):
 
         # E_t,j[|s_t| * |b_j|] factorizes into E_t[|s_t|] * E_j[|b_j|], so we can
         # avoid materializing the full [expert, token, intermediate] tensor.
+        # For a fixed expert, the scores are [token] which are shared across the
+        # intermediate dimension, and the bias is [intermediate] which are shared
+        # across the token dimension. So the matrix over (token, intermediate) 
+        # is an outer product: M_{t,j} = |s_{e,t}|\,|b_{e,j}|
+        # its mean factorizes exactly:
+        # \frac{1}{TJ}\sum_t\sum_j |s_{e,t}|\,|b_{e,j}|
+        # =
+        # \left(\frac{1}{T}\sum_t |s_{e,t}|\right)
+        # \left(\frac{1}{J}\sum_j |b_{e,j}|\right)
         active_mask_f = active_mask.to(dtype=score_abs.dtype)
         active_token_counts = active_mask_f.sum(dim=1)
         score_abs_sum_per_expert = (score_abs * active_mask_f).sum(dim=1)
