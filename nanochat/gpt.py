@@ -1101,16 +1101,12 @@ class MOELayer(nn.Module):
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
         # Reduce the grad to router_weights by 0.1 to avoid blowing up the router.
         router_weights = scale_grad(router_weights, self.router_ortho_loss_grad_scale)
-        expert_weights = self.experts.gate_proj
+        # expert_weights: [n_exp, n_embd, intermediate_size] -> [n_exp, n_embd, 1]
+        expert_weights = self.experts.gate_proj.mean(dim=2, keepdim=True)
         # Use cosine instead of unnormalized dot product. Otherwise, the loss
         # will reduce itself by suppressing the increase of the magnitudes of
         # router_weights and expert_weights, which will hurt performance.
         ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
-        # Weight columns by their current energy (magnitude), but detach() to
-        # avoid the loss reduce itself by shrinking those magnitudes directly.
-        expert_weight_energy = expert_weights.detach().float().square().sum(dim=1)
-        expert_weight_energy = expert_weight_energy / expert_weight_energy.mean().clamp_min(1e-12)
-        expert_weight_energy = expert_weight_energy.to(dtype=ortho_losses_signed.dtype)
         ortho_losses_weights = torch.ones_like(ortho_losses_signed)
         # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
         ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
@@ -1119,7 +1115,7 @@ class MOELayer(nn.Module):
         # Later the ortho losses of different MoE layers are added up.
         # So the magnitude could be as large as 50~200.
         ortho_loss = (
-            ortho_losses_signed.square() * ortho_losses_weights * expert_weight_energy
+            ortho_losses_signed.square() * ortho_losses_weights
         ).sum(dim=1).mean()
         sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
         return ortho_loss, sub_losses
