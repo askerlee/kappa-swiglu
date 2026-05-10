@@ -797,25 +797,21 @@ class Qwen3MLPExperts(nn.Module):
         if not active_mask.any():
             return
 
-        shift_abs = score_abs.unsqueeze(-1) * self.gate_proj_bias.float().abs().unsqueeze(1)
-        # Keep this reduction shape-stable for torch.compile(dynamic=False).
-        # Boolean indexing here would create a variable-length tensor whose size
-        # changes with the number of active tokens and triggers recompilation.
-        active_mask_f = active_mask.to(dtype=shift_abs.dtype).unsqueeze(-1)
-        active_token_counts = active_mask_f.sum(dim=1).squeeze(-1)
-        active_element_counts = active_token_counts * shift_abs.shape[-1]
-        shift_abs_mean_per_expert = (shift_abs * active_mask_f).sum(dim=(1, 2)) / active_element_counts.clamp_min(1)
+        # E_t,j[|s_t| * |b_j|] factorizes into E_t[|s_t|] * E_j[|b_j|], so we can
+        # avoid materializing the full [expert, token, intermediate] tensor.
+        active_mask_f = active_mask.to(dtype=score_abs.dtype)
+        active_token_counts = active_mask_f.sum(dim=1)
+        score_abs_sum_per_expert = (score_abs * active_mask_f).sum(dim=1)
+        score_abs_mean_per_expert = score_abs_sum_per_expert / active_token_counts.clamp_min(1)
+        bias_abs_mean_per_expert = self.gate_proj_bias.float().abs().mean(dim=1)
+        shift_abs_mean_per_expert = score_abs_mean_per_expert * bias_abs_mean_per_expert
         total_active_tokens = active_token_counts.sum()
         shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
         if half_slope_start is not None:
-            score_abs_mean_per_expert = (
-                score_abs * active_mask.to(dtype=score_abs.dtype)
-            ).sum(dim=1) / active_token_counts.clamp_min(1)
-            score_abs_mean_per_expert = score_abs_mean_per_expert.clamp_min(1e-6)
             # Normalize by the active confidence scale so one threshold transfers better
             # across architectures whose selected-score magnitudes differ.
-            normalized_shift_abs_mean_per_expert = shift_abs_mean_per_expert / score_abs_mean_per_expert
+            normalized_shift_abs_mean_per_expert = bias_abs_mean_per_expert
             normalized_shift_abs_mean = (
                 normalized_shift_abs_mean_per_expert * active_token_counts
             ).sum() / total_active_tokens.clamp_min(1)
