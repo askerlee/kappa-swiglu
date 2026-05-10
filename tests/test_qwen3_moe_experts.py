@@ -124,32 +124,6 @@ def test_dynamic_gate_projection_bias_backprops_into_selected_router_scores():
     assert selected_router_scores.grad is not None
 
 
-def test_debug_skip_update_gate_proj_bias_shift_stats_skips_manager_updates():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
-        debug_skip_update_gate_proj_bias_shift_stats=True,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.randn(config.n_exp, 5)
-
-    MANAGER.reset("gate_proj_bias_shift_abs_mean")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
-
-    _ = experts(x, selected_router_scores=selected_router_scores)
-
-    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean") is None
-    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized") is None
-    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss") == 0
-
-
 def test_router_returns_selected_top_k_router_scores():
     torch.manual_seed(0)
     config = GPTConfig(

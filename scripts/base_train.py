@@ -172,8 +172,6 @@ parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=flo
                     help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
 parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
                     help="scale factor applied to the L1 loss weight to get the MoE gate_proj_bias abs-mean hinge loss weight")
-parser.add_argument("--debug-skip-update-gate-proj-bias-shift-stats", type=str2bool, nargs='?', const=True, default=False,
-                    help="debug option: skip updating gate_proj_bias shift stats in Qwen3 MoE experts")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -418,7 +416,6 @@ def build_model_meta(depth):
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         gate_proj_bias_shift_abs_mean_half_slope_start=args.gate_proj_bias_shift_abs_mean_half_slope_start,
         gate_proj_bias_shift_abs_mean_full_slope_start=args.gate_proj_bias_shift_abs_mean_full_slope_start,
-        debug_skip_update_gate_proj_bias_shift_stats=args.debug_skip_update_gate_proj_bias_shift_stats,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
