@@ -743,6 +743,9 @@ class Qwen3MLPExperts(nn.Module):
         self.router_confidence_gate_bias_grad_scale = 0.1
         self.gate_out_acts_normed = None
         self.last_gate_stats = None
+        self.debug_skip_update_gate_proj_bias_shift_stats = bool(
+            getattr(config, 'debug_skip_update_gate_proj_bias_shift_stats', False)
+        )
         # Weak reference to the router. Avoid registering it as a child module.
         self._router_ref = None
 
@@ -863,7 +866,8 @@ class Qwen3MLPExperts(nn.Module):
                 self.gate_proj_bias.unsqueeze(1),
                 value=-1,
             )
-        self._update_gate_proj_bias_shift_stats(selected_router_scores)
+        if not self.debug_skip_update_gate_proj_bias_shift_stats:
+            self._update_gate_proj_bias_shift_stats(selected_router_scores)
         gate_out_acts = self.act_fn(gate_out_raw)
         self._update_gate_stats(gate_out_acts)
 

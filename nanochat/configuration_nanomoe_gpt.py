@@ -33,6 +33,7 @@ class GPTConfig:
         gate_proj_bias_l2_loss_weight: float = 0.0,
         gate_proj_bias_shift_abs_mean_half_slope_start: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
         gate_proj_bias_shift_abs_mean_full_slope_start: float | None = None,  # band loss: no penalty below half-slope start, half-slope until this point, then full slope
+        debug_skip_update_gate_proj_bias_shift_stats: bool = False,
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -124,6 +125,7 @@ class GPTConfig:
                         "gate_proj_bias_shift_abs_mean_full_slope_start must be > gate_proj_bias_shift_abs_mean_half_slope_start, "
                         f"got lower={self.gate_proj_bias_shift_abs_mean_half_slope_start} and upper={gate_proj_bias_shift_abs_mean_full_slope_start}"
                     )
+        self.debug_skip_update_gate_proj_bias_shift_stats = bool(debug_skip_update_gate_proj_bias_shift_stats)
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
