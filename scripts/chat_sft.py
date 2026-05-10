@@ -84,6 +84,7 @@ parser.add_argument("--total-batch-size", type=int, default=524288, help="total 
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
+parser.add_argument("--matrix-optimizer", type=str, default="muon", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
@@ -286,6 +287,7 @@ optimizer = model.setup_optimizer(
     unembedding_lr=args.unembedding_lr,
     embedding_lr=args.embedding_lr,
     matrix_lr=args.matrix_lr,
+    matrix_optimizer=args.matrix_optimizer,
     weight_decay=weight_decay_scaled,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,

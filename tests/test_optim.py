@@ -6,7 +6,7 @@ import torch
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, Qwen3MLP, Qwen3MLPExperts
 from nanochat import optim as optim_module
-from nanochat.optim import DistMuonAdamW, MuonAdamW
+from nanochat.optim import AuroraAdamW, DistAuroraAdamW, DistMuonAdamW, MuonAdamW
 
 
 def load_base_train_function(name: str):
@@ -128,6 +128,67 @@ def test_muon_chunk_size_one_updates_all_params():
         assert not torch.allclose(param, param_before)
 
 
+def test_aurora_group_update_changes_all_params():
+    param_a = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10)
+    param_b = torch.nn.Parameter(-param_a.detach().clone())
+
+    grad_a = torch.tensor([
+        [0.3, -0.2, 0.1, 0.4],
+        [-0.5, 0.2, 0.3, -0.1],
+        [0.2, 0.1, -0.4, 0.6],
+    ], dtype=torch.float32)
+    grad_b = torch.tensor([
+        [-0.1, 0.2, -0.3, 0.4],
+        [0.3, -0.2, 0.5, -0.4],
+        [-0.6, 0.1, 0.2, -0.3],
+    ], dtype=torch.float32)
+
+    param_a.grad = grad_a.clone()
+    param_b.grad = grad_b.clone()
+    before_a = param_a.detach().clone()
+    before_b = param_b.detach().clone()
+
+    optimizer = AuroraAdamW([
+        dict(
+            kind='aurora', params=[param_a, param_b], lr=0.05, momentum=0.95,
+            pp_iterations=2, pp_beta=0.5, weight_decay=0.0,
+        ),
+    ])
+
+    optimizer.step()
+
+    assert not torch.allclose(param_a, before_a)
+    assert not torch.allclose(param_b, before_b)
+
+
+def test_aurora_chunk_size_preserves_full_group_update():
+    torch.manual_seed(0)
+    full_params = [
+        torch.nn.Parameter(torch.randn(3, 4, dtype=torch.float32))
+        for _ in range(5)
+    ]
+    chunked_params = [torch.nn.Parameter(param.detach().clone()) for param in full_params]
+    grads = [torch.randn_like(param) for param in full_params]
+
+    for param, grad in zip(full_params, grads):
+        param.grad = grad.clone()
+    for param, grad in zip(chunked_params, grads):
+        param.grad = grad.clone()
+
+    full_optimizer = AuroraAdamW([
+        dict(kind='aurora', params=full_params, lr=0.05, momentum=0.95, pp_iterations=2, pp_beta=0.5, weight_decay=0.01),
+    ])
+    chunked_optimizer = AuroraAdamW([
+        dict(kind='aurora', params=chunked_params, lr=0.05, momentum=0.95, pp_iterations=2, pp_beta=0.5, weight_decay=0.01, chunk_size=2),
+    ])
+
+    full_optimizer.step()
+    chunked_optimizer.step()
+
+    for full_param, chunked_param in zip(full_params, chunked_params):
+        assert torch.allclose(chunked_param, full_param)
+
+
 def test_dist_muon_compute_reuses_updated_param_buffer(monkeypatch):
     params = [
         torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) + offset)
@@ -183,6 +244,67 @@ def test_dist_muon_compute_reuses_updated_param_buffer(monkeypatch):
 
     with torch.inference_mode():
         optimizer._compute_muon(optimizer.param_groups[0], info, gather_list, rank=0)
+        optimizer._finish_gathers(gather_list)
+
+    assert len(gather_list) == 1
+    assert torch.allclose(params[0], torch.arange(12, dtype=torch.float32).reshape(3, 4) - 1.0)
+    assert torch.allclose(params[1], torch.arange(12, dtype=torch.float32).reshape(3, 4) + 8.0)
+
+
+def test_dist_aurora_compute_reuses_updated_param_buffer(monkeypatch):
+    params = [
+        torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) + offset)
+        for offset in (0.0, 10.0)
+    ]
+    grad_chunk = torch.stack([torch.ones_like(params[0]), torch.full_like(params[0], 2.0)])
+    stacked_grads = torch.empty_like(grad_chunk)
+    optimizer = DistAuroraAdamW([
+        dict(kind='aurora', params=params, lr=0.05, momentum=0.95, pp_iterations=2, pp_beta=0.5, weight_decay=0.01),
+    ])
+
+    class _DoneFuture:
+        def wait(self):
+            return None
+
+    class _AsyncCollective:
+        def __init__(self, output, local):
+            self.output = output
+            self.local = local
+
+        def get_future(self):
+            self.output[:self.local.shape[0]].copy_(self.local)
+            return _DoneFuture()
+
+    def fake_all_gather_into_tensor(output, local, async_op=True):
+        assert async_op is True
+        return _AsyncCollective(output, local)
+
+    def fake_aurora_step_fused(grads, updated, momentum_buffer, *_args):
+        updated.sub_(grads)
+        momentum_buffer.copy_(grads)
+
+    original_stack = torch.stack
+
+    def guarded_stack(sequence, *args, **kwargs):
+        if sequence and all(item is param for item, param in zip(sequence, params)) and len(sequence) == len(params):
+            raise AssertionError('owned params should be copied into the update buffer, not restacked')
+        return original_stack(sequence, *args, **kwargs)
+
+    monkeypatch.setattr(optim_module.dist, 'all_gather_into_tensor', fake_all_gather_into_tensor)
+    monkeypatch.setattr(optim_module, 'aurora_step_fused', fake_aurora_step_fused)
+    monkeypatch.setattr(torch, 'stack', guarded_stack)
+
+    info = dict(chunk_infos=[dict(
+        future=_DoneFuture(),
+        params=params,
+        chunk_size=len(params),
+        grad_chunk=grad_chunk,
+        stacked_grads=stacked_grads,
+    )])
+    gather_list = []
+
+    with torch.inference_mode():
+        optimizer._compute_aurora(optimizer.param_groups[0], info, gather_list, rank=0)
         optimizer._finish_gathers(gather_list)
 
     assert len(gather_list) == 1
@@ -272,6 +394,30 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     assert moe_gate_bias
     assert all(param not in muon_params for param in moe_gate_bias)
     assert all(param in adamw_params for param in moe_gate_bias)
+
+
+def test_setup_optimizer_selects_aurora_for_matrix_groups():
+    config = GPTConfig(
+        n_layer=4,
+        moe_start_layer=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+    )
+    model = GPT(config)
+
+    optimizer = model.setup_optimizer(
+        matrix_lr=0.01,
+        weight_decay=0.2,
+        matrix_optimizer='aurora',
+    )
+
+    matrix_groups = [group for group in optimizer.param_groups if group['kind'] == 'aurora']
+
+    assert isinstance(optimizer, AuroraAdamW)
+    assert matrix_groups
+    assert all(group['weight_decay'] == 0.2 for group in matrix_groups)
 
 
 def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():

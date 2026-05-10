@@ -28,7 +28,7 @@ except ImportError:
     from manager import MANAGER
 from transformers.activations import SiLUActivation
 from nanochat.common import get_dist_info, print0
-from nanochat.optim import MuonAdamW, DistMuonAdamW
+from nanochat.optim import AuroraAdamW, DistAuroraAdamW, MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
@@ -1459,6 +1459,7 @@ class GPT(nn.Module):
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
                         weight_decay=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
+                        matrix_optimizer='muon',
                         gate_proj_bias_lr_final_scale=1.0,
                         gate_proj_bias_lr_max_scale=1.0,
                         gate_proj_bias_delay_start_iterations=0,
@@ -1536,26 +1537,33 @@ class GPT(nn.Module):
         param_groups.append(
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
         )  # higher beta1 for x0
-        # Muon groups (matrix params, grouped by shape for stacking)
-        muon_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
-        print0(f"Muon LR scaling: {muon_lr_scaling}")
+        if matrix_optimizer not in ('muon', 'aurora'):
+            raise ValueError(f"Unsupported matrix_optimizer: {matrix_optimizer}")
+
+        matrix_kind = matrix_optimizer
+        matrix_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
+        print0(f"{matrix_optimizer.capitalize()} LR scaling: {matrix_lr_scaling}")
         for shape in sorted({p.shape for p in dense_matrix_params}):
             group_params = [p for p in dense_matrix_params if p.shape == shape]
             param_groups.append(dict(
-                kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                kind=matrix_kind, params=group_params, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         for shape in sorted({p.shape for p in moe_matrix_params}):
             group_params = [p for p in moe_matrix_params if p.shape == shape]
             param_groups.append(dict(
-                kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                kind=matrix_kind, params=group_params, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
-        Factory = DistMuonAdamW if ddp else MuonAdamW
+        factory_map = {
+            'muon': (DistMuonAdamW if ddp else MuonAdamW),
+            'aurora': (DistAuroraAdamW if ddp else AuroraAdamW),
+        }
+        Factory = factory_map[matrix_optimizer]
         optimizer = Factory(param_groups)
         for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]

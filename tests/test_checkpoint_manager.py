@@ -107,6 +107,46 @@ def test_reshard_optimizer_state_dict_reshards_muon_group():
     assert torch.equal(loaded_state["second_momentum_buffer"], expected_second)
 
 
+def test_reshard_optimizer_state_dict_reshards_aurora_group():
+    params = [torch.nn.Parameter(torch.zeros(2, 2)) for _ in range(5)]
+    optimizer = make_optimizer([
+        {"kind": "aurora", "params": params, "lr": 1e-2, "momentum": 0.95}
+    ])
+    saved_param_groups = [{"kind": "aurora", "params": [0, 1, 2, 3, 4], "lr": 1e-2, "momentum": 0.95}]
+
+    full_momentum = torch.stack([torch.full((2, 2), float(idx)) for idx in range(5)])
+    shard_state_dicts = [
+        {
+            "state": {
+                0: {
+                    "momentum_buffer": full_momentum[:3].clone(),
+                }
+            },
+            "param_groups": copy.deepcopy(saved_param_groups),
+        },
+        {
+            "state": {
+                0: {
+                    "momentum_buffer": torch.cat([full_momentum[3:].clone(), torch.zeros(1, 2, 2)], dim=0),
+                }
+            },
+            "param_groups": copy.deepcopy(saved_param_groups),
+        },
+    ]
+
+    state_dict = reshard_optimizer_state_dict(
+        shard_state_dicts,
+        optimizer,
+        rank=2,
+        saved_world_size=2,
+        current_world_size=4,
+    )
+
+    loaded_state = state_dict["state"][0]
+    expected_momentum = torch.stack([full_momentum[4], torch.zeros(2, 2)], dim=0)
+    assert torch.equal(loaded_state["momentum_buffer"], expected_momentum)
+
+
 def test_load_optimizer_state_dict_reshards_without_current_rank_file(tmp_path):
     step = 12
     checkpoint_dir = tmp_path / "ckpt"

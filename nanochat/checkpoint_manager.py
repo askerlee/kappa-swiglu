@@ -304,6 +304,30 @@ def _reshard_muon_state(shard_entries, num_params, rank, current_world_size):
     return local_state
 
 
+def _reshard_stacked_matrix_state(shard_entries, num_params, rank, current_world_size, optimizer_name):
+    chunk_size = (num_params + current_world_size - 1) // current_world_size
+    start = rank * chunk_size
+    end = min(start + chunk_size, num_params)
+    local_state = {}
+
+    for key, value in shard_entries[0].items():
+        if torch.is_tensor(value) and value.ndim > 0:
+            full_value = torch.cat([entry[key] for entry in shard_entries], dim=0)
+            if full_value.shape[0] < num_params:
+                raise ValueError(
+                    f"{optimizer_name} state shape mismatch for key '{key}': "
+                    f"reconstructed dim0={full_value.shape[0]}, expected at least {num_params}"
+                )
+            full_value = full_value[:num_params]
+            local_value = value.new_zeros((chunk_size, *value.shape[1:]))
+            if start < num_params:
+                local_value[:end - start].copy_(full_value[start:end])
+            local_state[key] = local_value
+        else:
+            local_state[key] = _clone_optimizer_state_value(value)
+    return local_state
+
+
 def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_world_size=1, current_world_size=1):
     if not shard_state_dicts:
         raise ValueError("No optimizer state shards provided for resharding")
@@ -362,6 +386,23 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
                 len(current_params),
                 rank,
                 current_world_size,
+            )
+        elif saved_kind == "aurora":
+            if not saved_param_ids:
+                continue
+            state_param_id = saved_param_ids[0]
+            shard_entries = _require_complete_shard_entries(
+                [shard_state_dict["state"].get(state_param_id) for shard_state_dict in shard_state_dicts],
+                f"Aurora group {group_idx}",
+            )
+            if shard_entries is None:
+                continue
+            resharded_state[state_param_id] = _reshard_stacked_matrix_state(
+                shard_entries,
+                len(current_params),
+                rank,
+                current_world_size,
+                "Aurora",
             )
         else:
             raise ValueError(f"Unsupported optimizer kind '{saved_kind}' in checkpoint group {group_idx}")
