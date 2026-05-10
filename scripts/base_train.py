@@ -112,6 +112,32 @@ def build_chat_sft_exec_argv(
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
     return argv
+
+
+def pick_free_tcp_port():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
+
+
+def prepare_chat_sft_rendezvous(ddp, ddp_rank, device):
+    import torch
+
+    if not ddp:
+        return None
+
+    chat_sft_master_port = 0
+    if ddp_rank == 0:
+        chat_sft_master_port = pick_free_tcp_port()
+    port_tensor = torch.tensor([chat_sft_master_port], device=device, dtype=torch.int64)
+    torch.distributed.broadcast(port_tensor, src=0)
+    chat_sft_master_port = int(port_tensor.item())
+    os.environ["MASTER_PORT"] = str(chat_sft_master_port)
+    torch.distributed.barrier()
+    return chat_sft_master_port
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -1625,6 +1651,9 @@ get_report().log(section="Base model training", data=[
 
 # cleanup
 should_continue_to_chat_sft = args.continue_to_chat_sft and step == num_iterations
+chat_sft_master_port = None
+if should_continue_to_chat_sft:
+    chat_sft_master_port = prepare_chat_sft_rendezvous(ddp, ddp_rank, device)
 wandb_run.finish() # wandb run finish
 compute_cleanup()
 
@@ -1635,6 +1664,8 @@ if should_continue_to_chat_sft:
         step,
         args.continue_to_chat_sft_args,
     )
+    if chat_sft_master_port is not None:
+        print0(f"Prepared fresh chat_sft rendezvous port: {chat_sft_master_port}")
     print0(f"Continuing into chat_sft: {shlex.join(chat_sft_argv)}")
     sys.stdout.flush()
     sys.stderr.flush()

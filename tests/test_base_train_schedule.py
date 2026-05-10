@@ -61,6 +61,15 @@ def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
     ]
 
 
+def test_pick_free_tcp_port_returns_valid_port_number():
+    pick_free_tcp_port = load_function_from_script("pick_free_tcp_port")
+
+    port = pick_free_tcp_port()
+
+    assert isinstance(port, int)
+    assert 0 < port < 65536
+
+
 def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     source = BASE_TRAIN.read_text()
 
@@ -78,4 +87,7 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'parser.add_argument("--continue-to-chat-sft", action="store_true"' in source
     assert 'parser.add_argument("--continue-to-chat-sft-args", type=str, default=""' in source
     assert 'should_continue_to_chat_sft = args.continue_to_chat_sft and step == num_iterations' in source
+    assert 'chat_sft_master_port = prepare_chat_sft_rendezvous(ddp, ddp_rank, device)' in source
+    assert 'os.environ["MASTER_PORT"] = str(chat_sft_master_port)' in source
+    assert 'torch.distributed.broadcast(port_tensor, src=0)' in source
     assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
