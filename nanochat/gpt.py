@@ -85,7 +85,7 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
     else:
         return result
 
-def scale_grad(x, alpha: float):
+def scale_grad(x, alpha):
     return x.detach() + alpha * (x - x.detach())
 
 
@@ -744,7 +744,11 @@ class Qwen3MLPExperts(nn.Module):
             'gate_proj_bias_shift_abs_mean_full_slope_start',
             None,
         )
-        self.router_confidence_gate_bias_grad_scale = 0.1
+        self.register_buffer(
+            "router_confidence_gate_bias_grad_scale",
+            torch.tensor(0.1),
+            persistent=False,
+        )
         self.gate_out_acts_normed = None
         self.last_gate_stats = None
         # Weak reference to the router. Avoid registering it as a child module.
@@ -1186,7 +1190,7 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts):
-                    experts.router_confidence_gate_bias_grad_scale = grad_scale
+                    experts.router_confidence_gate_bias_grad_scale.fill_(grad_scale)
 
     @torch.no_grad()
     def refresh_gate_proj_bias_references(self):
