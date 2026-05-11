@@ -1021,8 +1021,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(exp_gate_weight).mean(dim=1)
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
-                exp_gate_proj_bias = experts.gate_proj_bias
                 if experts.use_gate_proj_bias:
+                    exp_gate_proj_bias = experts._materialize_gate_proj_bias()
                     losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
                     losses[f'exp_gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]

@@ -582,8 +582,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
-                exp_gate_proj_bias = layer.mlp.experts.gate_proj_bias
-                if exp_gate_proj_bias is not None:
+                if layer.mlp.experts.use_gate_proj_bias:
+                    exp_gate_proj_bias = layer.mlp.experts._materialize_gate_proj_bias()
                     losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
                     losses[f'exp_gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
