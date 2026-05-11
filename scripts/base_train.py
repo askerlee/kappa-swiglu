@@ -138,6 +138,17 @@ def prepare_chat_sft_rendezvous(ddp, ddp_rank, device):
     os.environ["MASTER_PORT"] = str(chat_sft_master_port)
     torch.distributed.barrier()
     return chat_sft_master_port
+
+
+def sanitize_chat_sft_rendezvous_env():
+    # chat_sft reuses the existing torchrun workers via exec(), but it needs to
+    # form a fresh TCPStore on the new MASTER_PORT instead of reusing the
+    # torchelastic agent store semantics from the previous job.
+    # base_train.py was creating a fresh MASTER_PORT for the exec into chat SFT, 
+    # but it was still leaving TORCHELASTIC_USE_AGENT_STORE in the environment. 
+    # Under torchrun that makes the new process-group init treat the rendezvous 
+    # like an agent-managed store.
+    os.environ.pop("TORCHELASTIC_USE_AGENT_STORE", None)
     
 # -----------------------------------------------------------------------------
 # CLI arguments
@@ -1667,6 +1678,7 @@ if should_continue_to_chat_sft:
         step,
         args.continue_to_chat_sft_args,
     )
+    sanitize_chat_sft_rendezvous_env()
     if chat_sft_master_port is not None:
         print0(f"Prepared fresh chat_sft rendezvous port: {chat_sft_master_port}")
     print0(f"Continuing into chat_sft: {shlex.join(chat_sft_argv)}")
