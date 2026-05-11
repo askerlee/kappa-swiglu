@@ -205,6 +205,12 @@ def build_parser():
         default=None,
         help='Override the checkpoint config for expert gate_proj_bias on nanochat checkpoints',
     )
+    parser.add_argument(
+        '--exp-gate-proj-bias-fill-value',
+        type=float,
+        default=None,
+        help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value',
+    )
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     return parser
 
@@ -232,10 +238,13 @@ def main():
             step=args.step,
             eval_capacity=args.eval_capacity,
             use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+            exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
         )
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
+        if args.exp_gate_proj_bias_fill_value is not None:
+            model_name = f"{model_name}, exp_gate_proj_bias_fill_value={args.exp_gate_proj_bias_fill_value:g}"
 
     data, task_meta = load_boolq_data(args.max_examples)
     print0(f"Evaluating model on BoolQ: {model_name}")

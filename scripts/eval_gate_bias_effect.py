@@ -440,6 +440,12 @@ def parse_args():
     parser.add_argument("--eval-tokens", type=int, default=40 * 524288, help="target token budget, matching base_train.py by default")
     parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
     parser.add_argument("--eval-capacity", type=float, default=None, help="override MoE eval capacity")
+    parser.add_argument(
+        "--exp-gate-proj-bias-fill-value",
+        type=float,
+        default=None,
+        help="override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value",
+    )
     parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
     parser.add_argument(
         "--compile",
@@ -466,6 +472,7 @@ def main():
         model_tag=args.model_tag,
         step=args.step,
         eval_capacity=args.eval_capacity,
+        exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
     )
     model.eval()
 
