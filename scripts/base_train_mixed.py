@@ -227,6 +227,10 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
 )
+gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-abs-mean-loss-weight-scale',
+)
 if args.debug:
     args.compile = False
 
@@ -267,6 +271,12 @@ if (
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
     args.gate_proj_bias_l2_loss_weight = 5e-3
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
+    and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
+):
+    args.gate_proj_bias_abs_mean_loss_weight_scale = 0.01
     
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer

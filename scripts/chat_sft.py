@@ -136,6 +136,10 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
 )
+gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-abs-mean-loss-weight-scale',
+)
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.gate_proj_bias_delay_start_iterations < 0:
@@ -166,6 +170,12 @@ if (
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
     args.gate_proj_bias_l2_loss_weight = 2.5e-3
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
+    and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
+):
+    args.gate_proj_bias_abs_mean_loss_weight_scale = 0.01
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
