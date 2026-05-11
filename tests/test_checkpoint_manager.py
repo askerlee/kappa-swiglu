@@ -319,6 +319,34 @@ def test_override_exp_gate_proj_bias_fill_value_sets_constant_bias_tensors():
     assert torch.all(model_data["transformer.h.1.mlp.experts.gate_proj_bias"] == 0.4)
 
 
+def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
+    config = GPTConfig(
+        n_layer=1,
+        moe_start_layer=0,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1",
+    )
+    full_bias = torch.randn(2, 16)
+    model_data = {
+        "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
+        "transformer.h.0.mlp.experts.gate_proj_bias": full_bias.clone(),
+    }
+
+    _patch_missing_keys(model_data, config)
+
+    assert "transformer.h.0.mlp.experts.gate_proj_bias" not in model_data
+    assert "transformer.h.0.mlp.experts.gate_proj_bias_expert" in model_data
+    assert "transformer.h.0.mlp.experts.gate_proj_bias_intermediate" in model_data
+    reconstructed = (
+        model_data["transformer.h.0.mlp.experts.gate_proj_bias_expert"].unsqueeze(1)
+        * model_data["transformer.h.0.mlp.experts.gate_proj_bias_intermediate"].unsqueeze(0)
+    )
+    assert reconstructed.shape == full_bias.shape
+
+
 def test_delete_old_checkpoints_removes_all_older_steps(tmp_path):
     checkpoint_dir = tmp_path / "ckpt"
     checkpoint_dir.mkdir()

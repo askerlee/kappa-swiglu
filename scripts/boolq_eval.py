@@ -206,6 +206,13 @@ def build_parser():
         help='Override the checkpoint config for expert gate_proj_bias on nanochat checkpoints',
     )
     parser.add_argument(
+        '--exp-gate-proj-bias-mode',
+        type=str,
+        default=None,
+        choices=['full', 'rank1'],
+        help='Override expert gate_proj_bias parameterization for nanochat checkpoints',
+    )
+    parser.add_argument(
         '--exp-gate-proj-bias-fill-value',
         type=float,
         default=None,
@@ -238,11 +245,14 @@ def main():
             step=args.step,
             eval_capacity=args.eval_capacity,
             use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+            exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
             exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
         )
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
+        if args.exp_gate_proj_bias_mode is not None:
+            model_name = f"{model_name}, exp_gate_proj_bias_mode={args.exp_gate_proj_bias_mode}"
         if args.exp_gate_proj_bias_fill_value is not None:
             model_name = f"{model_name}, exp_gate_proj_bias_fill_value={args.exp_gate_proj_bias_fill_value:g}"
 

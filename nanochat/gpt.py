@@ -714,14 +714,25 @@ class Qwen3MLPExperts(nn.Module):
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
+        self.gate_proj_bias_mode = getattr(config, 'exp_gate_proj_bias_mode', 'full')
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
         if self.use_gate_proj_bias:
-            self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
+            if self.gate_proj_bias_mode == 'full':
+                self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
+                self.register_parameter('gate_proj_bias_expert', None)
+                self.register_parameter('gate_proj_bias_intermediate', None)
+            else:
+                self.register_parameter('gate_proj_bias', None)
+                self.gate_proj_bias_expert = nn.Parameter(torch.empty(self.n_exp))
+                self.gate_proj_bias_intermediate = nn.Parameter(torch.empty(self.intermediate_size))
         else:
+            self.register_parameter('gate_proj_bias', None)
+            self.register_parameter('gate_proj_bias_expert', None)
+            self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_buffer(
-                "gate_proj_bias",
+                "disabled_gate_proj_bias",
                 torch.zeros(self.n_exp, self.intermediate_size),
                 persistent=False,
             )
@@ -764,7 +775,7 @@ class Qwen3MLPExperts(nn.Module):
         if not self.use_gate_proj_bias:
             self.initial_gate_proj_bias = None
             return
-        self.initial_gate_proj_bias = self.gate_proj_bias.detach().clone()
+        self.initial_gate_proj_bias = self._materialize_gate_proj_bias().detach().clone()
 
     def set_router(self, router):
         self._router_ref = weakref.ref(router)
@@ -776,32 +787,18 @@ class Qwen3MLPExperts(nn.Module):
         return router
 
     '''
-    Bias-enabled layers had gate_proj_bias as an nn.Parameter.
-    Bias-disabled layers had gate_proj_bias as a buffer tensor.
-    Earlier runs showed Dynamo recompiling on exactly those differences: 
-    attribute location, Python type, and requires_grad.
-    @torch._dynamo.disable means Dynamo does not trace inside _get_gate_proj_bias_tensor(). 
-    So instead of compiling guards around “is this attribute a parameter or a buffer?” 
-    it just treats the returned value as an input tensor to the compiled region.
-    gate_proj_bias + 0 is there to turn an nn.Parameter into a plain Tensor while 
-    keeping the gradient connection to the underlying parameter. 
-    If it returned the Parameter directly, Dynamo would still see a different Python type 
-    from the buffer case.
-    gate_proj_bias.detach().requires_grad_(True) on the buffer side makes the returned 
-    object look like the enabled-layer case from Dynamo’s perspective: 
-    plain tensor, requires_grad=True. But because it starts from detach(), 
-    gradients do not flow back into the disabled layer’s buffer, 
-    so behavior stays effectively “non-trainable”.
+    Bias-enabled layers may use either a full gate_proj_bias matrix parameter or a
+    rank-1 factorization of that matrix. Bias-disabled layers return a zero buffer.
+    @torch._dynamo.disable keeps Dynamo from tracing across those representation
+    differences and treats the materialized bias matrix as an input tensor instead.
     '''
     @torch._dynamo.disable
-    def _get_gate_proj_bias_tensor(self):
-        gate_proj_bias = self.gate_proj_bias
-        if isinstance(gate_proj_bias, nn.Parameter):
-            return gate_proj_bias + 0
-        # This is for layers without the gate_proj_bias parameter, 
-        # where we want to return a tensor that behaves like the parameter from Dynamo's
-        # perspective, without actually being trainable.
-        return gate_proj_bias.detach().requires_grad_(True)
+    def _materialize_gate_proj_bias(self):
+        if not self.use_gate_proj_bias:
+            return self.disabled_gate_proj_bias.detach().requires_grad_(True)
+        if self.gate_proj_bias is not None:
+            return self.gate_proj_bias + 0
+        return torch.outer(self.gate_proj_bias_expert, self.gate_proj_bias_intermediate)
 
     def _compute_router_confidence_gate_scale(self, selected_router_scores, grad_scale=0.1):
         if selected_router_scores is None:
@@ -851,7 +848,8 @@ class Qwen3MLPExperts(nn.Module):
         active_token_counts = active_mask_f.sum(dim=1)
         score_abs_sum_per_expert = (score_abs * active_mask_f).sum(dim=1)
         score_abs_mean_per_expert = score_abs_sum_per_expert / active_token_counts.clamp_min(1)
-        bias_abs_mean_per_expert = self.gate_proj_bias.float().abs().mean(dim=1)
+        gate_proj_bias = self._materialize_gate_proj_bias()
+        bias_abs_mean_per_expert = gate_proj_bias.float().abs().mean(dim=1)
         shift_abs_mean_per_expert = score_abs_mean_per_expert * bias_abs_mean_per_expert
         total_active_tokens = active_token_counts.sum()
         shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
@@ -903,7 +901,7 @@ class Qwen3MLPExperts(nn.Module):
         router = self._get_router() if self.debug else None
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        gate_proj_bias = self._get_gate_proj_bias_tensor()
+        gate_proj_bias = self._materialize_gate_proj_bias()
         router_confidence_gate_scale = self._compute_router_confidence_gate_scale(
             selected_router_scores,
             grad_scale=self.router_confidence_gate_bias_grad_scale,
@@ -1184,7 +1182,7 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if experts is not None and experts.use_gate_proj_bias:
-                    gate_proj_bias_delta = experts.gate_proj_bias.float()
+                    gate_proj_bias_delta = experts._materialize_gate_proj_bias().float()
                     if experts.initial_gate_proj_bias is not None:
                         gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
                     moe_l2_losses.append(gate_proj_bias_delta.square().mean())
@@ -1264,7 +1262,11 @@ class GPT(nn.Module):
                 if isinstance(experts, Qwen3MLPExperts):
                     torch.nn.init.uniform_(experts.gate_proj, -s, s)
                     if experts.use_gate_proj_bias:
-                        torch.nn.init.zeros_(experts.gate_proj_bias)
+                        if experts.gate_proj_bias is not None:
+                            torch.nn.init.zeros_(experts.gate_proj_bias)
+                        else:
+                            torch.nn.init.ones_(experts.gate_proj_bias_expert)
+                            torch.nn.init.zeros_(experts.gate_proj_bias_intermediate)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
                 else:
@@ -1474,7 +1476,7 @@ class GPT(nn.Module):
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
-                if name.endswith('gate_proj_bias'):
+                if name.startswith('mlp.experts.gate_proj_bias'):
                     gate_proj_bias_params.append(param)
                 elif param.ndim < 2:
                     target_nonmatrix_params.append(param)

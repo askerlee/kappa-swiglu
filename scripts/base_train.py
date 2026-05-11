@@ -172,6 +172,8 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="full", choices=["full", "rank1"],
+                    help="parameterization for expert gate_proj_bias: full matrix or rank-1 expert/intermediate factors")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
@@ -438,6 +440,7 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
         exp_gate_proj_bias_input="top_logits",
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,

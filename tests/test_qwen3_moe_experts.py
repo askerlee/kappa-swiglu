@@ -66,6 +66,44 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_scores
     torch.testing.assert_close(actual, expected)
 
 
+def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1",
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_scores = torch.randn(config.n_exp, 5)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.gate_proj_bias_expert.copy_(torch.randn_like(experts.gate_proj_bias_expert))
+        experts.gate_proj_bias_intermediate.copy_(torch.randn_like(experts.gate_proj_bias_intermediate))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        gate_proj_bias = torch.outer(experts.gate_proj_bias_expert, experts.gate_proj_bias_intermediate)
+        raw_gate_out = torch.bmm(x, experts.gate_proj)
+        raw_gate_out = torch.baddbmm(
+            raw_gate_out,
+            selected_router_scores.unsqueeze(-1),
+            gate_proj_bias.unsqueeze(1),
+            beta=1,
+            alpha=-1,
+        )
+        expected_gate_out_acts = experts.act_fn(raw_gate_out)
+
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
+
+    actual = experts(x, selected_router_scores=selected_router_scores)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_gate_activation_stats_match_logged_formulas():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -503,6 +541,24 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
     assert experts.gate_proj_bias is not None
     assert experts.gate_proj_bias.ndim == 2
     assert experts.gate_proj_bias.shape == (config.n_exp, 4 * config.n_embd)
+
+
+def test_rank1_gate_projection_bias_has_expected_factor_shapes_when_enabled():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1",
+        debug=False,
+    )
+
+    experts = Qwen3MLPExperts(config)
+
+    assert experts.gate_proj_bias is None
+    assert experts.gate_proj_bias_expert is not None
+    assert experts.gate_proj_bias_intermediate is not None
+    assert experts.gate_proj_bias_expert.shape == (config.n_exp,)
+    assert experts.gate_proj_bias_intermediate.shape == (4 * config.n_embd,)
 
 
 def test_gate_projection_bias_respects_start_layer_cutoff():
