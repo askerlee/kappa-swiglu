@@ -1099,8 +1099,8 @@ class MOELayer(nn.Module):
         router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
         # Reduce the grad to router_weights by 0.1 to avoid blowing up the router.
         router_weights = scale_grad(router_weights, self.router_ortho_loss_grad_scale)
-        # expert_weights: [n_exp, n_embd, intermediate_size] -> [n_exp, n_embd, 1]
-        expert_weights = self.experts.gate_proj.mean(dim=2, keepdim=True)
+        # expert_weights: [n_exp, n_embd, intermediate_size]
+        expert_weights = self.experts.gate_proj
         # Use cosine instead of unnormalized dot product. Otherwise, the loss
         # will reduce itself by suppressing the increase of the magnitudes of
         # router_weights and expert_weights, which will hurt performance.
