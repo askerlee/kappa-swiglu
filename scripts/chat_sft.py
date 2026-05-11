@@ -101,6 +101,8 @@ parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=flo
                     help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
 parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
                     help="scale factor applied to the L1 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
+parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full", "rank1"],
+                    help="parameterization for expert gate projection bias (default: inherit from base model)")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -164,19 +166,8 @@ if (
     )
 if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
     raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
-if (
-    args.exp_gate_proj_bias_mode == "rank1"
-    and not gate_proj_bias_l2_loss_weight_was_specified
-    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
-):
-    args.gate_proj_bias_l2_loss_weight = 2.5e-3
-if (
-    args.exp_gate_proj_bias_mode == "rank1"
-    and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
-    and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
-):
-    args.gate_proj_bias_abs_mean_loss_weight_scale = 0.01
 user_config = vars(args).copy()
+exp_gate_proj_bias_mode_was_specified = arg_was_explicitly_set(sys.argv[1:], '--exp-gate-proj-bias-mode')
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -233,8 +224,38 @@ model, tokenizer, meta = load_model(
     phase="train",
     model_tag=args.model_tag,
     step=args.model_step,
+    exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
     refresh_gate_proj_bias_references=refresh_gate_proj_bias_references,
 )
+if exp_gate_proj_bias_mode_was_specified:
+    print0(f"Specified exp_gate_proj_bias_mode: {args.exp_gate_proj_bias_mode}")
+else:
+    args.exp_gate_proj_bias_mode = model.config.exp_gate_proj_bias_mode
+    print0(f"Inherited exp_gate_proj_bias_mode: {args.exp_gate_proj_bias_mode}")
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_l2_loss_weight_was_specified
+    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
+):
+    args.gate_proj_bias_l2_loss_weight = 2.5e-3
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
+    and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
+):
+    args.gate_proj_bias_abs_mean_loss_weight_scale = 0.01
+user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
+user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
+user_config["gate_proj_bias_abs_mean_loss_weight_scale"] = args.gate_proj_bias_abs_mean_loss_weight_scale
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {
+            "exp_gate_proj_bias_mode": args.exp_gate_proj_bias_mode,
+            "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
+            "gate_proj_bias_abs_mean_loss_weight_scale": args.gate_proj_bias_abs_mean_loss_weight_scale,
+        },
+        allow_val_change=True,
+    )
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)
