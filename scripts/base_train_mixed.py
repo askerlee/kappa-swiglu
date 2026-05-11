@@ -67,6 +67,10 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
+def arg_was_explicitly_set(argv, option_name):
+    return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
+
+
 def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
     if core_metric_every <= 0 or not os.path.isdir(checkpoint_dir):
         return None
@@ -130,6 +134,8 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="full", choices=["full", "rank1"],
+                    help="parameterization for expert gate_proj_bias: full matrix or rank-1 expert/intermediate factors")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
@@ -217,6 +223,10 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-l2-loss-weight',
+)
 if args.debug:
     args.compile = False
 
@@ -251,6 +261,13 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
         "0 <= final_frac <= stage1_frac <= 1"
     )
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_l2_loss_weight_was_specified
+    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
+):
+    args.gate_proj_bias_l2_loss_weight = 5e-3
+    
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -391,6 +408,7 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         gate_proj_bias_shift_abs_mean_half_slope_start=args.gate_proj_bias_shift_abs_mean_half_slope_start,

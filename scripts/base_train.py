@@ -52,6 +52,10 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
+def arg_was_explicitly_set(argv, option_name):
+    return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
+
+
 def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
     if core_metric_every <= 0 or not os.path.isdir(checkpoint_dir):
         return None
@@ -277,6 +281,10 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-l2-loss-weight',
+)
 if args.model_tag is not None and args.seed != DEFAULT_SEED:
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
@@ -317,6 +325,13 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
         "0 <= final_frac <= stage1_frac <= 1"
     )
+if (
+    args.exp_gate_proj_bias_mode == "rank1"
+    and not gate_proj_bias_l2_loss_weight_was_specified
+    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
+):
+    args.gate_proj_bias_l2_loss_weight = 5e-3
+    
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
