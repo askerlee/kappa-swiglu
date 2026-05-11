@@ -95,13 +95,14 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
+parser.add_argument("--gate-proj-bias-residual-l2-loss-weight", type=float, default=0.0, help="weight for the dense residual part of exp gate projection bias when using rank1_residual")
 parser.add_argument("--gate-proj-bias-shift-abs-mean-half-slope-start", type=float, default=0.12,
                     help="lower threshold a for the normalized gate-proj-bias band loss; below this there is no penalty, and <= 0 disables the loss")
 parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=float, default=0.156,
                     help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
 parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
                     help="scale factor applied to the L1 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
-parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full", "rank1"],
+parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full", "rank1", "rank1_residual"],
                     help="parameterization for expert gate projection bias (default: inherit from base model)")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
@@ -137,6 +138,10 @@ args = parser.parse_args()
 gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
+)
+gate_proj_bias_residual_l2_loss_weight_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-residual-l2-loss-weight',
 )
 gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
@@ -233,25 +238,33 @@ else:
     args.exp_gate_proj_bias_mode = model.config.exp_gate_proj_bias_mode
     print0(f"Inherited exp_gate_proj_bias_mode: {args.exp_gate_proj_bias_mode}")
 if (
-    args.exp_gate_proj_bias_mode == "rank1"
+    args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
     and not gate_proj_bias_l2_loss_weight_was_specified
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
     args.gate_proj_bias_l2_loss_weight = 2.5e-3
 if (
-    args.exp_gate_proj_bias_mode == "rank1"
+    args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
     and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
     and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
 ):
-    args.gate_proj_bias_abs_mean_loss_weight_scale = 0.01
+    args.gate_proj_bias_abs_mean_loss_weight_scale = 0
+if (
+    args.exp_gate_proj_bias_mode == "rank1_residual"
+    and not gate_proj_bias_residual_l2_loss_weight_was_specified
+    and args.gate_proj_bias_residual_l2_loss_weight == parser.get_default("gate_proj_bias_residual_l2_loss_weight")
+):
+    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight
 user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
 user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
+user_config["gate_proj_bias_residual_l2_loss_weight"] = args.gate_proj_bias_residual_l2_loss_weight
 user_config["gate_proj_bias_abs_mean_loss_weight_scale"] = args.gate_proj_bias_abs_mean_loss_weight_scale
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "exp_gate_proj_bias_mode": args.exp_gate_proj_bias_mode,
             "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
+            "gate_proj_bias_residual_l2_loss_weight": args.gate_proj_bias_residual_l2_loss_weight,
             "gate_proj_bias_abs_mean_loss_weight_scale": args.gate_proj_bias_abs_mean_loss_weight_scale,
         },
         allow_val_change=True,
@@ -819,6 +832,10 @@ while True:
         if gate_proj_bias_l2_loss is None:
             gate_proj_bias_l2_loss = 0.0
         loss = loss + args.gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
+        gate_proj_bias_residual_l2_loss = losses.get("gate_proj_bias_residual_l2_loss")
+        if gate_proj_bias_residual_l2_loss is None:
+            gate_proj_bias_residual_l2_loss = 0.0
+        loss = loss + args.gate_proj_bias_residual_l2_loss_weight * gate_proj_bias_residual_l2_loss
         gate_proj_bias_shift_abs_mean_loss = losses.get("gate_proj_bias_shift_abs_mean_loss")
         if gate_proj_bias_shift_abs_mean_loss is None:
             gate_proj_bias_shift_abs_mean_loss = 0.0
@@ -839,7 +856,7 @@ while True:
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
-        if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
+        if group.get("name") in {"gate_proj_bias", "gate_proj_bias_residual"} and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
@@ -883,10 +900,12 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss']),
+            "train/gate_proj_bias_residual_l2_loss_step": scalar_loss_to_item(losses['gate_proj_bias_residual_l2_loss']),
             "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean']),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
             "train/gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_loss']),
             "train/gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
+            "train/gate_proj_bias_residual_l2_loss_weight": args.gate_proj_bias_residual_l2_loss_weight,
             "train/gate_proj_bias_shift_abs_mean_loss_weight": gate_proj_bias_shift_abs_mean_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,

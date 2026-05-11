@@ -438,9 +438,6 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def _get_top_k_scores(self, top_k_logits):
-        return top_k_logits
-
     def forward(self, x):
         """
         Computes routing information for tokens, including which experts to use,
@@ -511,7 +508,7 @@ class Router(nn.Module):
                 top_k_logits = logits.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
-            top_k_scores = self._get_top_k_scores(top_k_logits)
+            top_k_scores = top_k_logits
 
             selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
             MANAGER.add("selected_scores", selected_scores.detach())
@@ -723,14 +720,20 @@ class Qwen3MLPExperts(nn.Module):
                 self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
                 self.register_parameter('gate_proj_bias_expert', None)
                 self.register_parameter('gate_proj_bias_intermediate', None)
+                self.register_parameter('gate_proj_bias_residual', None)
             else:
                 self.register_parameter('gate_proj_bias', None)
                 self.gate_proj_bias_expert = nn.Parameter(torch.empty(self.n_exp))
                 self.gate_proj_bias_intermediate = nn.Parameter(torch.empty(self.intermediate_size))
+                if self.gate_proj_bias_mode == 'rank1_residual':
+                    self.gate_proj_bias_residual = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
+                else:
+                    self.register_parameter('gate_proj_bias_residual', None)
         else:
             self.register_parameter('gate_proj_bias', None)
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
+            self.register_parameter('gate_proj_bias_residual', None)
             self.register_buffer(
                 "disabled_gate_proj_bias",
                 torch.zeros(self.n_exp, self.intermediate_size),
@@ -787,8 +790,9 @@ class Qwen3MLPExperts(nn.Module):
         return router
 
     '''
-    Bias-enabled layers may use either a full gate_proj_bias matrix parameter or a
-    rank-1 factorization of that matrix. Bias-disabled layers return a zero buffer.
+    Bias-enabled layers may use a full gate_proj_bias matrix parameter, a rank-1
+    factorization of that matrix, or a rank-1 factorization plus a learned dense
+    residual. Bias-disabled layers return a zero buffer.
     @torch._dynamo.disable keeps Dynamo from tracing across those representation
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
@@ -798,7 +802,10 @@ class Qwen3MLPExperts(nn.Module):
             return self.disabled_gate_proj_bias.detach().requires_grad_(True)
         if self.gate_proj_bias is not None:
             return self.gate_proj_bias + 0
-        return torch.outer(self.gate_proj_bias_expert, self.gate_proj_bias_intermediate)
+        gate_proj_bias = torch.outer(self.gate_proj_bias_expert, self.gate_proj_bias_intermediate)
+        if self.gate_proj_bias_residual is not None:
+            gate_proj_bias = gate_proj_bias + self.gate_proj_bias_residual
+        return gate_proj_bias
 
     def _compute_router_confidence_gate_scale(self, selected_router_scores, grad_scale=0.1):
         if selected_router_scores is None:
@@ -1177,6 +1184,7 @@ class GPT(nn.Module):
 
     def compute_gate_proj_bias_magnitude_losses(self):
         moe_l2_losses = []
+        moe_residual_l2_losses = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
@@ -1186,13 +1194,22 @@ class GPT(nn.Module):
                     if experts.initial_gate_proj_bias is not None:
                         gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
                     moe_l2_losses.append(gate_proj_bias_delta.square().mean())
+                    if experts.gate_proj_bias_residual is not None:
+                        moe_residual_l2_losses.append(experts.gate_proj_bias_residual.float().square().mean())
 
         device = self.transformer.wte.weight.device
         l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
+        residual_l2_loss = (
+            torch.stack(moe_residual_l2_losses).mean()
+            if moe_residual_l2_losses
+            else torch.zeros((), device=device)
+        )
         abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
         if abs_mean_loss is None:
             abs_mean_loss = torch.zeros((), device=device)
-        return l2_loss, abs_mean_loss
+        elif not isinstance(abs_mean_loss, torch.Tensor):
+            abs_mean_loss = torch.as_tensor(abs_mean_loss, device=device)
+        return l2_loss, residual_l2_loss, abs_mean_loss
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1267,6 +1284,8 @@ class GPT(nn.Module):
                         else:
                             torch.nn.init.ones_(experts.gate_proj_bias_expert)
                             torch.nn.init.zeros_(experts.gate_proj_bias_intermediate)
+                            if experts.gate_proj_bias_residual is not None:
+                                torch.nn.init.zeros_(experts.gate_proj_bias_residual)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
                 else:
@@ -1471,12 +1490,15 @@ class GPT(nn.Module):
         moe_matrix_params = []
         moe_nonmatrix_params = []
         gate_proj_bias_params = []
+        gate_proj_bias_residual_params = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
-                if name.startswith('mlp.experts.gate_proj_bias'):
+                if name.startswith('mlp.experts.gate_proj_bias_residual'):
+                    gate_proj_bias_residual_params.append(param)
+                elif name.startswith('mlp.experts.gate_proj_bias'):
                     gate_proj_bias_params.append(param)
                 elif param.ndim < 2:
                     target_nonmatrix_params.append(param)
@@ -1490,7 +1512,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
-            len(gate_proj_bias_params) +
+            len(gate_proj_bias_params) + len(gate_proj_bias_residual_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -1529,6 +1551,27 @@ class GPT(nn.Module):
                 weight_decay=0.0,
             )
         )
+        if gate_proj_bias_residual_params:
+            param_groups.append(
+                dict(
+                    kind='adamw',
+                    name='gate_proj_bias_residual',
+                    params=gate_proj_bias_residual_params,
+                    lr=0.0,
+                    # The LR of gate_proj_bias_residual is scaled by 0.1
+                    # compared to gate_proj_bias, because it's a residual term 
+                    # on top of gate_proj_bias, and we want it to be more stable 
+                    # and learn slower to avoid destabilizing training.
+                    base_lr=embedding_lr * dmodel_lr_scale * 0.1,
+                    lr_scale_end=gate_proj_bias_lr_final_scale,
+                    lr_scale_max=gate_proj_bias_lr_max_scale,
+                    lr_scale_nolearn_iterations=gate_proj_bias_delay_start_iterations,
+                    lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
+                    betas=adam_betas,
+                    eps=1e-10,
+                    weight_decay=0.0,
+                )
+            )
         param_groups.append(
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
@@ -1607,6 +1650,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
+                   'gate_proj_bias_residual_l2_loss': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
@@ -1698,9 +1742,11 @@ class GPT(nn.Module):
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
 
-            losses['gate_proj_bias_l2_loss'], losses['gate_proj_bias_shift_abs_mean_loss'] = (
-                self.compute_gate_proj_bias_magnitude_losses()
-            )
+            (
+                losses['gate_proj_bias_l2_loss'],
+                losses['gate_proj_bias_residual_l2_loss'],
+                losses['gate_proj_bias_shift_abs_mean_loss'],
+            ) = self.compute_gate_proj_bias_magnitude_losses()
             MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
         else:
             # inference: just return the logits directly

@@ -32,6 +32,7 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
+        gate_proj_bias_residual_l2_loss_weight: float = 0.0,
         gate_proj_bias_shift_abs_mean_half_slope_start: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
         gate_proj_bias_shift_abs_mean_full_slope_start: float | None = None,  # band loss: no penalty below half-slope start, half-slope until this point, then full slope
         refresh_gate_proj_bias_references: bool = False,
@@ -89,7 +90,7 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
-        valid_exp_gate_proj_bias_modes = {"full", "rank1"}
+        valid_exp_gate_proj_bias_modes = {"full", "rank1", "rank1_residual"}
         if exp_gate_proj_bias_mode not in valid_exp_gate_proj_bias_modes:
             raise ValueError(
                 "exp_gate_proj_bias_mode must be one of "
@@ -108,6 +109,8 @@ class GPTConfig:
             raise ValueError(
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
             )
+        self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
+        self.gate_proj_bias_residual_l2_loss_weight = float(gate_proj_bias_residual_l2_loss_weight)
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:

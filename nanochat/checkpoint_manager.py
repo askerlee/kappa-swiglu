@@ -101,10 +101,12 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
     gate_proj_bias_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias$")
     gate_proj_bias_expert_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_expert$")
     gate_proj_bias_intermediate_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_intermediate$")
+    gate_proj_bias_residual_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_residual$")
     gate_proj_bias_keys = [key for key in model_data if gate_proj_bias_pattern.match(key)]
     gate_proj_bias_expert_keys = [key for key in model_data if gate_proj_bias_expert_pattern.match(key)]
     gate_proj_bias_intermediate_keys = [key for key in model_data if gate_proj_bias_intermediate_pattern.match(key)]
-    if not gate_proj_bias_keys and not gate_proj_bias_expert_keys and not gate_proj_bias_intermediate_keys:
+    gate_proj_bias_residual_keys = [key for key in model_data if gate_proj_bias_residual_pattern.match(key)]
+    if not gate_proj_bias_keys and not gate_proj_bias_expert_keys and not gate_proj_bias_intermediate_keys and not gate_proj_bias_residual_keys:
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
@@ -119,6 +121,8 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
             model_data[key] = torch.ones_like(model_data[key])
         for key in gate_proj_bias_intermediate_keys:
             model_data[key] = torch.full_like(model_data[key], gate_proj_bias_fill_value)
+        for key in gate_proj_bias_residual_keys:
+            model_data[key] = torch.zeros_like(model_data[key])
         log0(
             "Preserving checkpoint expert gate_proj_bias parameters for loading and filling them "
             f"with {gate_proj_bias_fill_value:g}"
@@ -134,6 +138,8 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
     for key in gate_proj_bias_expert_keys:
         model_data[key] = torch.ones_like(model_data[key])
     for key in gate_proj_bias_intermediate_keys:
+        model_data[key] = torch.zeros_like(model_data[key])
+    for key in gate_proj_bias_residual_keys:
         model_data[key] = torch.zeros_like(model_data[key])
     log0(
         "Preserving checkpoint expert gate_proj_bias parameters for loading and zeroing them "
@@ -166,6 +172,7 @@ def _patch_missing_keys(model_data, model_config):
             gate_proj_bias_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias"
             gate_proj_bias_expert_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_expert"
             gate_proj_bias_intermediate_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_intermediate"
+            gate_proj_bias_residual_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_residual"
             gate_proj = model_data.get(gate_proj_key)
             if gate_proj is not None and gate_proj.ndim != 3:
                 raise ValueError(
@@ -175,26 +182,43 @@ def _patch_missing_keys(model_data, model_config):
             model_data.pop(gate_proj_b_key, None)
             if _gate_proj_bias_enabled_for_layer(model_config, layer_idx):
                 gate_proj_bias_mode = getattr(model_config, "exp_gate_proj_bias_mode", "full")
-                if gate_proj_bias_mode == "rank1":
+                if gate_proj_bias_mode in {"rank1", "rank1_residual"}:
                     gate_proj_bias = model_data.pop(gate_proj_bias_key, None)
                     if gate_proj_bias is not None:
                         expert_bias, intermediate_bias = _factorize_gate_proj_bias_rank1(gate_proj_bias)
+                        residual_bias = gate_proj_bias - expert_bias.unsqueeze(1) * intermediate_bias.unsqueeze(0)
                         model_data[gate_proj_bias_expert_key] = expert_bias.to(dtype=gate_proj_bias.dtype)
                         model_data[gate_proj_bias_intermediate_key] = intermediate_bias.to(dtype=gate_proj_bias.dtype)
+                        if gate_proj_bias_mode == "rank1_residual":
+                            model_data[gate_proj_bias_residual_key] = residual_bias.to(dtype=gate_proj_bias.dtype)
                     default_dtype = gate_proj.dtype if gate_proj is not None else torch.float32
                     if gate_proj_bias_expert_key not in model_data:
                         model_data[gate_proj_bias_expert_key] = torch.ones(model_config.n_exp, dtype=default_dtype)
                     if gate_proj_bias_intermediate_key not in model_data:
                         model_data[gate_proj_bias_intermediate_key] = torch.zeros(4 * model_config.n_embd, dtype=default_dtype)
+                    if gate_proj_bias_mode == "rank1_residual":
+                        if gate_proj_bias_residual_key not in model_data:
+                            model_data[gate_proj_bias_residual_key] = torch.zeros(
+                                model_config.n_exp,
+                                4 * model_config.n_embd,
+                                dtype=default_dtype,
+                            )
+                    else:
+                        model_data.pop(gate_proj_bias_residual_key, None)
                 else:
                     if gate_proj_bias_key not in model_data:
                         expert_bias = model_data.pop(gate_proj_bias_expert_key, None)
                         intermediate_bias = model_data.pop(gate_proj_bias_intermediate_key, None)
+                        residual_bias = model_data.pop(gate_proj_bias_residual_key, None)
                         if expert_bias is not None and intermediate_bias is not None:
-                            model_data[gate_proj_bias_key] = expert_bias.unsqueeze(1) * intermediate_bias.unsqueeze(0)
+                            gate_proj_bias = expert_bias.unsqueeze(1) * intermediate_bias.unsqueeze(0)
+                            if residual_bias is not None:
+                                gate_proj_bias = gate_proj_bias + residual_bias
+                            model_data[gate_proj_bias_key] = gate_proj_bias
                     else:
                         model_data.pop(gate_proj_bias_expert_key, None)
                         model_data.pop(gate_proj_bias_intermediate_key, None)
+                        model_data.pop(gate_proj_bias_residual_key, None)
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)

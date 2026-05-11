@@ -209,7 +209,7 @@ def build_parser():
         '--exp-gate-proj-bias-mode',
         type=str,
         default=None,
-        choices=['full', 'rank1'],
+        choices=['full', 'rank1', 'rank1_residual'],
         help='Override expert gate_proj_bias parameterization for nanochat checkpoints',
     )
     parser.add_argument(

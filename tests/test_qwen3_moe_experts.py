@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 from copy import deepcopy
@@ -102,6 +103,107 @@ def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
 
     actual = experts(x, selected_router_scores=selected_router_scores)
     torch.testing.assert_close(actual, expected)
+
+
+def test_rank1_residual_gate_projection_bias_adds_dense_residual_in_forward():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1_residual",
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_scores = torch.randn(config.n_exp, 5)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.gate_proj_bias_expert.copy_(torch.randn_like(experts.gate_proj_bias_expert))
+        experts.gate_proj_bias_intermediate.copy_(torch.randn_like(experts.gate_proj_bias_intermediate))
+        experts.gate_proj_bias_residual.copy_(torch.randn_like(experts.gate_proj_bias_residual))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        gate_proj_bias = (
+            torch.outer(experts.gate_proj_bias_expert, experts.gate_proj_bias_intermediate)
+            + experts.gate_proj_bias_residual
+        )
+        raw_gate_out = torch.bmm(x, experts.gate_proj)
+        raw_gate_out = torch.baddbmm(
+            raw_gate_out,
+            selected_router_scores.unsqueeze(-1),
+            gate_proj_bias.unsqueeze(1),
+            beta=1,
+            alpha=-1,
+        )
+        expected_gate_out_acts = experts.act_fn(raw_gate_out)
+
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
+
+    actual = experts(x, selected_router_scores=selected_router_scores)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_rank1_residual_gate_projection_bias_residual_uses_tenth_lr():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_layer=1,
+        moe_start_layer=0,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=4,
+        n_head=1,
+        n_kv_head=1,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1_residual",
+        debug=False,
+    )
+    model = GPT(config)
+    optimizer = model.setup_optimizer(
+        embedding_lr=0.3,
+        gate_proj_bias_lr_final_scale=0.01,
+        gate_proj_bias_lr_max_scale=0.5,
+    )
+
+    bias_group = next(group for group in optimizer.param_groups if group.get("name") == "gate_proj_bias")
+    residual_group = next(group for group in optimizer.param_groups if group.get("name") == "gate_proj_bias_residual")
+
+    assert bias_group["base_lr"] > 0
+    assert residual_group["base_lr"] == pytest.approx(0.1 * bias_group["base_lr"])
+    assert residual_group["lr_scale_max"] == bias_group["lr_scale_max"]
+    assert residual_group["lr_scale_end"] == bias_group["lr_scale_end"]
+
+
+def test_compute_gate_proj_bias_magnitude_losses_reports_residual_l2_for_rank1_residual():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_layer=1,
+        moe_start_layer=0,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=4,
+        n_head=1,
+        n_kv_head=1,
+        use_exp_gate_proj_bias=True,
+        exp_gate_proj_bias_mode="rank1_residual",
+        debug=False,
+    )
+    model = GPT(config)
+    experts = model.transformer.h[0].mlp.experts
+
+    with torch.no_grad():
+        experts.gate_proj_bias_expert.fill_(1.0)
+        experts.gate_proj_bias_intermediate.zero_()
+        experts.gate_proj_bias_residual.fill_(2.0)
+
+    gate_proj_bias_l2_loss, gate_proj_bias_residual_l2_loss, gate_proj_bias_shift_abs_mean_loss = model.compute_gate_proj_bias_magnitude_losses()
+
+    assert gate_proj_bias_l2_loss.item() == pytest.approx(4.0)
+    assert gate_proj_bias_residual_l2_loss.item() == pytest.approx(4.0)
+    assert gate_proj_bias_shift_abs_mean_loss.item() == pytest.approx(0.0)
 
 
 def test_gate_activation_stats_match_logged_formulas():
