@@ -32,6 +32,50 @@ def test_dense_gate_projection_is_applied_before_fc_gating():
     torch.testing.assert_close(actual, expected)
 
 
+def test_dense_qwen3_mlp_uses_raw_bilinear_gate_when_enabled():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_embd=4,
+        bilinear_mlp=True,
+        debug=False,
+    )
+    mlp = Qwen3MLP(config)
+    x = torch.randn(3, 5, config.n_embd)
+
+    with torch.no_grad():
+        mlp.gate_proj.weight.copy_(torch.randn_like(mlp.gate_proj.weight))
+        mlp.c_fc.weight.copy_(torch.randn_like(mlp.c_fc.weight))
+        mlp.c_proj.weight.copy_(torch.randn_like(mlp.c_proj.weight))
+        raw_gate_out = mlp.gate_proj(x)
+        expected = mlp.c_proj(raw_gate_out * mlp.c_fc(x))
+
+    actual = mlp(x)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_moe_qwen3_mlp_uses_raw_bilinear_gate_when_enabled():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        bilinear_mlp=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        raw_gate_out = torch.bmm(x, experts.gate_proj)
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(raw_gate_out * fc_out, experts.c_proj)
+
+    actual = experts(x)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_scores_when_enabled():
     torch.manual_seed(0)
     config = GPTConfig(
