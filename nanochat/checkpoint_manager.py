@@ -63,11 +63,18 @@ def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
         return
 
     gate_proj_bias_layers = []
-    gate_proj_bias_pattern = re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias$")
+    gate_proj_bias_patterns = (
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_expert$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_intermediate$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_residual$"),
+    )
     for key in model_data:
-        match = gate_proj_bias_pattern.match(key)
-        if match is not None:
-            gate_proj_bias_layers.append(int(match.group(1)))
+        for pattern in gate_proj_bias_patterns:
+            match = pattern.match(key)
+            if match is not None:
+                gate_proj_bias_layers.append(int(match.group(1)))
+                break
 
     use_exp_gate_proj_bias = bool(gate_proj_bias_layers)
     model_config_kwargs["use_exp_gate_proj_bias"] = use_exp_gate_proj_bias
@@ -110,7 +117,6 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
-
     gate_proj_bias_fill_value = model_kwargs.pop("exp_gate_proj_bias_fill_value", None)
     if gate_proj_bias_fill_value is not None:
         model_kwargs.pop("use_exp_gate_proj_bias", None)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_use_qwen3_dense_mlp, _override_exp_gate_proj_bias_values, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_exp_gate_proj_bias, _infer_use_qwen3_dense_mlp, _override_exp_gate_proj_bias_values, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -317,6 +317,58 @@ def test_override_exp_gate_proj_bias_fill_value_sets_constant_bias_tensors():
     assert sanitized_kwargs["eval_capacity"] == 1.5
     assert torch.all(model_data["transformer.h.0.mlp.experts.gate_proj_bias"] == 0.4)
     assert torch.all(model_data["transformer.h.1.mlp.experts.gate_proj_bias"] == 0.4)
+
+
+def test_infer_exp_gate_proj_bias_detects_rank1_residual_checkpoint_layout():
+    model_config_kwargs = {
+        "n_layer": 2,
+        "n_exp": 2,
+    }
+    model_data = {
+        "transformer.h.1.mlp.experts.gate_proj_bias_expert": torch.ones(2),
+        "transformer.h.1.mlp.experts.gate_proj_bias_intermediate": torch.zeros(16),
+        "transformer.h.1.mlp.experts.gate_proj_bias_residual": torch.zeros(2, 16),
+    }
+
+    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
+
+    assert model_config_kwargs["use_exp_gate_proj_bias"] is True
+    assert model_config_kwargs["gate_proj_bias_start_layer"] == 1
+
+
+def test_override_exp_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
+    fill_value = 0.4
+    model_data = {
+        "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
+        "transformer.h.0.mlp.experts.gate_proj_bias_expert": torch.randn(2),
+        "transformer.h.0.mlp.experts.gate_proj_bias_intermediate": torch.randn(16),
+        "transformer.h.0.mlp.experts.gate_proj_bias_residual": torch.randn(2, 16),
+    }
+    model_kwargs = {
+        "exp_gate_proj_bias_fill_value": fill_value,
+        "exp_gate_proj_bias_mode": "rank1_residual",
+    }
+
+    sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
+    model_config_kwargs = {
+        "n_layer": 1,
+        "moe_start_layer": 0,
+        "moe_layer_stride": 1,
+        "n_exp": 2,
+        "n_embd": 4,
+    }
+    model_config_kwargs.update(sanitized_kwargs)
+    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
+    config = GPTConfig(**model_config_kwargs)
+
+    _patch_missing_keys(model_data, config)
+
+    reconstructed = (
+        model_data["transformer.h.0.mlp.experts.gate_proj_bias_expert"].unsqueeze(1)
+        * model_data["transformer.h.0.mlp.experts.gate_proj_bias_intermediate"].unsqueeze(0)
+        + model_data["transformer.h.0.mlp.experts.gate_proj_bias_residual"]
+    )
+    torch.testing.assert_close(reconstructed, torch.full((2, 16), fill_value))
 
 
 def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
