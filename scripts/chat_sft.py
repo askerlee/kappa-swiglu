@@ -254,7 +254,7 @@ if (
     and not gate_proj_bias_residual_l2_loss_weight_was_specified
     and args.gate_proj_bias_residual_l2_loss_weight == parser.get_default("gate_proj_bias_residual_l2_loss_weight")
 ):
-    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight
+    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight * 2
 user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
 user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
 user_config["gate_proj_bias_residual_l2_loss_weight"] = args.gate_proj_bias_residual_l2_loss_weight

@@ -351,7 +351,14 @@ if (
     and not gate_proj_bias_residual_l2_loss_weight_was_specified
     and args.gate_proj_bias_residual_l2_loss_weight == parser.get_default("gate_proj_bias_residual_l2_loss_weight")
 ):
-    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight
+    # Use the same L2 loss weight for the residual part as for the rank-1 part by default.
+    # gate_proj_bias_l2_loss is computed on the full materialized bias, and 
+    # for rank1_residual that materialized bias is rank1 + residual. 
+    # Then gate_proj_bias_residual_l2_loss adds a second penalty on just the residual matrix.
+    # i.e., the residual is penalized more strongly than the rank-1 part, 
+    # which encourages the model to be approximately rank-1 and only use the residual 
+    # for smaller corrections.
+    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight * 2
     
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
