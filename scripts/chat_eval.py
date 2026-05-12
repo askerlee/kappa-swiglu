@@ -194,6 +194,12 @@ if __name__ == "__main__":
     parser.add_argument('-g', '--model-tag', type=str, default=None, help='Model tag to load')
     parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
     parser.add_argument('-x', '--max-problems', type=int, default=None, help='Max problems to evaluate')
+    parser.add_argument(
+        '--exp-gate-proj-bias-fill-value',
+        type=float,
+        default=None,
+        help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value',
+    )
     parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type for evaluation: cuda|cpu|mps. empty => autodetect')
     args = parser.parse_args()
 
@@ -202,7 +208,14 @@ if __name__ == "__main__":
     ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 
-    model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
+    model, tokenizer, meta = load_model(
+        args.source,
+        device,
+        phase="eval",
+        model_tag=args.model_tag,
+        step=args.step,
+        exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
+    )
     engine = Engine(model, tokenizer)
 
     # Get the tasks to evaluate on
