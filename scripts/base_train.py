@@ -294,7 +294,7 @@ gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set
     sys.argv[1:],
     '--gate-proj-bias-abs-mean-loss-weight-scale',
 )
-if args.model_tag is not None and args.seed != DEFAULT_SEED:
+if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
     args.compile = False

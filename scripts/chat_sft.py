@@ -638,8 +638,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 exp_gate_weight = layer.mlp.experts.gate_proj
                 if layer.mlp.experts.use_gate_proj_bias:
                     exp_gate_proj_bias = layer.mlp.experts._materialize_gate_proj_bias()
-                    losses[f'exp_gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
-                    losses[f'exp_gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
+                    losses[f'gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
+                    losses[f'gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -665,6 +665,15 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     half_experts = exp_utilities.shape[0] // 2
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
+
+                    if layer.mlp.experts.use_gate_proj_bias:
+                        reduce_dims = tuple(range(1, exp_gate_proj_bias.ndim))
+                        exp_gate_proj_bias_mean = exp_gate_proj_bias.float().mean(dim=reduce_dims)
+                        exp_gate_proj_bias_abs_mean = exp_gate_proj_bias.abs().float().mean(dim=reduce_dims)
+                        losses[f'gate_proj_bias_mean_top_{i}'] = exp_gate_proj_bias_mean[top_indices].mean().item()
+                        losses[f'gate_proj_bias_mean_bottom_{i}'] = exp_gate_proj_bias_mean[bottom_indices].mean().item()
+                        losses[f'gate_proj_bias_abs_mean_top_{i}'] = exp_gate_proj_bias_abs_mean[top_indices].mean().item()
+                        losses[f'gate_proj_bias_abs_mean_bottom_{i}'] = exp_gate_proj_bias_abs_mean[bottom_indices].mean().item()
 
                     top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
                     bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
@@ -937,10 +946,18 @@ while True:
                 log_data[f"inspect/expert_utility_mean_{i}"] = layer_expert_utilities.mean().item()
             if f'router_row_norm_{i}' in losses:
                 log_data[f"inspect/router_row_norm_{i}"] = losses[f'router_row_norm_{i}']
-            if f'exp_gate_proj_bias_mean_{i}' in losses:
-                log_data[f"inspect/exp_gate_proj_bias_mean_{i}"] = losses[f'exp_gate_proj_bias_mean_{i}']
-            if f'exp_gate_proj_bias_abs_mean_{i}' in losses:
-                log_data[f"inspect/exp_gate_proj_bias_abs_mean_{i}"] = losses[f'exp_gate_proj_bias_abs_mean_{i}']
+            if f'gate_proj_bias_mean_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_mean_{i}"] = losses[f'gate_proj_bias_mean_{i}']
+            if f'gate_proj_bias_abs_mean_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_abs_mean_{i}"] = losses[f'gate_proj_bias_abs_mean_{i}']
+            if f'gate_proj_bias_mean_top_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_mean_top_{i}"] = losses[f'gate_proj_bias_mean_top_{i}']
+            if f'gate_proj_bias_mean_bottom_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_mean_bottom_{i}"] = losses[f'gate_proj_bias_mean_bottom_{i}']
+            if f'gate_proj_bias_abs_mean_top_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_abs_mean_top_{i}"] = losses[f'gate_proj_bias_abs_mean_top_{i}']
+            if f'gate_proj_bias_abs_mean_bottom_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_abs_mean_bottom_{i}"] = losses[f'gate_proj_bias_abs_mean_bottom_{i}']
             if f'mean_abs_gate_{i}' in losses:
                 log_data[f"inspect/mean_abs_gate_{i}"] = losses[f'mean_abs_gate_{i}']
             if f'active_frac_gate_{i}' in losses:
