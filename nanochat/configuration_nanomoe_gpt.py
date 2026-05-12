@@ -52,7 +52,7 @@ class GPTConfig:
         router_use_full_prec: bool = False,  # use float32 precision in the router
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
-        bilinear_mlp: bool = False,  # disable SiLU gating in Qwen3-style MLPs and use raw bilinear gating instead
+        bilinear_mlp_moe: bool = False,  # disable SiLU gating in Qwen3-style MoE MLPs and use raw bilinear gating instead
         # Sliding window attention pattern string, tiled across layers. Final layer always L.
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
@@ -90,6 +90,7 @@ class GPTConfig:
         self.router_ortho_loss_target = router_ortho_loss_target
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
+        legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
         valid_exp_gate_proj_bias_modes = {"full", "rank1", "rank1_residual"}
         if exp_gate_proj_bias_mode not in valid_exp_gate_proj_bias_modes:
@@ -154,7 +155,9 @@ class GPTConfig:
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
-        self.bilinear_mlp = bool(bilinear_mlp)
+        if legacy_bilinear_mlp is not None and not bilinear_mlp_moe:
+            bilinear_mlp_moe = legacy_bilinear_mlp
+        self.bilinear_mlp_moe = bool(bilinear_mlp_moe)
         self.window_pattern = window_pattern
         self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
         self.debug = debug

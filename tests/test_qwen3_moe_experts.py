@@ -32,11 +32,11 @@ def test_dense_gate_projection_is_applied_before_fc_gating():
     torch.testing.assert_close(actual, expected)
 
 
-def test_dense_qwen3_mlp_uses_raw_bilinear_gate_when_enabled():
+def test_dense_qwen3_mlp_keeps_silu_gate_when_moe_bilinear_is_enabled():
     torch.manual_seed(0)
     config = GPTConfig(
         n_embd=4,
-        bilinear_mlp=True,
+        bilinear_mlp_moe=True,
         debug=False,
     )
     mlp = Qwen3MLP(config)
@@ -47,7 +47,7 @@ def test_dense_qwen3_mlp_uses_raw_bilinear_gate_when_enabled():
         mlp.c_fc.weight.copy_(torch.randn_like(mlp.c_fc.weight))
         mlp.c_proj.weight.copy_(torch.randn_like(mlp.c_proj.weight))
         raw_gate_out = mlp.gate_proj(x)
-        expected = mlp.c_proj(raw_gate_out * mlp.c_fc(x))
+        expected = mlp.c_proj(mlp.act_fn(raw_gate_out) * mlp.c_fc(x))
 
     actual = mlp(x)
     torch.testing.assert_close(actual, expected)
@@ -58,7 +58,7 @@ def test_moe_qwen3_mlp_uses_raw_bilinear_gate_when_enabled():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        bilinear_mlp=True,
+        bilinear_mlp_moe=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)

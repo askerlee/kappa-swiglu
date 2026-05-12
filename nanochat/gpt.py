@@ -686,7 +686,6 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.bilinear_mlp = bool(getattr(config, 'bilinear_mlp', False))
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         # up_proj -> c_fc, down_proj -> c_proj
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
@@ -695,9 +694,7 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiLUActivation()
 
     def forward(self, x):
-        gate_out = self.gate_proj(x)
-        if not self.bilinear_mlp:
-            gate_out = self.act_fn(gate_out)
+        gate_out = self.act_fn(self.gate_proj(x))
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -708,7 +705,7 @@ class Qwen3MLPExperts(nn.Module):
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
-        self.bilinear_mlp = bool(getattr(config, 'bilinear_mlp', False))
+        self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
@@ -778,7 +775,7 @@ class Qwen3MLPExperts(nn.Module):
         self._router_ref = None
 
     def _apply_gate_activation(self, gate_out_raw):
-        if self.bilinear_mlp:
+        if self.bilinear_mlp_moe:
             return gate_out_raw
         return self.act_fn(gate_out_raw)
 
