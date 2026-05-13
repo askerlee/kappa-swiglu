@@ -821,7 +821,6 @@ class Qwen3MLPExperts(nn.Module):
             return None
         selected_router_scores = selected_router_scores.float()
         if self.use_gate_proj_bias_as_lr_scaler:
-            selected_router_scores = selected_router_scores * grad_scale
             return selected_router_scores.to(dtype=self.gate_proj.dtype)
         selected_router_scores = scale_grad(selected_router_scores, grad_scale)
         return selected_router_scores.to(dtype=self.gate_proj.dtype)
