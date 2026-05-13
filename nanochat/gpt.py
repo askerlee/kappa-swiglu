@@ -832,9 +832,12 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         
         if self.use_gate_proj_bias_as_lr_scaler:
-            gate_grad_scale = torch.exp(
+            gate_grad_scale_input = (
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
+            )
+            gate_grad_scale = torch.exp(
+                torch.tanh(gate_grad_scale_input)
             )
             MANAGER.add("gate_grad_scale_min", gate_grad_scale.detach().amin())
             MANAGER.add("gate_grad_scale_max", gate_grad_scale.detach().amax())

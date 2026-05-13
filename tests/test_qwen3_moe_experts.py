@@ -209,7 +209,7 @@ def test_gate_projection_bias_lr_scaler_mode_uses_unit_grad_scale_when_confidenc
     torch.testing.assert_close(experts.gate_proj.grad, manual_gate_proj.grad)
 
 
-def test_gate_projection_bias_lr_scaler_mode_uses_exp_product_with_unit_zero_bias_scale():
+def test_gate_projection_bias_lr_scaler_mode_uses_bounded_positive_scale_with_unit_zero_bias_scale():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -256,6 +256,31 @@ def test_gate_projection_bias_lr_scaler_mode_uses_exp_product_with_unit_zero_bia
     assert experts.gate_proj.grad is not None
     assert baseline_experts.gate_proj.grad is not None
     torch.testing.assert_close(experts.gate_proj.grad, baseline_experts.gate_proj.grad)
+
+
+def test_gate_projection_bias_lr_scaler_mode_bounds_scale_range():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_lr_scaler=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    router_confidence_gate_scale = torch.tensor([[100.0, -100.0], [3.0, -3.0]])
+    gate_proj_bias = torch.tensor([
+        [100.0, -100.0, 1.0, -1.0],
+        [2.0, -2.0, 0.5, -0.5],
+    ])
+
+    gate_grad_scale = torch.exp(
+        torch.tanh(router_confidence_gate_scale.unsqueeze(-1) * gate_proj_bias.unsqueeze(1))
+    )
+
+    assert torch.all(gate_grad_scale >= torch.exp(torch.tensor(-1.0)))
+    assert torch.all(gate_grad_scale <= torch.exp(torch.tensor(1.0)))
 
 
 def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
