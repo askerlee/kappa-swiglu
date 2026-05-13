@@ -343,7 +343,7 @@ if (
     and not gate_proj_bias_l2_loss_weight_was_specified
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
-    args.gate_proj_bias_l2_loss_weight = 0.1
+    args.gate_proj_bias_l2_loss_weight = 2e-2
 if (
     args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
     and not gate_proj_bias_l2_loss_weight_was_specified
