@@ -823,7 +823,7 @@ class Qwen3MLPExperts(nn.Module):
             return None
         selected_router_scores = selected_router_scores.float()
         if self.use_gate_proj_bias_as_lr_scaler:
-            return selected_router_scores.to(dtype=self.gate_proj.dtype)
+            return (selected_router_scores * grad_scale).to(dtype=self.gate_proj.dtype)
         selected_router_scores = scale_grad(selected_router_scores, grad_scale)
         return selected_router_scores.to(dtype=self.gate_proj.dtype)
 
@@ -1714,20 +1714,18 @@ class GPT(nn.Module):
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
         gate_grad_scale_min = MANAGER.aggregate("gate_grad_scale_min")
-        if gate_grad_scale_min is None:
-            losses['gate_grad_scale_min'] = torch.zeros((), device=x.device)
-        elif torch.is_tensor(gate_grad_scale_min):
-            losses['gate_grad_scale_min'] = gate_grad_scale_min.detach()
-        else:
-            losses['gate_grad_scale_min'] = torch.as_tensor(gate_grad_scale_min, device=x.device)
+        losses['gate_grad_scale_min'] = (
+            gate_grad_scale_min.detach()
+            if gate_grad_scale_min is not None
+            else torch.zeros((0,), device=x.device)
+        )
         MANAGER.reset("gate_grad_scale_min")
         gate_grad_scale_max = MANAGER.aggregate("gate_grad_scale_max")
-        if gate_grad_scale_max is None:
-            losses['gate_grad_scale_max'] = torch.zeros((), device=x.device)
-        elif torch.is_tensor(gate_grad_scale_max):
-            losses['gate_grad_scale_max'] = gate_grad_scale_max.detach()
-        else:
-            losses['gate_grad_scale_max'] = torch.as_tensor(gate_grad_scale_max, device=x.device)
+        losses['gate_grad_scale_max'] = (
+            gate_grad_scale_max.detach()
+            if gate_grad_scale_max is not None
+            else torch.zeros((0,), device=x.device)
+        )
         MANAGER.reset("gate_grad_scale_max")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
@@ -1762,6 +1760,10 @@ class GPT(nn.Module):
                 losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean_normalized[stats_idx].item()
                 )
+            if stats_idx < losses['gate_grad_scale_min'].shape[0]:
+                losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][stats_idx].item()
+            if stats_idx < losses['gate_grad_scale_max'].shape[0]:
+                losses[f'gate_grad_scale_max_{layer_idx}'] = losses['gate_grad_scale_max'][stats_idx].item()
         
         if targets is not None:
             loss = _chunked_cross_entropy(

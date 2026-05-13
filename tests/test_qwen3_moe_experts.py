@@ -797,6 +797,51 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
     )
 
 
+def test_gpt_forward_reports_gate_grad_scale_per_moe_layer():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=4,
+        moe_start_layer=1,
+        num_moe_layers=2,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_lr_scaler=True,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+
+    with torch.no_grad():
+        model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(0.2)
+        model.transformer.h[2].mlp.experts.gate_proj_bias.fill_(0.4)
+
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
+
+    _, losses = model(idx, targets)
+
+    assert losses['gate_grad_scale_min'].ndim == 1
+    assert losses['gate_grad_scale_max'].ndim == 1
+    assert losses['gate_grad_scale_min'].shape == (2,)
+    assert losses['gate_grad_scale_max'].shape == (2,)
+    assert 'gate_grad_scale_min_1' in losses
+    assert 'gate_grad_scale_max_1' in losses
+    assert 'gate_grad_scale_min_2' in losses
+    assert 'gate_grad_scale_max_2' in losses
+    torch.testing.assert_close(losses['gate_grad_scale_min'][0], torch.tensor(losses['gate_grad_scale_min_1']))
+    torch.testing.assert_close(losses['gate_grad_scale_max'][0], torch.tensor(losses['gate_grad_scale_max_1']))
+    torch.testing.assert_close(losses['gate_grad_scale_min'][1], torch.tensor(losses['gate_grad_scale_min_2']))
+    torch.testing.assert_close(losses['gate_grad_scale_max'][1], torch.tensor(losses['gate_grad_scale_max_2']))
+
+
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():
     torch.manual_seed(0)
     config = GPTConfig(
