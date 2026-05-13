@@ -86,6 +86,8 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
         return result
 
 def scale_grad(x, alpha):
+    if torch.is_tensor(alpha) and alpha.requires_grad:
+        return x.detach() + alpha * x - alpha.detach() * x.detach()
     return x.detach() + alpha * (x - x.detach())
 
 
@@ -834,6 +836,7 @@ class Qwen3MLPExperts(nn.Module):
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
             )
+            MANAGER.add("gate_grad_scale", gate_grad_scale.detach())
             gate_out_raw = scale_grad(
                 gate_out_raw,
                 gate_grad_scale,
@@ -1689,6 +1692,7 @@ class GPT(nn.Module):
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
+                   'gate_grad_scale': None,
                  }
         for sub_loss_name in router_ortho_sub_loss_names:
             losses[sub_loss_name] = 0
@@ -1704,6 +1708,9 @@ class GPT(nn.Module):
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
+        gate_grad_scale = MANAGER.aggregate("gate_grad_scale")
+        losses['gate_grad_scale'] = gate_grad_scale.detach() if gate_grad_scale is not None else None
+        MANAGER.reset("gate_grad_scale")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
             gate_proj_bias_shift_abs_mean.mean().detach()

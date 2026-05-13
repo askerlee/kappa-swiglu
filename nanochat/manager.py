@@ -19,6 +19,7 @@ class MOEManager:
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
+            "gate_grad_scale": [],
             "gate_proj_bias_shift_abs_mean": [],
             "gate_proj_bias_shift_abs_mean_normalized": [],
         }
@@ -29,6 +30,8 @@ class MOEManager:
         self._expert_utilities_size = 0
         self._selected_scores_buffer = None
         self._selected_scores_size = 0
+        self._gate_grad_scale_buffer = None
+        self._gate_grad_scale_size = 0
         self._gate_proj_bias_shift_abs_mean_buffer = None
         self._gate_proj_bias_shift_abs_mean_size = 0
         self._gate_proj_bias_shift_abs_mean_normalized_buffer = None
@@ -40,6 +43,7 @@ class MOEManager:
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
                                      "selected_scores",
+                                     "gate_grad_scale",
                                      "gate_proj_bias_shift_abs_mean",
                                      "gate_proj_bias_shift_abs_mean_normalized"])
 
@@ -52,6 +56,9 @@ class MOEManager:
             return
         if name == "selected_scores":
             self._selected_scores_size = 0
+            return
+        if name == "gate_grad_scale":
+            self._gate_grad_scale_size = 0
             return
         if name == "gate_proj_bias_shift_abs_mean":
             self._gate_proj_bias_shift_abs_mean_size = 0
@@ -98,6 +105,18 @@ class MOEManager:
                 new_size = self._selected_scores_size + 1
                 self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
                 self._selected_scores_size = new_size
+            return
+        if name == "gate_grad_scale":
+            with torch.inference_mode(False):
+                if self._gate_grad_scale_buffer is None:
+                    self._gate_grad_scale_buffer = torch.empty(
+                        (self._tensor_var_capacity, *value.shape),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._gate_grad_scale_size + 1
+                self._gate_grad_scale_buffer[self._gate_grad_scale_size:new_size].copy_(value.unsqueeze(0))
+                self._gate_grad_scale_size = new_size
             return
         if name == "gate_proj_bias_shift_abs_mean":
             with torch.inference_mode(False):
@@ -153,6 +172,11 @@ class MOEManager:
             if self._selected_scores_buffer is None or self._selected_scores_size == 0:
                 return None
             values = self._selected_scores_buffer[:self._selected_scores_size]
+            return values
+        elif name == "gate_grad_scale":
+            if self._gate_grad_scale_buffer is None or self._gate_grad_scale_size == 0:
+                return None
+            values = self._gate_grad_scale_buffer[:self._gate_grad_scale_size]
             return values
         elif name == "gate_proj_bias_shift_abs_mean":
             if self._gate_proj_bias_shift_abs_mean_buffer is None or self._gate_proj_bias_shift_abs_mean_size == 0:

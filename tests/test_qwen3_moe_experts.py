@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, MANAGER, Qwen3MLP, Qwen3MLPExperts, Router
+from nanochat.gpt import GPT, MANAGER, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -111,6 +111,36 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_scores
     torch.testing.assert_close(actual, expected)
 
 
+def test_scale_grad_only_backprops_into_tensor_alpha():
+    x_tensor_alpha = torch.tensor([2.0], requires_grad=True)
+    alpha_tensor = torch.tensor([3.0], requires_grad=True)
+
+    y_tensor_alpha = scale_grad(x_tensor_alpha, alpha_tensor)
+
+    torch.testing.assert_close(y_tensor_alpha, x_tensor_alpha.detach())
+    y_tensor_alpha.backward()
+
+    torch.testing.assert_close(x_tensor_alpha.grad, alpha_tensor.detach())
+    torch.testing.assert_close(alpha_tensor.grad, x_tensor_alpha.detach())
+
+    x_scalar_alpha = torch.tensor([2.0], requires_grad=True)
+    y_scalar_alpha = scale_grad(x_scalar_alpha, 3.0)
+
+    torch.testing.assert_close(y_scalar_alpha, x_scalar_alpha.detach())
+    y_scalar_alpha.backward()
+
+    torch.testing.assert_close(x_scalar_alpha.grad, torch.tensor([3.0]))
+
+    x_nograd_tensor_alpha = torch.tensor([2.0], requires_grad=True)
+    alpha_nograd_tensor = torch.tensor([3.0])
+    y_nograd_tensor_alpha = scale_grad(x_nograd_tensor_alpha, alpha_nograd_tensor)
+
+    torch.testing.assert_close(y_nograd_tensor_alpha, x_nograd_tensor_alpha.detach())
+    y_nograd_tensor_alpha.backward()
+
+    torch.testing.assert_close(x_nograd_tensor_alpha.grad, alpha_nograd_tensor)
+
+
 def test_gate_projection_bias_can_use_router_confidence_only_as_bias_grad_scaler():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -130,7 +160,7 @@ def test_gate_projection_bias_can_use_router_confidence_only_as_bias_grad_scaler
         experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-        raw_gate_out = torch.bmm(x, experts.gate_proj) - experts.gate_proj_bias.unsqueeze(1)
+        raw_gate_out = torch.bmm(x, experts.gate_proj)
         expected_gate_out_acts = experts.act_fn(raw_gate_out)
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
@@ -165,7 +195,7 @@ def test_gate_projection_bias_lr_scaler_mode_uses_unit_grad_scale_when_confidenc
     manual_gate_proj_bias = experts.gate_proj_bias.detach().clone().requires_grad_(True)
     manual_c_fc = experts.c_fc.detach().clone().requires_grad_(True)
     manual_c_proj = experts.c_proj.detach().clone().requires_grad_(True)
-    manual_gate_out = torch.bmm(x, manual_gate_proj) - manual_gate_proj_bias.unsqueeze(1)
+    manual_gate_out = torch.bmm(x, manual_gate_proj)
     manual_out = torch.bmm(experts.act_fn(manual_gate_out) * torch.bmm(x, manual_c_fc), manual_c_proj)
     torch.testing.assert_close(out, manual_out)
 
@@ -174,9 +204,8 @@ def test_gate_projection_bias_lr_scaler_mode_uses_unit_grad_scale_when_confidenc
 
     assert experts.gate_proj_bias.grad is not None
     assert experts.gate_proj.grad is not None
-    assert manual_gate_proj_bias.grad is not None
     assert manual_gate_proj.grad is not None
-    torch.testing.assert_close(experts.gate_proj_bias.grad, manual_gate_proj_bias.grad)
+    torch.testing.assert_close(experts.gate_proj_bias.grad, torch.zeros_like(experts.gate_proj_bias.grad))
     torch.testing.assert_close(experts.gate_proj.grad, manual_gate_proj.grad)
 
 

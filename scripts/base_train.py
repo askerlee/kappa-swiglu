@@ -1040,6 +1040,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
+    gate_grad_scale = losses.get('gate_grad_scale', None)
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
 
     for i in moe_layer_indices:
@@ -1137,6 +1138,14 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
+
+                    if gate_grad_scale is not None:
+                        layer_gate_grad_scale = gate_grad_scale[moe_layer_to_stats_idx[i]].float()
+                        reduce_dims = tuple(range(1, layer_gate_grad_scale.ndim))
+                        exp_gate_grad_scale_mean = layer_gate_grad_scale.mean(dim=reduce_dims)
+                        losses[f'gate_grad_scale_mean_{i}'] = layer_gate_grad_scale.mean().item()
+                        losses[f'gate_grad_scale_mean_top_{i}'] = exp_gate_grad_scale_mean[top_indices].mean().item()
+                        losses[f'gate_grad_scale_mean_bottom_{i}'] = exp_gate_grad_scale_mean[bottom_indices].mean().item()
 
     for i in get_dense_gate_proj_bias_stat_layer_indices(model):
         layer = model.transformer.h[i]
@@ -1691,6 +1700,12 @@ while True:
                 log_data.update({f"inspect/selected_scores_top_{i}": losses[f'selected_scores_top_{i}']})
             if f'selected_scores_bottom_{i}' in losses:
                 log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
+            if f'gate_grad_scale_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_grad_scale_mean_{i}": losses[f'gate_grad_scale_mean_{i}']})
+            if f'gate_grad_scale_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_grad_scale_mean_top_{i}": losses[f'gate_grad_scale_mean_top_{i}']})
+            if f'gate_grad_scale_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_grad_scale_mean_bottom_{i}": losses[f'gate_grad_scale_mean_bottom_{i}']})
 
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
