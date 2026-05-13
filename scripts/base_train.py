@@ -193,7 +193,7 @@ parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="rank1_residu
                     help="parameterization for expert gate_proj_bias: full matrix, rank-1 expert/intermediate factors, or rank-1 plus dense residual")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
-parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
+parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.2,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
@@ -290,6 +290,14 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
 )
+gate_proj_bias_l2_loss_stage1_frac_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-l2-loss-stage1-frac',
+)
+gate_proj_bias_l2_loss_final_frac_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--gate-proj-bias-l2-loss-final-frac',
+)
 gate_proj_bias_residual_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-residual-l2-loss-weight',
@@ -343,7 +351,19 @@ if (
     and not gate_proj_bias_l2_loss_weight_was_specified
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
-    args.gate_proj_bias_l2_loss_weight = 2e-2
+    args.gate_proj_bias_l2_loss_weight = 0.1
+if (
+    args.use_gate_proj_bias_as_lr_scaler
+    and not gate_proj_bias_l2_loss_stage1_frac_was_specified
+    and args.gate_proj_bias_l2_loss_stage1_frac == parser.get_default("gate_proj_bias_l2_loss_stage1_frac")
+):
+    args.gate_proj_bias_l2_loss_stage1_frac = 0.3
+if (
+    args.use_gate_proj_bias_as_lr_scaler
+    and not gate_proj_bias_l2_loss_final_frac_was_specified
+    and args.gate_proj_bias_l2_loss_final_frac == parser.get_default("gate_proj_bias_l2_loss_final_frac")
+):
+    args.gate_proj_bias_l2_loss_final_frac = 0.1
 if (
     args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
     and not gate_proj_bias_l2_loss_weight_was_specified
