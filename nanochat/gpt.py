@@ -902,9 +902,11 @@ class Qwen3MLPExperts(nn.Module):
                     max(1, math.ceil(gate_grad_scale_stats.numel() * 5e-2)),
                 )
                 gate_grad_scale_top5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k).values.mean()
+                gate_grad_scale_bottom5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k, largest=False).values.mean()
                 MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
                 MANAGER.add("gate_grad_scale_min", gate_grad_scale_stats.amin())
                 MANAGER.add("gate_grad_scale_top5p_mean", gate_grad_scale_top5p_mean)
+                MANAGER.add("gate_grad_scale_bottom5p_mean", gate_grad_scale_bottom5p_mean)
             gate_out_raw = scale_grad(
                 gate_out_raw,
                 gate_grad_scale,
@@ -1757,6 +1759,7 @@ class GPT(nn.Module):
                    'gate_grad_scale_mean': None,
                    'gate_grad_scale_min': 0,
                    'gate_grad_scale_top5p_mean': 0,
+                   'gate_grad_scale_bottom5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
@@ -1799,6 +1802,13 @@ class GPT(nn.Module):
             else torch.zeros((0,), device=x.device)
         )
         MANAGER.reset("gate_grad_scale_top5p_mean")
+        gate_grad_scale_bottom5p_mean = MANAGER.aggregate("gate_grad_scale_bottom5p_mean")
+        losses['gate_grad_scale_bottom5p_mean'] = (
+            gate_grad_scale_bottom5p_mean.detach()
+            if gate_grad_scale_bottom5p_mean is not None
+            else torch.zeros((0,), device=x.device)
+        )
+        MANAGER.reset("gate_grad_scale_bottom5p_mean")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
             gate_proj_bias_shift_abs_mean.mean().detach()
@@ -1837,6 +1847,10 @@ class GPT(nn.Module):
             if stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
                 losses[f'gate_grad_scale_top5p_mean_{layer_idx}'] = (
                     losses['gate_grad_scale_top5p_mean'][stats_idx].item()
+                )
+            if stats_idx < losses['gate_grad_scale_bottom5p_mean'].shape[0]:
+                losses[f'gate_grad_scale_bottom5p_mean_{layer_idx}'] = (
+                    losses['gate_grad_scale_bottom5p_mean'][stats_idx].item()
                 )
         
         if targets is not None:

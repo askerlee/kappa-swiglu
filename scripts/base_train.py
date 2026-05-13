@@ -1686,6 +1686,10 @@ while True:
                 log_data.update({
                     f"inspect/gate_grad_scale_top5p_mean_{i}": losses[f'gate_grad_scale_top5p_mean_{i}']
                 })
+            if f'gate_grad_scale_bottom5p_mean_{i}' in losses:
+                log_data.update({
+                    f"inspect/gate_grad_scale_bottom5p_mean_{i}": losses[f'gate_grad_scale_bottom5p_mean_{i}']
+                })
             if f'exp_gate_implicit_bias_flip_rate_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_implicit_bias_flip_rate_{i}": losses[f'exp_gate_implicit_bias_flip_rate_{i}']})
             if f'mean_abs_gate_{i}' in losses:
