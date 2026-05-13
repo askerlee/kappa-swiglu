@@ -193,7 +193,7 @@ parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="rank1_residu
                     help="parameterization for expert gate_proj_bias: full matrix, rank-1 expert/intermediate factors, or rank-1 plus dense residual")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
-parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.2,
+parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
@@ -1056,6 +1056,17 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     selected_scores = losses.get('selected_scores', None)
     gate_grad_scale_mean = losses.get('gate_grad_scale_mean', None)
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
+    gate_proj_bias_layer_to_stats_idx = {
+        layer_idx: stats_idx
+        for stats_idx, layer_idx in enumerate(
+            [
+                moe_layer_idx
+                for moe_layer_idx in moe_layer_indices
+                if hasattr(model.transformer.h[moe_layer_idx].mlp, 'experts')
+                and model.transformer.h[moe_layer_idx].mlp.experts.use_gate_proj_bias
+            ]
+        )
+    }
 
     for i in moe_layer_indices:
         layer = model.transformer.h[i]
@@ -1153,8 +1164,9 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
 
-                    if gate_grad_scale_mean is not None:
-                        exp_gate_grad_scale_mean = gate_grad_scale_mean[moe_layer_to_stats_idx[i]].float()
+                    gate_proj_bias_stats_idx = gate_proj_bias_layer_to_stats_idx.get(i)
+                    if gate_grad_scale_mean is not None and gate_proj_bias_stats_idx is not None:
+                        exp_gate_grad_scale_mean = gate_grad_scale_mean[gate_proj_bias_stats_idx].float()
                         losses[f'gate_grad_scale_mean_{i}'] = exp_gate_grad_scale_mean.mean().item()
                         losses[f'gate_grad_scale_mean_top_{i}'] = exp_gate_grad_scale_mean[top_indices].mean().item()
                         losses[f'gate_grad_scale_mean_bottom_{i}'] = exp_gate_grad_scale_mean[bottom_indices].mean().item()

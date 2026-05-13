@@ -878,7 +878,7 @@ class Qwen3MLPExperts(nn.Module):
         return gate_proj_bias
 
     def _apply_gate_proj_bias(self, gate_out_raw, gate_proj_bias, selected_router_scores, grad_scale=0.1):
-        if selected_router_scores is None:
+        if selected_router_scores is None or not self.use_gate_proj_bias:
             return gate_out_raw
 
         selected_router_scores = selected_router_scores.float()
@@ -889,6 +889,8 @@ class Qwen3MLPExperts(nn.Module):
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
             )
+            # ExpTanh: An autograd class to save RAM by using in-place operations
+            # and manually computing the backward pass.
             gate_grad_scale = ExpTanh.apply(gate_grad_scale)
             if MANAGER.collect_load_balancing_stats:
                 gate_grad_scale_stats = gate_grad_scale.detach().float()
@@ -901,11 +903,11 @@ class Qwen3MLPExperts(nn.Module):
                     gate_grad_scale_stats.numel(),
                     max(1, math.ceil(gate_grad_scale_stats.numel() * 5e-2)),
                 )
-                gate_grad_scale_top5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k).values.mean()
+                gate_grad_scale_top5p_mean    = gate_grad_scale_stats.reshape(-1).topk(top_k).values.mean()
                 gate_grad_scale_bottom5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k, largest=False).values.mean()
                 MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
-                MANAGER.add("gate_grad_scale_min", gate_grad_scale_stats.amin())
-                MANAGER.add("gate_grad_scale_top5p_mean", gate_grad_scale_top5p_mean)
+                MANAGER.add("gate_grad_scale_min",  gate_grad_scale_stats.amin())
+                MANAGER.add("gate_grad_scale_top5p_mean",    gate_grad_scale_top5p_mean)
                 MANAGER.add("gate_grad_scale_bottom5p_mean", gate_grad_scale_bottom5p_mean)
             gate_out_raw = scale_grad(
                 gate_out_raw,
@@ -1823,34 +1825,49 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+        gate_proj_bias_layer_indices = [
+            layer_idx
+            for layer_idx in moe_layer_indices
+            if isinstance(getattr(self.transformer.h[layer_idx].mlp, 'experts', None), Qwen3MLPExperts)
+            and self.transformer.h[layer_idx].mlp.experts.use_gate_proj_bias
+        ]
+        gate_proj_bias_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)
+        }
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
             if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
                 continue
+            gate_proj_bias_stats_idx = gate_proj_bias_layer_to_stats_idx.get(layer_idx)
             losses[f'mean_abs_gate_{layer_idx}'] = experts.last_gate_stats['mean_abs_gate'].item()
             losses[f'active_frac_gate_{layer_idx}'] = experts.last_gate_stats['active_frac'].item()
             losses[f'topk_share_gate_{layer_idx}'] = experts.last_gate_stats['topk_share'].item()
             losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
-            if gate_proj_bias_shift_abs_mean is not None and stats_idx < gate_proj_bias_shift_abs_mean.shape[0]:
+            if (
+                gate_proj_bias_stats_idx is not None
+                and gate_proj_bias_shift_abs_mean is not None
+                and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean.shape[0]
+            ):
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_mean[stats_idx].item()
+                    gate_proj_bias_shift_abs_mean[gate_proj_bias_stats_idx].item()
                 )
             if (
-                gate_proj_bias_shift_abs_mean_normalized is not None
-                and stats_idx < gate_proj_bias_shift_abs_mean_normalized.shape[0]
+                gate_proj_bias_stats_idx is not None
+                and gate_proj_bias_shift_abs_mean_normalized is not None
+                and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_normalized.shape[0]
             ):
                 losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_mean_normalized[stats_idx].item()
+                    gate_proj_bias_shift_abs_mean_normalized[gate_proj_bias_stats_idx].item()
                 )
-            if stats_idx < losses['gate_grad_scale_min'].shape[0]:
-                losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][stats_idx].item()
-            if stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_min'].shape[0]:
+                losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][gate_proj_bias_stats_idx].item()
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
                 losses[f'gate_grad_scale_top5p_mean_{layer_idx}'] = (
-                    losses['gate_grad_scale_top5p_mean'][stats_idx].item()
+                    losses['gate_grad_scale_top5p_mean'][gate_proj_bias_stats_idx].item()
                 )
-            if stats_idx < losses['gate_grad_scale_bottom5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_bottom5p_mean'].shape[0]:
                 losses[f'gate_grad_scale_bottom5p_mean_{layer_idx}'] = (
-                    losses['gate_grad_scale_bottom5p_mean'][stats_idx].item()
+                    losses['gate_grad_scale_bottom5p_mean'][gate_proj_bias_stats_idx].item()
                 )
         
         if targets is not None:
