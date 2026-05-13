@@ -339,6 +339,12 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
         "0 <= final_frac <= stage1_frac <= 1"
     )
 if (
+    args.use_gate_proj_bias_as_lr_scaler
+    and not gate_proj_bias_l2_loss_weight_was_specified
+    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
+):
+    args.gate_proj_bias_l2_loss_weight = 0.1
+if (
     args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
     and not gate_proj_bias_l2_loss_weight_was_specified
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
