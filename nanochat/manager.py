@@ -17,7 +17,7 @@ class MOEManager:
             "router_ortho_loss_gate_proj": [],
             "gate_proj_bias_shift_abs_mean_loss": [],
             "gate_grad_scale_min": [],
-            "gate_grad_scale_max": [],
+            "gate_grad_scale_top5p_mean": [],
             "gate_grad_scale_mean": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
@@ -34,8 +34,8 @@ class MOEManager:
         self._selected_scores_size = 0
         self._gate_grad_scale_min_buffer = None
         self._gate_grad_scale_min_size = 0
-        self._gate_grad_scale_max_buffer = None
-        self._gate_grad_scale_max_size = 0
+        self._gate_grad_scale_top5p_mean_buffer = None
+        self._gate_grad_scale_top5p_mean_size = 0
         self._gate_grad_scale_mean_buffer = None
         self._gate_grad_scale_mean_size = 0
         self._gate_proj_bias_shift_abs_mean_buffer = None
@@ -50,7 +50,7 @@ class MOEManager:
                                      "expert_utilities",
                                      "selected_scores",
                                      "gate_grad_scale_min",
-                                     "gate_grad_scale_max",
+                                     "gate_grad_scale_top5p_mean",
                                      "gate_grad_scale_mean",
                                      "gate_proj_bias_shift_abs_mean",
                                      "gate_proj_bias_shift_abs_mean_normalized"])
@@ -68,8 +68,8 @@ class MOEManager:
         if name == "gate_grad_scale_min":
             self._gate_grad_scale_min_size = 0
             return
-        if name == "gate_grad_scale_max":
-            self._gate_grad_scale_max_size = 0
+        if name == "gate_grad_scale_top5p_mean":
+            self._gate_grad_scale_top5p_mean_size = 0
             return
         if name == "gate_grad_scale_mean":
             self._gate_grad_scale_mean_size = 0
@@ -132,17 +132,19 @@ class MOEManager:
                 self._gate_grad_scale_min_buffer[self._gate_grad_scale_min_size:new_size].copy_(value.reshape(1))
                 self._gate_grad_scale_min_size = new_size
             return
-        if name == "gate_grad_scale_max":
+        if name == "gate_grad_scale_top5p_mean":
             with torch.inference_mode(False):
-                if self._gate_grad_scale_max_buffer is None:
-                    self._gate_grad_scale_max_buffer = torch.empty(
+                if self._gate_grad_scale_top5p_mean_buffer is None:
+                    self._gate_grad_scale_top5p_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._gate_grad_scale_max_size + 1
-                self._gate_grad_scale_max_buffer[self._gate_grad_scale_max_size:new_size].copy_(value.reshape(1))
-                self._gate_grad_scale_max_size = new_size
+                new_size = self._gate_grad_scale_top5p_mean_size + 1
+                self._gate_grad_scale_top5p_mean_buffer[
+                    self._gate_grad_scale_top5p_mean_size:new_size
+                ].copy_(value.reshape(1))
+                self._gate_grad_scale_top5p_mean_size = new_size
             return
         if name == "gate_grad_scale_mean":
             with torch.inference_mode(False):
@@ -216,10 +218,15 @@ class MOEManager:
                 return None
             values = self._gate_grad_scale_min_buffer[:self._gate_grad_scale_min_size]
             return values
-        elif name == "gate_grad_scale_max":
-            if self._gate_grad_scale_max_buffer is None or self._gate_grad_scale_max_size == 0:
+        elif name == "gate_grad_scale_top5p_mean":
+            if (
+                self._gate_grad_scale_top5p_mean_buffer is None
+                or self._gate_grad_scale_top5p_mean_size == 0
+            ):
                 return None
-            values = self._gate_grad_scale_max_buffer[:self._gate_grad_scale_max_size]
+            values = self._gate_grad_scale_top5p_mean_buffer[
+                :self._gate_grad_scale_top5p_mean_size
+            ]
             return values
         elif name == "gate_grad_scale_mean":
             if self._gate_grad_scale_mean_buffer is None or self._gate_grad_scale_mean_size == 0:

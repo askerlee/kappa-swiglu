@@ -896,14 +896,21 @@ class Qwen3MLPExperts(nn.Module):
                 * gate_proj_bias.unsqueeze(1)
             )
             gate_grad_scale = ExpTanh.apply(gate_grad_scale)
-            gate_grad_scale_mean = gate_grad_scale.detach().float()
-            if gate_grad_scale_mean.ndim > 1:
-                gate_grad_scale_mean = gate_grad_scale_mean.mean(
-                    dim=tuple(range(1, gate_grad_scale_mean.ndim))
+            if MANAGER.collect_load_balancing_stats:
+                gate_grad_scale_stats = gate_grad_scale.detach().float()
+                gate_grad_scale_mean = gate_grad_scale_stats
+                if gate_grad_scale_mean.ndim > 1:
+                    gate_grad_scale_mean = gate_grad_scale_mean.mean(
+                        dim=tuple(range(1, gate_grad_scale_mean.ndim))
+                    )
+                top_k = min(
+                    gate_grad_scale_stats.numel(),
+                    max(1, math.ceil(gate_grad_scale_stats.numel() * 5e-2)),
                 )
-            MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
-            MANAGER.add("gate_grad_scale_min", gate_grad_scale.detach().amin())
-            MANAGER.add("gate_grad_scale_max", gate_grad_scale.detach().amax())
+                gate_grad_scale_top5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k).values.mean()
+                MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
+                MANAGER.add("gate_grad_scale_min", gate_grad_scale_stats.amin())
+                MANAGER.add("gate_grad_scale_top5p_mean", gate_grad_scale_top5p_mean)
             gate_out_raw = scale_grad(
                 gate_out_raw,
                 gate_grad_scale,
@@ -1755,7 +1762,7 @@ class GPT(nn.Module):
                    'gate_proj_bias_residual_l2_loss': 0,
                    'gate_grad_scale_mean': None,
                    'gate_grad_scale_min': 0,
-                   'gate_grad_scale_max': 0,
+                   'gate_grad_scale_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
@@ -1791,13 +1798,13 @@ class GPT(nn.Module):
             else torch.zeros((0,), device=x.device)
         )
         MANAGER.reset("gate_grad_scale_min")
-        gate_grad_scale_max = MANAGER.aggregate("gate_grad_scale_max")
-        losses['gate_grad_scale_max'] = (
-            gate_grad_scale_max.detach()
-            if gate_grad_scale_max is not None
+        gate_grad_scale_top5p_mean = MANAGER.aggregate("gate_grad_scale_top5p_mean")
+        losses['gate_grad_scale_top5p_mean'] = (
+            gate_grad_scale_top5p_mean.detach()
+            if gate_grad_scale_top5p_mean is not None
             else torch.zeros((0,), device=x.device)
         )
-        MANAGER.reset("gate_grad_scale_max")
+        MANAGER.reset("gate_grad_scale_top5p_mean")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
             gate_proj_bias_shift_abs_mean.mean().detach()
@@ -1833,8 +1840,10 @@ class GPT(nn.Module):
                 )
             if stats_idx < losses['gate_grad_scale_min'].shape[0]:
                 losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][stats_idx].item()
-            if stats_idx < losses['gate_grad_scale_max'].shape[0]:
-                losses[f'gate_grad_scale_max_{layer_idx}'] = losses['gate_grad_scale_max'][stats_idx].item()
+            if stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
+                losses[f'gate_grad_scale_top5p_mean_{layer_idx}'] = (
+                    losses['gate_grad_scale_top5p_mean'][stats_idx].item()
+                )
         
         if targets is not None:
             loss = _chunked_cross_entropy(
