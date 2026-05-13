@@ -836,7 +836,8 @@ class Qwen3MLPExperts(nn.Module):
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
             )
-            MANAGER.add("gate_grad_scale", gate_grad_scale.detach())
+            MANAGER.add("gate_grad_scale_min", gate_grad_scale.detach().amin())
+            MANAGER.add("gate_grad_scale_max", gate_grad_scale.detach().amax())
             gate_out_raw = scale_grad(
                 gate_out_raw,
                 gate_grad_scale,
@@ -1686,13 +1687,14 @@ class GPT(nn.Module):
                    'router_ortho_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
                    'gate_proj_bias_residual_l2_loss': 0,
+                   'gate_grad_scale_min': 0,
+                   'gate_grad_scale_max': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
-                   'gate_grad_scale': None,
                  }
         for sub_loss_name in router_ortho_sub_loss_names:
             losses[sub_loss_name] = 0
@@ -1708,9 +1710,22 @@ class GPT(nn.Module):
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
-        gate_grad_scale = MANAGER.aggregate("gate_grad_scale")
-        losses['gate_grad_scale'] = gate_grad_scale.detach() if gate_grad_scale is not None else None
-        MANAGER.reset("gate_grad_scale")
+        gate_grad_scale_min = MANAGER.aggregate("gate_grad_scale_min")
+        if gate_grad_scale_min is None:
+            losses['gate_grad_scale_min'] = torch.zeros((), device=x.device)
+        elif torch.is_tensor(gate_grad_scale_min):
+            losses['gate_grad_scale_min'] = gate_grad_scale_min.detach()
+        else:
+            losses['gate_grad_scale_min'] = torch.as_tensor(gate_grad_scale_min, device=x.device)
+        MANAGER.reset("gate_grad_scale_min")
+        gate_grad_scale_max = MANAGER.aggregate("gate_grad_scale_max")
+        if gate_grad_scale_max is None:
+            losses['gate_grad_scale_max'] = torch.zeros((), device=x.device)
+        elif torch.is_tensor(gate_grad_scale_max):
+            losses['gate_grad_scale_max'] = gate_grad_scale_max.detach()
+        else:
+            losses['gate_grad_scale_max'] = torch.as_tensor(gate_grad_scale_max, device=x.device)
+        MANAGER.reset("gate_grad_scale_max")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
             gate_proj_bias_shift_abs_mean.mean().detach()
