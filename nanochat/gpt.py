@@ -821,6 +821,7 @@ class Qwen3MLPExperts(nn.Module):
             return None
         selected_router_scores = selected_router_scores.float()
         if self.use_gate_proj_bias_as_lr_scaler:
+            selected_router_scores = selected_router_scores * grad_scale
             return selected_router_scores.to(dtype=self.gate_proj.dtype)
         selected_router_scores = scale_grad(selected_router_scores, grad_scale)
         return selected_router_scores.to(dtype=self.gate_proj.dtype)
@@ -830,14 +831,15 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         
         if self.use_gate_proj_bias_as_lr_scaler:
-            gate_proj_bias_per_slot = gate_proj_bias.unsqueeze(1).expand(
-                -1, gate_out_raw.size(1), -1
+            gate_grad_scale = torch.exp(
+                router_confidence_gate_scale.unsqueeze(-1)
+                * gate_proj_bias.unsqueeze(1)
             )
-            gate_proj_bias_per_slot = scale_grad(
-                gate_proj_bias_per_slot,
-                router_confidence_gate_scale.unsqueeze(-1),
+            gate_out_raw = scale_grad(
+                gate_out_raw,
+                gate_grad_scale,
             )
-            return gate_out_raw - gate_proj_bias_per_slot
+            return gate_out_raw
         
         else:
             gate_out_raw.addcmul_(

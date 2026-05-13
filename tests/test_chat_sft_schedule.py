@@ -45,7 +45,7 @@ def test_gate_proj_bias_l2_anchor_cli_defaults_to_initial_and_wires_load_behavio
     source = CHAT_SFT.read_text(encoding="utf-8")
 
     assert 'parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero"' in source
-    assert 'parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs=\'?', const=True, default=False' in source
+    assert "parser.add_argument(\"--use-gate-proj-bias-as-lr-scaler\", type=str2bool, nargs='?', const=True, default=False" in source
     assert 'refresh_gate_proj_bias_references = args.exp_gate_proj_bias_l2_anchor == "initial"' in source
     assert 'refresh_gate_proj_bias_references=refresh_gate_proj_bias_references' in source
 
