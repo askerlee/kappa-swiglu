@@ -134,6 +134,22 @@ class IdentityWithScaledGrad(torch.autograd.Function):
         return grad_input, grad_alpha
 
 
+class ExpTanh(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_):
+        output = input_.tanh()
+        output.exp_()
+        ctx.save_for_backward(output)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        (output,) = ctx.saved_tensors
+        tanh_output = output.log()
+        grad_input = grad_output * output * (1 - tanh_output.square())
+        return grad_input
+
+
 def band_hinge_loss(value, half_slope_start, full_slope_start):
     return 0.5 * F.relu(value - half_slope_start) + 0.5 * F.relu(value - full_slope_start)
 
@@ -879,8 +895,7 @@ class Qwen3MLPExperts(nn.Module):
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
             )
-            gate_grad_scale.tanh_()
-            gate_grad_scale.exp_()
+            gate_grad_scale = ExpTanh.apply(gate_grad_scale)
             MANAGER.add("gate_grad_scale_min", gate_grad_scale.detach().amin())
             MANAGER.add("gate_grad_scale_max", gate_grad_scale.detach().amax())
             gate_out_raw = scale_grad(
