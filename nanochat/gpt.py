@@ -877,20 +877,14 @@ class Qwen3MLPExperts(nn.Module):
             gate_proj_bias = gate_proj_bias + self.gate_proj_bias_residual
         return gate_proj_bias
 
-    def _compute_router_confidence_gate_scale(self, selected_router_scores, grad_scale=0.1):
+    def _apply_gate_proj_bias(self, gate_out_raw, gate_proj_bias, selected_router_scores, grad_scale=0.1):
         if selected_router_scores is None:
-            return None
-        selected_router_scores = selected_router_scores.float()
-        if self.use_gate_proj_bias_as_lr_scaler:
-            return (selected_router_scores * grad_scale).to(dtype=self.gate_proj.dtype)
-        selected_router_scores = scale_grad(selected_router_scores, grad_scale)
-        return selected_router_scores.to(dtype=self.gate_proj.dtype)
-
-    def _apply_gate_proj_bias(self, gate_out_raw, gate_proj_bias, router_confidence_gate_scale):
-        if router_confidence_gate_scale is None:
             return gate_out_raw
+
+        selected_router_scores = selected_router_scores.float()
         
         if self.use_gate_proj_bias_as_lr_scaler:
+            router_confidence_gate_scale = (selected_router_scores * grad_scale).to(dtype=self.gate_proj.dtype)
             gate_grad_scale = (
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
@@ -918,6 +912,8 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         
         else:
+            router_confidence_gate_scale = scale_grad(selected_router_scores, grad_scale)
+            router_confidence_gate_scale = router_confidence_gate_scale.to(dtype=self.gate_proj.dtype)
             gate_out_raw.addcmul_(
                 router_confidence_gate_scale.unsqueeze(-1),
                 gate_proj_bias.unsqueeze(1),
@@ -1020,14 +1016,11 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_proj_bias = self._materialize_gate_proj_bias()
-        router_confidence_gate_scale = self._compute_router_confidence_gate_scale(
-            selected_router_scores,
-            grad_scale=self.router_confidence_gate_bias_grad_scale,
-        )
         gate_out_raw = self._apply_gate_proj_bias(
             gate_out_raw,
             gate_proj_bias,
-            router_confidence_gate_scale,
+            selected_router_scores,
+            grad_scale=self.router_confidence_gate_bias_grad_scale,
         )
         self._update_gate_proj_bias_shift_stats(selected_router_scores)
         gate_out_acts = self._apply_gate_activation(gate_out_raw)
@@ -1044,7 +1037,8 @@ class Qwen3MLPExperts(nn.Module):
             gate_out_ortho_raw = self._apply_gate_proj_bias(
                 gate_out_ortho_raw,
                 gate_proj_bias,
-                router_confidence_gate_scale,
+                selected_router_scores,
+                grad_scale=self.router_confidence_gate_bias_grad_scale,
             )
             gate_out_ortho_acts = self._apply_gate_activation(gate_out_ortho_raw)
 

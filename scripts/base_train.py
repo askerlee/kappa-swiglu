@@ -351,7 +351,7 @@ if (
     and not gate_proj_bias_l2_loss_weight_was_specified
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
-    args.gate_proj_bias_l2_loss_weight = 0.1
+    args.gate_proj_bias_l2_loss_weight = 5e-2
 if (
     args.use_gate_proj_bias_as_lr_scaler
     and not gate_proj_bias_l2_loss_stage1_frac_was_specified
