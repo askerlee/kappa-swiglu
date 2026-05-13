@@ -102,6 +102,8 @@ parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=flo
                     help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
 parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
                     help="scale factor applied to the L1 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
+parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs='?', const=True, default=False,
+                    help="apply expert gate_proj_bias as an unscaled forward bias and use router confidence only to scale its gradients")
 parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full", "rank1", "rank1_residual"],
                     help="parameterization for expert gate projection bias (default: inherit from base model)")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
@@ -173,6 +175,7 @@ if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
     raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
 exp_gate_proj_bias_mode_was_specified = arg_was_explicitly_set(sys.argv[1:], '--exp-gate-proj-bias-mode')
+use_gate_proj_bias_as_lr_scaler_was_specified = arg_was_explicitly_set(sys.argv[1:], '--use-gate-proj-bias-as-lr-scaler')
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -259,6 +262,21 @@ user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
 user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
 user_config["gate_proj_bias_residual_l2_loss_weight"] = args.gate_proj_bias_residual_l2_loss_weight
 user_config["gate_proj_bias_abs_mean_loss_weight_scale"] = args.gate_proj_bias_abs_mean_loss_weight_scale
+if use_gate_proj_bias_as_lr_scaler_was_specified:
+    model.config.use_gate_proj_bias_as_lr_scaler = args.use_gate_proj_bias_as_lr_scaler
+    print0(
+        "Specified use_gate_proj_bias_as_lr_scaler: "
+        f"{args.use_gate_proj_bias_as_lr_scaler}"
+    )
+else:
+    args.use_gate_proj_bias_as_lr_scaler = bool(
+        getattr(model.config, "use_gate_proj_bias_as_lr_scaler", False)
+    )
+    print0(
+        "Inherited use_gate_proj_bias_as_lr_scaler: "
+        f"{args.use_gate_proj_bias_as_lr_scaler}"
+    )
+user_config["use_gate_proj_bias_as_lr_scaler"] = args.use_gate_proj_bias_as_lr_scaler
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
@@ -266,6 +284,7 @@ if not use_dummy_wandb:
             "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
             "gate_proj_bias_residual_l2_loss_weight": args.gate_proj_bias_residual_l2_loss_weight,
             "gate_proj_bias_abs_mean_loss_weight_scale": args.gate_proj_bias_abs_mean_loss_weight_scale,
+            "use_gate_proj_bias_as_lr_scaler": args.use_gate_proj_bias_as_lr_scaler,
         },
         allow_val_change=True,
     )

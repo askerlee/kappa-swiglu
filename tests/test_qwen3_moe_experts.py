@@ -111,6 +111,69 @@ def test_gate_projection_bias_is_replaced_with_dynamic_router_conditioned_scores
     torch.testing.assert_close(actual, expected)
 
 
+def test_gate_projection_bias_can_use_router_confidence_only_as_bias_grad_scaler():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_lr_scaler=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_scores = torch.randn(config.n_exp, 5)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+        raw_gate_out = torch.bmm(x, experts.gate_proj) - experts.gate_proj_bias.unsqueeze(1)
+        expected_gate_out_acts = experts.act_fn(raw_gate_out)
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
+
+    actual = experts(x, selected_router_scores=selected_router_scores)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_gate_projection_bias_lr_scaler_mode_keeps_forward_bias_but_can_zero_bias_grad():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_lr_scaler=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_scores = torch.zeros(config.n_exp, 5)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+
+    out = experts(x, selected_router_scores=selected_router_scores)
+    expected_gate_out = torch.bmm(x, experts.gate_proj) - experts.gate_proj_bias.unsqueeze(1)
+    expected = torch.bmm(experts.act_fn(expected_gate_out) * torch.bmm(x, experts.c_fc), experts.c_proj)
+    torch.testing.assert_close(out, expected)
+
+    out.sum().backward()
+
+    assert experts.gate_proj_bias.grad is not None
+    torch.testing.assert_close(
+        experts.gate_proj_bias.grad,
+        torch.zeros_like(experts.gate_proj_bias.grad),
+    )
+
+
 def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -411,6 +474,25 @@ def test_gate_proj_bias_input_defaults_and_overrides_from_config():
 
     assert default_config.exp_gate_proj_bias_input == "top_logits"
     assert override_config.exp_gate_proj_bias_input == "router_probs"
+
+
+def test_gate_proj_bias_lr_scaler_flag_defaults_and_overrides_from_config():
+    default_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    override_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_lr_scaler=True,
+        debug=False,
+    )
+
+    assert default_config.use_gate_proj_bias_as_lr_scaler is False
+    assert override_config.use_gate_proj_bias_as_lr_scaler is True
 
 
 def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():

@@ -81,6 +81,7 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'args.aux_loss_weight * args.aux_loss_weight_init_scale' in source
     assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
+    assert 'parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs=\'?', const=True, default=False' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
     assert '--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
