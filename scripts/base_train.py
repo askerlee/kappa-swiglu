@@ -1066,7 +1066,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
-    gate_grad_scale = losses.get('gate_grad_scale', None)
+    gate_grad_scale_mean = losses.get('gate_grad_scale_mean', None)
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
 
     for i in moe_layer_indices:
@@ -1165,11 +1165,9 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
 
-                    if gate_grad_scale is not None:
-                        layer_gate_grad_scale = gate_grad_scale[moe_layer_to_stats_idx[i]].float()
-                        reduce_dims = tuple(range(1, layer_gate_grad_scale.ndim))
-                        exp_gate_grad_scale_mean = layer_gate_grad_scale.mean(dim=reduce_dims)
-                        losses[f'gate_grad_scale_mean_{i}'] = layer_gate_grad_scale.mean().item()
+                    if gate_grad_scale_mean is not None:
+                        exp_gate_grad_scale_mean = gate_grad_scale_mean[moe_layer_to_stats_idx[i]].float()
+                        losses[f'gate_grad_scale_mean_{i}'] = exp_gate_grad_scale_mean.mean().item()
                         losses[f'gate_grad_scale_mean_top_{i}'] = exp_gate_grad_scale_mean[top_indices].mean().item()
                         losses[f'gate_grad_scale_mean_bottom_{i}'] = exp_gate_grad_scale_mean[bottom_indices].mean().item()
 
