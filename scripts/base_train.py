@@ -193,7 +193,7 @@ parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="rank1_residu
                     help="parameterization for expert gate_proj_bias: full matrix, rank-1 expert/intermediate factors, or rank-1 plus dense residual")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
-parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.5,
+parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
