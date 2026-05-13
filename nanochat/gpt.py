@@ -87,8 +87,51 @@ def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=Fal
 
 def scale_grad(x, alpha):
     if torch.is_tensor(alpha) and alpha.requires_grad:
-        return x.detach() + alpha * x - alpha.detach() * x.detach()
+        return IdentityWithScaledGrad.apply(x, alpha)
     return x.detach() + alpha * (x - x.detach())
+
+
+def _sum_to_shape(x, shape):
+    while x.ndim > len(shape):
+        x = x.sum(dim=0)
+    for dim, size in enumerate(shape):
+        if size == 1 and x.shape[dim] != 1:
+            x = x.sum(dim=dim, keepdim=True)
+    return x
+
+
+class IdentityWithScaledGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_, alpha):
+        ctx.save_for_backward(input_, alpha)
+        return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        input_, alpha = ctx.saved_tensors
+
+        if ctx.needs_input_grad[0]:
+            alpha_for_grad_input = alpha
+            if alpha_for_grad_input.dtype != grad_output.dtype:
+                alpha_for_grad_input = alpha_for_grad_input.to(dtype=grad_output.dtype)
+            grad_input = grad_output * alpha_for_grad_input
+            if grad_input.dtype != input_.dtype:
+                grad_input = grad_input.to(dtype=input_.dtype)
+        else:
+            grad_input = None
+
+        if ctx.needs_input_grad[1]:
+            input_for_grad_alpha = input_
+            if input_for_grad_alpha.dtype != grad_output.dtype:
+                input_for_grad_alpha = input_for_grad_alpha.to(dtype=grad_output.dtype)
+            grad_alpha = grad_output * input_for_grad_alpha
+            grad_alpha = _sum_to_shape(grad_alpha, alpha.shape)
+            if grad_alpha.dtype != alpha.dtype:
+                grad_alpha = grad_alpha.to(dtype=alpha.dtype)
+        else:
+            grad_alpha = None
+
+        return grad_input, grad_alpha
 
 
 def band_hinge_loss(value, half_slope_start, full_slope_start):
@@ -832,13 +875,12 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         
         if self.use_gate_proj_bias_as_lr_scaler:
-            gate_grad_scale_input = (
+            gate_grad_scale = (
                 router_confidence_gate_scale.unsqueeze(-1)
                 * gate_proj_bias.unsqueeze(1)
             )
-            gate_grad_scale = torch.exp(
-                torch.tanh(gate_grad_scale_input)
-            )
+            gate_grad_scale.tanh_()
+            gate_grad_scale.exp_()
             MANAGER.add("gate_grad_scale_min", gate_grad_scale.detach().amin())
             MANAGER.add("gate_grad_scale_max", gate_grad_scale.detach().amax())
             gate_out_raw = scale_grad(
