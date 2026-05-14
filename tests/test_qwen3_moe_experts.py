@@ -1,3 +1,4 @@
+import math
 import pytest
 import torch
 import torch.nn.functional as F
@@ -639,7 +640,7 @@ def test_gate_proj_bias_shift_abs_mean_metrics_are_expert_specific_then_sqrt_tok
     torch.testing.assert_close(shift_abs_mean_loss, expected_loss)
 
 
-def test_gate_proj_bias_shift_abs_mean_loss_is_detached_in_slope_scaler_mode():
+def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -658,20 +659,66 @@ def test_gate_proj_bias_shift_abs_mean_loss_is_detached_in_slope_scaler_mode():
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
-    experts._update_gate_proj_bias_shift_stats(torch.tensor([
+    selected_router_scores = torch.tensor([
         [1.0, 0.5],
         [0.0, 0.0],
-    ], requires_grad=True))
+    ], requires_grad=True)
+    slope_scales = experts._compute_gate_slope_scales(
+        experts.gate_proj_bias,
+        selected_router_scores,
+    )
+    experts._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
 
+    shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
+    normalized_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
     shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
+
+    expected_scale_1 = math.exp(math.log(4.0) * math.tanh(-2.0))
+    expected_scale_2 = math.exp(math.log(4.0) * math.tanh(-1.0))
+    expected_mean = torch.tensor([(expected_scale_1 + expected_scale_2) / 2.0])
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
-    assert torch.isfinite(shift_abs_mean_loss)
-    assert shift_abs_mean_loss.item() >= 0.0
-    assert shift_abs_mean_loss.requires_grad is False
+    torch.testing.assert_close(shift_abs_mean, expected_mean)
+    torch.testing.assert_close(normalized_shift_abs_mean, expected_mean)
+    assert shift_abs_mean_loss == 0
+
+
+def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    with torch.no_grad():
+        experts.gate_proj_bias.fill_(1.0)
+
+    MANAGER.reset("gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = False
+    try:
+        experts.last_gate_stats = {"mean_abs_gate": torch.tensor(1.0)}
+        experts._update_gate_proj_bias_shift_stats(torch.tensor([[1.0], [0.0]]))
+        experts._update_gate_stats(torch.ones(2, 1, 4))
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
+
+    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean") is None
+    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized") is None
+    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss") == 0
+    assert experts.last_gate_stats is None
+
+    MANAGER.reset("gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
 
 def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
@@ -701,7 +748,12 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
     idx = torch.randint(0, config.vocab_size, (2, 4))
     targets = torch.randint(0, config.vocab_size, (2, 4))
 
-    _, losses = model(idx, targets)
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        _, losses = model(idx, targets)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
 
     assert 'gate_proj_bias_shift_abs_mean' in losses
     assert 'gate_proj_bias_shift_abs_mean_normalized' in losses
@@ -749,7 +801,12 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric_in_slope_scale
     idx = torch.randint(0, config.vocab_size, (2, 4))
     targets = torch.randint(0, config.vocab_size, (2, 4))
 
-    _, losses = model(idx, targets)
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        _, losses = model(idx, targets)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
 
     assert 'gate_proj_bias_shift_abs_mean' in losses
     assert 'gate_proj_bias_shift_abs_mean_normalized' in losses
@@ -759,6 +816,14 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric_in_slope_scale
     assert torch.isfinite(losses['gate_proj_bias_shift_abs_mean_normalized'])
     assert losses['gate_proj_bias_shift_abs_mean'].item() >= 0.0
     assert losses['gate_proj_bias_shift_abs_mean_normalized'].item() >= 0.0
+    torch.testing.assert_close(
+        losses['gate_proj_bias_shift_abs_mean'],
+        torch.tensor(losses['gate_proj_bias_shift_abs_mean_1']),
+    )
+    torch.testing.assert_close(
+        losses['gate_proj_bias_shift_abs_mean_normalized'],
+        torch.tensor(losses['gate_proj_bias_shift_abs_mean_normalized_1']),
+    )
 
 
     assert losses['gate_grad_scale_min'].numel() == 0

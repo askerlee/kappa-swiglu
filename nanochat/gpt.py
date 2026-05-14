@@ -880,13 +880,18 @@ class Qwen3MLPExperts(nn.Module):
         )
         return gate_out_raw
 
-    def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores, 
-                                            max_scale=4.0, softness=2.0):
+    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, max_scale=4.0, softness=2.0):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
-        inv_tau = torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness)).to(dtype=gate_out_raw.dtype)
-        return gate_out_raw * torch.sigmoid(gate_out_raw * inv_tau)
+        return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
+
+    def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
+        slope_scales = slope_scales.to(dtype=gate_out_raw.dtype)
+        return gate_out_raw * torch.sigmoid(gate_out_raw * slope_scales)
 
     def _update_gate_stats(self, gate_out_acts):
+        if not MANAGER.collect_load_balancing_stats:
+            self.last_gate_stats = None
+            return
         abs_gate = gate_out_acts.abs().float()
         topk = min(self.gate_stats_topk, abs_gate.size(-1))
         abs_gate_sum = abs_gate.sum(dim=-1)
@@ -903,7 +908,8 @@ class Qwen3MLPExperts(nn.Module):
     @torch._dynamo.disable
     def _update_gate_proj_bias_shift_stats(self, selected_router_scores):
         if (
-            not self.use_gate_proj_bias
+            not MANAGER.collect_load_balancing_stats
+            or not self.use_gate_proj_bias
             or selected_router_scores is None
         ):
             return
@@ -980,6 +986,38 @@ class Qwen3MLPExperts(nn.Module):
         else:
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())
 
+    @torch._dynamo.disable
+    def _update_gate_slope_scale_stats(self, slope_scales, selected_router_scores):
+        if (
+            not MANAGER.collect_load_balancing_stats
+            or not self.use_gate_proj_bias
+            or selected_router_scores is None
+        ):
+            return
+
+        active_mask = selected_router_scores.detach().float().abs() > 0
+        if not active_mask.any():
+            return
+
+        slope_scales = slope_scales.detach().float()
+        active_mask_f = active_mask.to(dtype=slope_scales.dtype)
+        active_token_counts = active_mask_f.sum(dim=1)
+        slope_scale_sum_per_expert = (slope_scales * active_mask_f.unsqueeze(-1)).sum(dim=(1, 2))
+        slope_scale_mean_per_expert = slope_scale_sum_per_expert / (
+            active_token_counts.clamp_min(1) * slope_scales.size(-1)
+        )
+        total_active_tokens = active_token_counts.sum()
+        slope_scale_mean = (
+            slope_scale_mean_per_expert * active_token_counts
+        ).sum() / total_active_tokens.clamp_min(1)
+        MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
+        active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
+        total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
+        normalized_slope_scale_mean = (
+            slope_scale_mean_per_expert * active_token_counts_sqrt
+        ).sum() / total_active_tokens_sqrt
+        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
+
     def forward(self, x, selected_router_scores=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
@@ -988,17 +1026,18 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_proj_bias = self._materialize_gate_proj_bias()
-        # If use_gate_proj_bias_as_slope_scaler, then 
-        # _apply_gate_proj_bias does not change gate_out_raw.
-        # Instead, _apply_gate_slope_scaled_activation will act.
-        self._update_gate_proj_bias_shift_stats(selected_router_scores)
         if self.use_gate_proj_bias_as_slope_scaler and selected_router_scores is not None:
-            gate_out_acts = self._apply_gate_slope_scaled_activation(
-                gate_out_raw,
+            slope_scales = self._compute_gate_slope_scales(
                 gate_proj_bias,
                 selected_router_scores,
             )
+            self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
+            gate_out_acts = self._apply_gate_slope_scaled_activation(
+                gate_out_raw,
+                slope_scales,
+            )
         else:
+            self._update_gate_proj_bias_shift_stats(selected_router_scores)
             gate_out_raw = self._apply_gate_proj_bias(
                 gate_out_raw,
                 gate_proj_bias,
@@ -1818,7 +1857,6 @@ class GPT(nn.Module):
             )
             losses['ntp_loss'] = loss.detach()
 
-            # add the auxiliary load balancing loss and router z loss to the main loss
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = MANAGER.aggregate("aux_loss")
                 loss += self.config.aux_loss_weight * aux_loss
@@ -1826,15 +1864,11 @@ class GPT(nn.Module):
                 MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
-                # router_z_loss_weight: default 1e-5.
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate("router_ortho_loss")
-                # We use dynamic weight for router_ortho_loss, so we just save it in losses (without detach()), 
-                # and don't add it to the main loss here. 
-                # loss += self.config.router_ortho_loss_weight * router_ortho_loss 
                 losses['router_ortho_loss'] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset("router_ortho_loss")
                 for sub_loss_name in router_ortho_sub_loss_names:
@@ -1848,11 +1882,9 @@ class GPT(nn.Module):
             ) = self.compute_gate_proj_bias_magnitude_losses()
             MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
         else:
-            # inference: just return the logits directly
             return logits
 
         if False and self.global_iter >= 1000:
-            # To debug router z loss, we need the properly weighted, un-detached loss to do manual backward.
             self.debug_losses(losses, losses_to_debug=[self.config.router_z_loss_weight * router_z_loss])
 
         return loss, losses
