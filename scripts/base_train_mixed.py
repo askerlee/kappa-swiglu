@@ -134,8 +134,6 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply expert gate_proj_bias as an unscaled forward bias and use router confidence only to scale its gradients")
 parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=False,
                     help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope via tau = exp(gate_proj_bias * router_probs).clamp(0.5, 2.0)")
 parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="full", choices=["full"],
@@ -246,8 +244,6 @@ if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
-if args.use_gate_proj_bias_as_lr_scaler and args.use_gate_proj_bias_as_slope_scaler:
-    raise ValueError("--use-gate-proj-bias-as-lr-scaler and --use-gate-proj-bias-as-slope-scaler are mutually exclusive")
 if args.gate_proj_bias_shift_abs_mean_half_slope_start > 0:
     args.gate_proj_bias_shift_abs_mean_half_slope_start = float(args.gate_proj_bias_shift_abs_mean_half_slope_start)
 else:
@@ -411,7 +407,6 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        use_gate_proj_bias_as_lr_scaler=args.use_gate_proj_bias_as_lr_scaler,
         use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
         exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
@@ -1513,7 +1508,6 @@ while True:
         t0 = time.time()
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
-        orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
         is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (

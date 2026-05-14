@@ -141,34 +141,6 @@ def test_scale_grad_only_backprops_into_tensor_alpha():
     torch.testing.assert_close(x_nograd_tensor_alpha.grad, alpha_nograd_tensor)
 
 
-def test_gate_projection_bias_can_use_router_confidence_only_as_bias_grad_scaler():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.randn(config.n_exp, 5)
-
-    with torch.no_grad():
-        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
-        experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
-        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
-        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-        raw_gate_out = torch.bmm(x, experts.gate_proj)
-        expected_gate_out_acts = experts.act_fn(raw_gate_out)
-        fc_out = torch.bmm(x, experts.c_fc)
-        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
-
-    actual = experts(x, selected_router_scores=selected_router_scores)
-    torch.testing.assert_close(actual, expected)
-
-
 def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -199,121 +171,6 @@ def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
 
     actual = experts(x, selected_router_scores=router_probs)
     torch.testing.assert_close(actual, expected)
-
-
-def test_gate_projection_bias_lr_scaler_mode_uses_unit_grad_scale_when_confidence_is_zero():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-    experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.zeros(config.n_exp, 5)
-
-    with torch.no_grad():
-        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
-        experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
-        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
-        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-
-    out = experts(x, selected_router_scores=selected_router_scores)
-    manual_gate_proj = experts.gate_proj.detach().clone().requires_grad_(True)
-    manual_gate_proj_bias = experts.gate_proj_bias.detach().clone().requires_grad_(True)
-    manual_c_fc = experts.c_fc.detach().clone().requires_grad_(True)
-    manual_c_proj = experts.c_proj.detach().clone().requires_grad_(True)
-    manual_gate_out = torch.bmm(x, manual_gate_proj)
-    manual_out = torch.bmm(experts.act_fn(manual_gate_out) * torch.bmm(x, manual_c_fc), manual_c_proj)
-    torch.testing.assert_close(out, manual_out)
-
-    out.sum().backward()
-    manual_out.sum().backward()
-
-    assert experts.gate_proj_bias.grad is not None
-    assert experts.gate_proj.grad is not None
-    assert manual_gate_proj.grad is not None
-    torch.testing.assert_close(experts.gate_proj_bias.grad, torch.zeros_like(experts.gate_proj_bias.grad))
-    torch.testing.assert_close(experts.gate_proj.grad, manual_gate_proj.grad)
-
-
-def test_gate_projection_bias_lr_scaler_mode_uses_bounded_positive_scale_with_unit_zero_bias_scale():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-    baseline_config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=False,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-    baseline_experts = Qwen3MLPExperts(baseline_config)
-    experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
-    baseline_experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.ones(config.n_exp, 5)
-
-    with torch.no_grad():
-        gate_proj = torch.randn_like(experts.gate_proj)
-        c_fc = torch.randn_like(experts.c_fc)
-        c_proj = torch.randn_like(experts.c_proj)
-        experts.gate_proj.copy_(gate_proj)
-        baseline_experts.gate_proj.copy_(gate_proj)
-        experts.gate_proj_bias.zero_()
-        baseline_experts.gate_proj_bias.zero_()
-        experts.c_fc.copy_(c_fc)
-        baseline_experts.c_fc.copy_(c_fc)
-        experts.c_proj.copy_(c_proj)
-        baseline_experts.c_proj.copy_(c_proj)
-
-    out = experts(x, selected_router_scores=selected_router_scores)
-    baseline_out = baseline_experts(x, selected_router_scores=selected_router_scores)
-    torch.testing.assert_close(out, baseline_out)
-
-    out.sum().backward()
-    baseline_out.sum().backward()
-
-    assert experts.gate_proj.grad is not None
-    assert baseline_experts.gate_proj.grad is not None
-    torch.testing.assert_close(experts.gate_proj.grad, baseline_experts.gate_proj.grad)
-
-
-def test_gate_projection_bias_lr_scaler_mode_bounds_scale_range():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    router_confidence_gate_scale = torch.tensor([[100.0, -100.0], [3.0, -3.0]])
-    gate_proj_bias = torch.tensor([
-        [100.0, -100.0, 1.0, -1.0],
-        [2.0, -2.0, 0.5, -0.5],
-    ])
-
-    gate_grad_scale = torch.exp(
-        torch.tanh(router_confidence_gate_scale.unsqueeze(-1) * gate_proj_bias.unsqueeze(1))
-    )
-
-    assert torch.all(gate_grad_scale >= torch.exp(torch.tensor(-1.0)))
-    assert torch.all(gate_grad_scale <= torch.exp(torch.tensor(1.0)))
-
 
 def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
     torch.manual_seed(0)
@@ -617,25 +474,6 @@ def test_gate_proj_bias_input_defaults_and_overrides_from_config():
     assert override_config.exp_gate_proj_bias_input == "router_probs"
 
 
-def test_gate_proj_bias_lr_scaler_flag_defaults_and_overrides_from_config():
-    default_config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        debug=False,
-    )
-    override_config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-
-    assert default_config.use_gate_proj_bias_as_lr_scaler is False
-    assert override_config.use_gate_proj_bias_as_lr_scaler is True
-
-
 def test_gate_proj_bias_slope_scaler_flag_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,
@@ -921,87 +759,16 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric_in_slope_scale
     assert torch.isfinite(losses['gate_proj_bias_shift_abs_mean_normalized'])
     assert losses['gate_proj_bias_shift_abs_mean'].item() >= 0.0
     assert losses['gate_proj_bias_shift_abs_mean_normalized'].item() >= 0.0
-    torch.testing.assert_close(
-        losses['gate_proj_bias_shift_abs_mean'],
-        torch.tensor(losses['gate_proj_bias_shift_abs_mean_1']),
-    )
-    torch.testing.assert_close(
-        losses['gate_proj_bias_shift_abs_mean_normalized'],
-        torch.tensor(losses['gate_proj_bias_shift_abs_mean_normalized_1']),
-    )
 
 
-def test_gpt_forward_reports_gate_grad_scale_per_moe_layer():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=4,
-        moe_start_layer=1,
-        num_moe_layers=2,
-        moe_layer_stride=1,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-        use_router_ortho_loss=False,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_lr_scaler=True,
-        debug=False,
-    )
-    model = GPT(config)
-    model.init_weights()
-
-    with torch.no_grad():
-        model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(0.2)
-        model.transformer.h[2].mlp.experts.gate_proj_bias.fill_(0.4)
-
-    idx = torch.randint(0, config.vocab_size, (2, 4))
-    targets = torch.randint(0, config.vocab_size, (2, 4))
-
-    MANAGER.collect_load_balancing_stats = True
-    try:
-        _, losses = model(idx, targets)
-    finally:
-        MANAGER.collect_load_balancing_stats = False
-
-    assert losses['gate_grad_scale_min'].ndim == 1
-    assert losses['gate_grad_scale_max'].ndim == 1
-    assert losses['gate_grad_scale_top5p_mean'].ndim == 1
-    assert losses['gate_grad_scale_bottom5p_mean'].ndim == 1
-    assert losses['gate_grad_scale_min'].shape == (2,)
-    assert losses['gate_grad_scale_max'].shape == (2,)
-    assert losses['gate_grad_scale_top5p_mean'].shape == (2,)
-    assert losses['gate_grad_scale_bottom5p_mean'].shape == (2,)
-    assert 'gate_grad_scale_min_1' in losses
-    assert 'gate_grad_scale_max_1' in losses
-    assert 'gate_grad_scale_top5p_mean_1' in losses
-    assert 'gate_grad_scale_bottom5p_mean_1' in losses
-    assert 'gate_grad_scale_min_2' in losses
-    assert 'gate_grad_scale_max_2' in losses
-    assert 'gate_grad_scale_top5p_mean_2' in losses
-    assert 'gate_grad_scale_bottom5p_mean_2' in losses
-    torch.testing.assert_close(losses['gate_grad_scale_min'][0], torch.tensor(losses['gate_grad_scale_min_1']))
-    torch.testing.assert_close(losses['gate_grad_scale_max'][0], torch.tensor(losses['gate_grad_scale_max_1']))
-    torch.testing.assert_close(
-        losses['gate_grad_scale_top5p_mean'][0],
-        torch.tensor(losses['gate_grad_scale_top5p_mean_1'])
-    )
-    torch.testing.assert_close(
-        losses['gate_grad_scale_bottom5p_mean'][0],
-        torch.tensor(losses['gate_grad_scale_bottom5p_mean_1'])
-    )
-    torch.testing.assert_close(losses['gate_grad_scale_min'][1], torch.tensor(losses['gate_grad_scale_min_2']))
-    torch.testing.assert_close(losses['gate_grad_scale_max'][1], torch.tensor(losses['gate_grad_scale_max_2']))
-    torch.testing.assert_close(
-        losses['gate_grad_scale_top5p_mean'][1],
-        torch.tensor(losses['gate_grad_scale_top5p_mean_2'])
-    )
-    torch.testing.assert_close(
-        losses['gate_grad_scale_bottom5p_mean'][1],
-        torch.tensor(losses['gate_grad_scale_bottom5p_mean_2'])
-    )
+    assert losses['gate_grad_scale_min'].numel() == 0
+    assert losses['gate_grad_scale_max'].numel() == 0
+    assert losses['gate_grad_scale_top5p_mean'].numel() == 0
+    assert losses['gate_grad_scale_bottom5p_mean'].numel() == 0
+    assert 'gate_grad_scale_min_1' not in losses
+    assert 'gate_grad_scale_max_1' not in losses
+    assert 'gate_grad_scale_top5p_mean_1' not in losses
+    assert 'gate_grad_scale_bottom5p_mean_1' not in losses
 
 
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():

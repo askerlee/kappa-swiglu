@@ -187,8 +187,6 @@ parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="pro
 parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply expert gate_proj_bias as an unscaled forward bias and use router confidence only to scale its gradients")
 parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=False,
                     help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope via tau = exp(gate_proj_bias * router_probs).clamp(0.5, 2.0)")
 parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="full", choices=["full"],
@@ -322,8 +320,6 @@ if args.router_ortho_loss_warmup_iterations < 0:
     raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
-if args.use_gate_proj_bias_as_lr_scaler and args.use_gate_proj_bias_as_slope_scaler:
-    raise ValueError("--use-gate-proj-bias-as-lr-scaler and --use-gate-proj-bias-as-slope-scaler are mutually exclusive")
 if args.gate_proj_bias_shift_abs_mean_half_slope_start > 0:
     args.gate_proj_bias_shift_abs_mean_half_slope_start = float(args.gate_proj_bias_shift_abs_mean_half_slope_start)
 else:
@@ -355,26 +351,12 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
 # router_probs instead of top_logits, so force that setting here.
 if args.matrix_optimizer == "aurora":
     args.exp_gate_proj_bias_input = "router_probs"
-# If use_gate_proj_bias_as_lr_scaler, then default to "router_probs" as the
-# input to the gate_proj_bias for more stable training.
-if (
-    args.use_gate_proj_bias_as_lr_scaler
-    and not exp_gate_proj_bias_input_was_specified
-    and args.exp_gate_proj_bias_input == parser.get_default("exp_gate_proj_bias_input")
-):
-    args.exp_gate_proj_bias_input = "router_probs"
 if (
     args.use_gate_proj_bias_as_slope_scaler
     and not exp_gate_proj_bias_input_was_specified
     and args.exp_gate_proj_bias_input == parser.get_default("exp_gate_proj_bias_input")
 ):
     args.exp_gate_proj_bias_input = "router_probs"
-if (
-    args.use_gate_proj_bias_as_lr_scaler
-    and not gate_proj_bias_l2_loss_weight_was_specified
-    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
-):
-    args.gate_proj_bias_l2_loss_weight = 2e-2
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -509,7 +491,6 @@ def build_model_meta(depth):
         router_ortho_loss_weight=args.router_ortho_loss_weight,
         router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        use_gate_proj_bias_as_lr_scaler=args.use_gate_proj_bias_as_lr_scaler,
         use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
         exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
@@ -1051,19 +1032,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
     selected_scores = losses.get('selected_scores', None)
-    gate_grad_scale_mean = losses.get('gate_grad_scale_mean', None)
     moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
-    gate_proj_bias_layer_to_stats_idx = {
-        layer_idx: stats_idx
-        for stats_idx, layer_idx in enumerate(
-            [
-                moe_layer_idx
-                for moe_layer_idx in moe_layer_indices
-                if hasattr(model.transformer.h[moe_layer_idx].mlp, 'experts')
-                and model.transformer.h[moe_layer_idx].mlp.experts.use_gate_proj_bias
-            ]
-        )
-    }
 
     for i in moe_layer_indices:
         layer = model.transformer.h[i]
@@ -1160,13 +1129,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
-
-                    gate_proj_bias_stats_idx = gate_proj_bias_layer_to_stats_idx.get(i)
-                    if gate_grad_scale_mean is not None and gate_proj_bias_stats_idx is not None:
-                        exp_gate_grad_scale_mean = gate_grad_scale_mean[gate_proj_bias_stats_idx].float()
-                        losses[f'gate_grad_scale_mean_{i}'] = exp_gate_grad_scale_mean.mean().item()
-                        losses[f'gate_grad_scale_mean_top_{i}'] = exp_gate_grad_scale_mean[top_indices].mean().item()
-                        losses[f'gate_grad_scale_mean_bottom_{i}'] = exp_gate_grad_scale_mean[bottom_indices].mean().item()
 
     for i in get_dense_gate_proj_bias_stat_layer_indices(model):
         layer = model.transformer.h[i]
@@ -1526,7 +1488,6 @@ while True:
         t0 = time.time()
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
-        orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
         orig_model.config.aux_loss_weight = aux_loss_weight
         if model is not orig_model and hasattr(model, "config"):
             model.config.aux_loss_weight = aux_loss_weight
@@ -1677,18 +1638,6 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
             if f'gate_proj_bias_shift_abs_mean_normalized_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
-            if f'gate_grad_scale_min_{i}' in losses:
-                log_data.update({f"inspect/gate_grad_scale_min_{i}": losses[f'gate_grad_scale_min_{i}']})
-            if f'gate_grad_scale_max_{i}' in losses:
-                log_data.update({f"inspect/gate_grad_scale_max_{i}": losses[f'gate_grad_scale_max_{i}']})
-            if f'gate_grad_scale_top5p_mean_{i}' in losses:
-                log_data.update({
-                    f"inspect/gate_grad_scale_top5p_mean_{i}": losses[f'gate_grad_scale_top5p_mean_{i}']
-                })
-            if f'gate_grad_scale_bottom5p_mean_{i}' in losses:
-                log_data.update({
-                    f"inspect/gate_grad_scale_bottom5p_mean_{i}": losses[f'gate_grad_scale_bottom5p_mean_{i}']
-                })
             if f'exp_gate_implicit_bias_flip_rate_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_implicit_bias_flip_rate_{i}": losses[f'exp_gate_implicit_bias_flip_rate_{i}']})
             if f'mean_abs_gate_{i}' in losses:
@@ -1721,12 +1670,6 @@ while True:
                 log_data.update({f"inspect/selected_scores_top_{i}": losses[f'selected_scores_top_{i}']})
             if f'selected_scores_bottom_{i}' in losses:
                 log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
-            if f'gate_grad_scale_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_grad_scale_mean_{i}": losses[f'gate_grad_scale_mean_{i}']})
-            if f'gate_grad_scale_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_grad_scale_mean_top_{i}": losses[f'gate_grad_scale_mean_top_{i}']})
-            if f'gate_grad_scale_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_grad_scale_mean_bottom_{i}": losses[f'gate_grad_scale_mean_bottom_{i}']})
 
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:

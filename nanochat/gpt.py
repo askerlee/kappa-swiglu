@@ -774,16 +774,9 @@ class Qwen3MLPExperts(nn.Module):
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
-        self.use_gate_proj_bias_as_lr_scaler = bool(
-            getattr(config, 'use_gate_proj_bias_as_lr_scaler', False)
-        )
         self.use_gate_proj_bias_as_slope_scaler = bool(
             getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
         )
-        if self.use_gate_proj_bias_as_lr_scaler and self.use_gate_proj_bias_as_slope_scaler:
-            raise ValueError(
-                "use_gate_proj_bias_as_lr_scaler and use_gate_proj_bias_as_slope_scaler are mutually exclusive"
-            )
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
@@ -874,54 +867,18 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
 
         selected_router_scores = selected_router_scores.float()
-        if self.use_gate_proj_bias_as_slope_scaler:
-            return gate_out_raw
 
         if self.exp_gate_proj_bias_input == 'router_probs':
             selected_router_scores = 4.0 * (2.0 * selected_router_scores - 1.0)
-        
-        if self.use_gate_proj_bias_as_lr_scaler:
-            router_confidence_gate_scale = (selected_router_scores * grad_scale).to(dtype=self.gate_proj.dtype)
-            gate_grad_scale = (
-                router_confidence_gate_scale.unsqueeze(-1)
-                * gate_proj_bias.unsqueeze(1)
-            )
-            # ExpTanh: An autograd class to save RAM by using in-place operations
-            # and manually computing the backward pass.
-            gate_grad_scale = ExpTanh.apply(gate_grad_scale)
-            if MANAGER.collect_load_balancing_stats:
-                gate_grad_scale_stats = gate_grad_scale.detach().float()
-                gate_grad_scale_mean = gate_grad_scale_stats
-                if gate_grad_scale_mean.ndim > 1:
-                    gate_grad_scale_mean = gate_grad_scale_mean.mean(
-                        dim=tuple(range(1, gate_grad_scale_mean.ndim))
-                    )
-                top_k = min(
-                    gate_grad_scale_stats.numel(),
-                    max(1, math.ceil(gate_grad_scale_stats.numel() * 5e-2)),
-                )
-                gate_grad_scale_top5p_mean    = gate_grad_scale_stats.reshape(-1).topk(top_k).values.mean()
-                gate_grad_scale_bottom5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k, largest=False).values.mean()
-                MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
-                MANAGER.add("gate_grad_scale_min",  gate_grad_scale_stats.amin())
-                MANAGER.add("gate_grad_scale_max",  gate_grad_scale_stats.amax())
-                MANAGER.add("gate_grad_scale_top5p_mean",    gate_grad_scale_top5p_mean)
-                MANAGER.add("gate_grad_scale_bottom5p_mean", gate_grad_scale_bottom5p_mean)
-            gate_out_raw = scale_grad(
-                gate_out_raw,
-                gate_grad_scale,
-            )
-            return gate_out_raw
-        
-        else:
-            router_confidence_gate_scale = scale_grad(selected_router_scores, grad_scale)
-            router_confidence_gate_scale = router_confidence_gate_scale.to(dtype=self.gate_proj.dtype)
-            gate_out_raw.addcmul_(
-                router_confidence_gate_scale.unsqueeze(-1),
-                gate_proj_bias.unsqueeze(1),
-                value=-1,
-            )
-            return gate_out_raw
+
+        router_confidence_gate_scale = scale_grad(selected_router_scores, grad_scale)
+        router_confidence_gate_scale = router_confidence_gate_scale.to(dtype=self.gate_proj.dtype)
+        gate_out_raw.addcmul_(
+            router_confidence_gate_scale.unsqueeze(-1),
+            gate_proj_bias.unsqueeze(1),
+            value=-1,
+        )
+        return gate_out_raw
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores, 
                                             max_scale=4.0, softness=2.0):
@@ -1031,12 +988,9 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         gate_proj_bias = self._materialize_gate_proj_bias()
-        gate_out_raw = self._apply_gate_proj_bias(
-            gate_out_raw,
-            gate_proj_bias,
-            selected_router_scores,
-            grad_scale=self.router_confidence_gate_bias_grad_scale,
-        )
+        # If use_gate_proj_bias_as_slope_scaler, then 
+        # _apply_gate_proj_bias does not change gate_out_raw.
+        # Instead, _apply_gate_slope_scaled_activation will act.
         self._update_gate_proj_bias_shift_stats(selected_router_scores)
         if self.use_gate_proj_bias_as_slope_scaler and selected_router_scores is not None:
             gate_out_acts = self._apply_gate_slope_scaled_activation(
@@ -1045,6 +999,12 @@ class Qwen3MLPExperts(nn.Module):
                 selected_router_scores,
             )
         else:
+            gate_out_raw = self._apply_gate_proj_bias(
+                gate_out_raw,
+                gate_proj_bias,
+                selected_router_scores,
+                grad_scale=self.router_confidence_gate_bias_grad_scale,
+            )
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
         self._update_gate_stats(gate_out_acts)
 
