@@ -946,7 +946,6 @@ class Qwen3MLPExperts(nn.Module):
     def _update_gate_proj_bias_shift_stats(self, selected_router_scores):
         if (
             not self.use_gate_proj_bias
-            or self.use_gate_proj_bias_as_slope_scaler
             or selected_router_scores is None
         ):
             return
@@ -954,6 +953,8 @@ class Qwen3MLPExperts(nn.Module):
         half_slope_start = self.gate_proj_bias_shift_abs_mean_half_slope_start
         full_slope_start = self.gate_proj_bias_shift_abs_mean_full_slope_start
         score_abs = selected_router_scores.detach().float().abs()
+        if self.use_gate_proj_bias_as_slope_scaler:
+            score_abs = 4.0 * score_abs
         active_mask = score_abs > 0
         if not active_mask.any():
             return
