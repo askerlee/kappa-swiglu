@@ -1587,6 +1587,8 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
             "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
+            "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
+            "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": losses['gate_proj_bias_shift_abs_mean_normalized'],
             "train/gate_proj_bias_shift_abs_mean_loss_step": losses['gate_proj_bias_shift_abs_mean_loss'],
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
@@ -1636,6 +1638,10 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_bottom_{i}": losses[f'gate_proj_bias_abs_mean_bottom_{i}']})
             if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_top5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_top5p_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_bottom5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{i}']})
             if f'gate_proj_bias_shift_abs_mean_normalized_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
             if f'exp_gate_implicit_bias_flip_rate_{i}' in losses:

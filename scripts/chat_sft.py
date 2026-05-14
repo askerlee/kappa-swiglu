@@ -902,6 +902,8 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss']),
             "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean']),
+            "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
+            "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
             "train/gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_loss']),
             "train/gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
@@ -948,6 +950,12 @@ while True:
                 log_data[f"inspect/gate_proj_bias_abs_mean_top_{i}"] = losses[f'gate_proj_bias_abs_mean_top_{i}']
             if f'gate_proj_bias_abs_mean_bottom_{i}' in losses:
                 log_data[f"inspect/gate_proj_bias_abs_mean_bottom_{i}"] = losses[f'gate_proj_bias_abs_mean_bottom_{i}']
+            if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_shift_abs_mean_{i}"] = losses[f'gate_proj_bias_shift_abs_mean_{i}']
+            if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_shift_abs_top5p_mean_{i}"] = losses[f'gate_proj_bias_shift_abs_top5p_mean_{i}']
+            if f'gate_proj_bias_shift_abs_bottom5p_mean_{i}' in losses:
+                log_data[f"inspect/gate_proj_bias_shift_abs_bottom5p_mean_{i}"] = losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{i}']
             if f'mean_abs_gate_{i}' in losses:
                 log_data[f"inspect/mean_abs_gate_{i}"] = losses[f'mean_abs_gate_{i}']
             if f'active_frac_gate_{i}' in losses:

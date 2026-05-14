@@ -154,6 +154,13 @@ def band_hinge_loss(value, half_slope_start, full_slope_start):
     return 0.5 * F.relu(value - half_slope_start) + 0.5 * F.relu(value - full_slope_start)
 
 
+def _mean_extreme_percentile(values: torch.Tensor, fraction: float, largest: bool) -> torch.Tensor:
+    if values.numel() == 0:
+        return values.new_zeros(())
+    k = max(1, math.ceil(values.numel() * fraction))
+    return values.topk(k, largest=largest).values.mean()
+
+
 class SoftcapInPlace(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, softcap):
@@ -944,6 +951,15 @@ class Qwen3MLPExperts(nn.Module):
         total_active_tokens = active_token_counts.sum()
         shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
+        active_expert_mask = active_token_counts > 0
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_top5p_mean",
+            _mean_extreme_percentile(
+                shift_abs_mean_per_expert[active_expert_mask],
+                fraction=0.05,
+                largest=True,
+            ).detach(),
+        )
         if half_slope_start is not None:
             active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
             total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
@@ -1011,6 +1027,15 @@ class Qwen3MLPExperts(nn.Module):
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
+        active_expert_mask = active_token_counts > 0
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_bottom5p_mean",
+            _mean_extreme_percentile(
+                slope_scale_mean_per_expert[active_expert_mask],
+                fraction=0.05,
+                largest=False,
+            ).detach(),
+        )
         active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
         total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
         normalized_slope_scale_mean = (
@@ -1726,8 +1751,8 @@ class GPT(nn.Module):
                    'gate_grad_scale_mean': None,
                    'gate_grad_scale_min': 0,
                    'gate_grad_scale_max': 0,
-                   'gate_grad_scale_top5p_mean': 0,
-                   'gate_grad_scale_bottom5p_mean': 0,
+                   'gate_proj_bias_shift_abs_top5p_mean': 0,
+                   'gate_proj_bias_shift_abs_bottom5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'gate_proj_bias_shift_abs_mean_loss': 0,
@@ -1770,20 +1795,20 @@ class GPT(nn.Module):
             else torch.zeros((0,), device=x.device)
         )
         MANAGER.reset("gate_grad_scale_max")
-        gate_grad_scale_top5p_mean = MANAGER.aggregate("gate_grad_scale_top5p_mean")
-        losses['gate_grad_scale_top5p_mean'] = (
-            gate_grad_scale_top5p_mean.detach()
-            if gate_grad_scale_top5p_mean is not None
+        gate_proj_bias_shift_abs_top5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_top5p_mean")
+        losses['gate_proj_bias_shift_abs_top5p_mean'] = (
+            gate_proj_bias_shift_abs_top5p_mean.detach()
+            if gate_proj_bias_shift_abs_top5p_mean is not None
             else torch.zeros((0,), device=x.device)
         )
-        MANAGER.reset("gate_grad_scale_top5p_mean")
-        gate_grad_scale_bottom5p_mean = MANAGER.aggregate("gate_grad_scale_bottom5p_mean")
-        losses['gate_grad_scale_bottom5p_mean'] = (
-            gate_grad_scale_bottom5p_mean.detach()
-            if gate_grad_scale_bottom5p_mean is not None
+        MANAGER.reset("gate_proj_bias_shift_abs_top5p_mean")
+        gate_proj_bias_shift_abs_bottom5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_bottom5p_mean")
+        losses['gate_proj_bias_shift_abs_bottom5p_mean'] = (
+            gate_proj_bias_shift_abs_bottom5p_mean.detach()
+            if gate_proj_bias_shift_abs_bottom5p_mean is not None
             else torch.zeros((0,), device=x.device)
         )
-        MANAGER.reset("gate_grad_scale_bottom5p_mean")
+        MANAGER.reset("gate_proj_bias_shift_abs_bottom5p_mean")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
             gate_proj_bias_shift_abs_mean.mean().detach()
@@ -1836,13 +1861,13 @@ class GPT(nn.Module):
                 losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][gate_proj_bias_stats_idx].item()
             if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_max'].shape[0]:
                 losses[f'gate_grad_scale_max_{layer_idx}'] = losses['gate_grad_scale_max'][gate_proj_bias_stats_idx].item()
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
-                losses[f'gate_grad_scale_top5p_mean_{layer_idx}'] = (
-                    losses['gate_grad_scale_top5p_mean'][gate_proj_bias_stats_idx].item()
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_top5p_mean'].shape[0]:
+                losses[f'gate_proj_bias_shift_abs_top5p_mean_{layer_idx}'] = (
+                    losses['gate_proj_bias_shift_abs_top5p_mean'][gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_bottom5p_mean'].shape[0]:
-                losses[f'gate_grad_scale_bottom5p_mean_{layer_idx}'] = (
-                    losses['gate_grad_scale_bottom5p_mean'][gate_proj_bias_stats_idx].item()
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape[0]:
+                losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
+                    losses['gate_proj_bias_shift_abs_bottom5p_mean'][gate_proj_bias_stats_idx].item()
                 )
         
         if targets is not None:
