@@ -95,12 +95,6 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
-parser.add_argument("--gate-proj-bias-shift-abs-mean-half-slope-start", type=float, default=0.12,
-                    help="lower threshold a for the normalized gate-proj-bias band loss; below this there is no penalty, and <= 0 disables the loss")
-parser.add_argument("--gate-proj-bias-shift-abs-mean-full-slope-start", type=float, default=0.156,
-                    help="upper threshold b for the normalized gate-proj-bias band loss; slope is half-strength between a and b and full-strength above b")
-parser.add_argument("--gate-proj-bias-abs-mean-loss-weight-scale", type=float, default=0.05,
-                    help="scale factor applied to the L1 loss weight to get the exp gate projection bias abs-mean hinge loss weight")
 parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=None,
                     help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope (default: inherit from base model)")
 parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full"],
@@ -140,34 +134,12 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
 )
-gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-abs-mean-loss-weight-scale',
-)
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
-if args.gate_proj_bias_shift_abs_mean_half_slope_start > 0:
-    args.gate_proj_bias_shift_abs_mean_half_slope_start = float(args.gate_proj_bias_shift_abs_mean_half_slope_start)
-else:
-    args.gate_proj_bias_shift_abs_mean_half_slope_start = None
-if args.gate_proj_bias_shift_abs_mean_full_slope_start > 0:
-    args.gate_proj_bias_shift_abs_mean_full_slope_start = float(args.gate_proj_bias_shift_abs_mean_full_slope_start)
-else:
-    args.gate_proj_bias_shift_abs_mean_full_slope_start = None
-if (
-    args.gate_proj_bias_shift_abs_mean_half_slope_start is not None
-    and args.gate_proj_bias_shift_abs_mean_full_slope_start is not None
-    and args.gate_proj_bias_shift_abs_mean_full_slope_start <= args.gate_proj_bias_shift_abs_mean_half_slope_start
-):
-    raise ValueError(
-        "--gate-proj-bias-shift-abs-mean-full-slope-start must be > --gate-proj-bias-shift-abs-mean-half-slope-start"
-    )
-if args.gate_proj_bias_abs_mean_loss_weight_scale < 0:
-    raise ValueError("--gate-proj-bias-abs-mean-loss-weight-scale must be >= 0")
 user_config = vars(args).copy()
 exp_gate_proj_bias_mode_was_specified = arg_was_explicitly_set(sys.argv[1:], '--exp-gate-proj-bias-mode')
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
@@ -251,14 +223,12 @@ else:
 user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
 user_config["use_gate_proj_bias_as_slope_scaler"] = args.use_gate_proj_bias_as_slope_scaler
 user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
-user_config["gate_proj_bias_abs_mean_loss_weight_scale"] = args.gate_proj_bias_abs_mean_loss_weight_scale
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "exp_gate_proj_bias_mode": args.exp_gate_proj_bias_mode,
             "use_gate_proj_bias_as_slope_scaler": args.use_gate_proj_bias_as_slope_scaler,
             "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
-            "gate_proj_bias_abs_mean_loss_weight_scale": args.gate_proj_bias_abs_mean_loss_weight_scale,
         },
         allow_val_change=True,
     )
@@ -276,15 +246,11 @@ else:
         f"{args.use_aux_free_load_balancing}"
     )
 model.set_aux_free_load_balancing(args.use_aux_free_load_balancing)
-model.config.gate_proj_bias_shift_abs_mean_half_slope_start = args.gate_proj_bias_shift_abs_mean_half_slope_start
-model.config.gate_proj_bias_shift_abs_mean_full_slope_start = args.gate_proj_bias_shift_abs_mean_full_slope_start
 user_config["use_aux_free_load_balancing"] = args.use_aux_free_load_balancing
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "use_aux_free_load_balancing": args.use_aux_free_load_balancing,
-            "gate_proj_bias_shift_abs_mean_half_slope_start": args.gate_proj_bias_shift_abs_mean_half_slope_start,
-            "gate_proj_bias_shift_abs_mean_full_slope_start": args.gate_proj_bias_shift_abs_mean_full_slope_start,
         },
         allow_val_change=True,
     )
@@ -819,12 +785,6 @@ while True:
     synchronize()
     t0 = time.time()
     gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(step, max(progress, approx_progress))
-    gate_proj_bias_shift_abs_mean_loss_weight = (
-        args.gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
-    )
-    gate_proj_bias_shift_abs_mean_effective_loss_weight = (
-        0.0 if args.use_gate_proj_bias_as_slope_scaler else gate_proj_bias_shift_abs_mean_loss_weight
-    )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
@@ -837,10 +797,6 @@ while True:
         if gate_proj_bias_l2_loss is None:
             gate_proj_bias_l2_loss = 0.0
         loss = loss + args.gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
-        gate_proj_bias_shift_abs_mean_loss = losses.get("gate_proj_bias_shift_abs_mean_loss")
-        if gate_proj_bias_shift_abs_mean_loss is None:
-            gate_proj_bias_shift_abs_mean_loss = 0.0
-        loss = loss + gate_proj_bias_shift_abs_mean_effective_loss_weight * gate_proj_bias_shift_abs_mean_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -905,9 +861,7 @@ while True:
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
-            "train/gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_loss']),
             "train/gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
-            "train/gate_proj_bias_shift_abs_mean_loss_weight": gate_proj_bias_shift_abs_mean_effective_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,

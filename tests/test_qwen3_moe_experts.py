@@ -173,143 +173,24 @@ def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
     actual = experts(x, selected_router_scores=router_probs)
     torch.testing.assert_close(actual, expected)
 
-def test_rank1_gate_projection_bias_matches_outer_product_in_forward():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1",
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.randn(config.n_exp, 5)
-
-    with torch.no_grad():
-        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
-        experts.gate_proj_bias_expert.copy_(torch.randn_like(experts.gate_proj_bias_expert))
-        experts.gate_proj_bias_intermediate.copy_(torch.randn_like(experts.gate_proj_bias_intermediate))
-        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
-        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-        gate_proj_bias = torch.outer(experts.gate_proj_bias_expert, experts.gate_proj_bias_intermediate)
-        raw_gate_out = torch.bmm(x, experts.gate_proj)
-        raw_gate_out = torch.baddbmm(
-            raw_gate_out,
-            selected_router_scores.unsqueeze(-1),
-            gate_proj_bias.unsqueeze(1),
-            beta=1,
-            alpha=-1,
+def test_invalid_rank1_gate_projection_bias_modes_are_rejected():
+    with pytest.raises(ValueError, match="exp_gate_proj_bias_mode"):
+        GPTConfig(
+            n_exp=2,
+            n_embd=4,
+            use_exp_gate_proj_bias=True,
+            exp_gate_proj_bias_mode="rank1",
+            debug=False,
         )
-        expected_gate_out_acts = experts.act_fn(raw_gate_out)
 
-        fc_out = torch.bmm(x, experts.c_fc)
-        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
-
-    actual = experts(x, selected_router_scores=selected_router_scores)
-    torch.testing.assert_close(actual, expected)
-
-
-def test_rank1_residual_gate_projection_bias_adds_dense_residual_in_forward():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1_residual",
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.randn(config.n_exp, 5)
-
-    with torch.no_grad():
-        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
-        experts.gate_proj_bias_expert.copy_(torch.randn_like(experts.gate_proj_bias_expert))
-        experts.gate_proj_bias_intermediate.copy_(torch.randn_like(experts.gate_proj_bias_intermediate))
-        experts.gate_proj_bias_residual.copy_(torch.randn_like(experts.gate_proj_bias_residual))
-        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
-        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
-        gate_proj_bias = (
-            torch.outer(experts.gate_proj_bias_expert, experts.gate_proj_bias_intermediate)
-            + experts.gate_proj_bias_residual
+    with pytest.raises(ValueError, match="exp_gate_proj_bias_mode"):
+        GPTConfig(
+            n_exp=2,
+            n_embd=4,
+            use_exp_gate_proj_bias=True,
+            exp_gate_proj_bias_mode="rank1_residual",
+            debug=False,
         )
-        raw_gate_out = torch.bmm(x, experts.gate_proj)
-        raw_gate_out = torch.baddbmm(
-            raw_gate_out,
-            selected_router_scores.unsqueeze(-1),
-            gate_proj_bias.unsqueeze(1),
-            beta=1,
-            alpha=-1,
-        )
-        expected_gate_out_acts = experts.act_fn(raw_gate_out)
-
-        fc_out = torch.bmm(x, experts.c_fc)
-        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
-
-    actual = experts(x, selected_router_scores=selected_router_scores)
-    torch.testing.assert_close(actual, expected)
-
-
-def test_rank1_residual_gate_projection_bias_residual_uses_tenth_lr():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_layer=1,
-        moe_start_layer=0,
-        moe_layer_stride=1,
-        n_exp=2,
-        n_embd=4,
-        n_head=1,
-        n_kv_head=1,
-        use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1_residual",
-        debug=False,
-    )
-    model = GPT(config)
-    optimizer = model.setup_optimizer(
-        embedding_lr=0.3,
-        gate_proj_bias_lr_final_scale=0.01,
-        gate_proj_bias_lr_max_scale=0.5,
-    )
-
-    bias_group = next(group for group in optimizer.param_groups if group.get("name") == "gate_proj_bias")
-    residual_group = next(group for group in optimizer.param_groups if group.get("name") == "gate_proj_bias_residual")
-
-    assert bias_group["base_lr"] > 0
-    assert residual_group["base_lr"] == pytest.approx(0.1 * bias_group["base_lr"])
-    assert residual_group["lr_scale_max"] == bias_group["lr_scale_max"]
-    assert residual_group["lr_scale_end"] == bias_group["lr_scale_end"]
-
-
-def test_compute_gate_proj_bias_magnitude_losses_reports_residual_l2_for_rank1_residual():
-    torch.manual_seed(0)
-    config = GPTConfig(
-        n_layer=1,
-        moe_start_layer=0,
-        moe_layer_stride=1,
-        n_exp=2,
-        n_embd=4,
-        n_head=1,
-        n_kv_head=1,
-        use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1_residual",
-        debug=False,
-    )
-    model = GPT(config)
-    experts = model.transformer.h[0].mlp.experts
-
-    with torch.no_grad():
-        experts.gate_proj_bias_expert.fill_(1.0)
-        experts.gate_proj_bias_intermediate.zero_()
-        experts.gate_proj_bias_residual.fill_(2.0)
-
-    gate_proj_bias_l2_loss, gate_proj_bias_residual_l2_loss, gate_proj_bias_shift_abs_mean_loss = model.compute_gate_proj_bias_magnitude_losses()
-
-    assert gate_proj_bias_l2_loss.item() == pytest.approx(4.0)
-    assert gate_proj_bias_residual_l2_loss.item() == pytest.approx(4.0)
-    assert gate_proj_bias_shift_abs_mean_loss.item() == pytest.approx(0.0)
 
 
 def test_gate_activation_stats_match_logged_formulas():
@@ -330,7 +211,12 @@ def test_gate_activation_stats_match_logged_formulas():
         experts.c_fc.copy_(torch.randn_like(experts.c_fc))
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
 
-    _ = experts(x)
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        _ = experts(x)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
 
     gate = experts.act_fn(torch.bmm(x, experts.gate_proj)).abs().float()
     gate_sum = gate.sum(dim=-1)
@@ -559,54 +445,11 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         torch.testing.assert_close(penalized_loss, base_loss)
 
 
-def test_gate_proj_bias_shift_abs_mean_loss_uses_piecewise_linear_band():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
-        gate_proj_bias_shift_abs_mean_full_slope_start=4.5,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    def run_case(bias_value):
-        with torch.no_grad():
-            experts.gate_proj_bias.fill_(bias_value)
-        MANAGER.reset("gate_proj_bias_shift_abs_mean")
-        MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-        MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
-        experts._update_gate_proj_bias_shift_stats(torch.tensor([[1.0], [0.0]]))
-        return (
-            MANAGER.aggregate("gate_proj_bias_shift_abs_mean").item(),
-            MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized").item(),
-            MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss").item(),
-        )
-
-    _, normalized_below, loss_below = run_case(2.0)
-    _, normalized_mid, loss_mid = run_case(3.5)
-    shift_abs_mean_above, normalized_above, loss_above = run_case(6.0)
-
-    MANAGER.reset("gate_proj_bias_shift_abs_mean")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
-
-    assert normalized_below == 2.0
-    assert loss_below == 0.0
-    assert normalized_mid == 3.5
-    assert loss_mid == 0.25
-    assert shift_abs_mean_above == 6.0
-    assert normalized_above == 6.0
-    assert loss_above == 2.25
-
-
 def test_gate_proj_bias_shift_abs_mean_metrics_are_expert_specific_then_sqrt_token_weighted():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_exp_gate_proj_bias=True,
-        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
-        gate_proj_bias_shift_abs_mean_full_slope_start=4.5,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -617,27 +460,27 @@ def test_gate_proj_bias_shift_abs_mean_metrics_are_expert_specific_then_sqrt_tok
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     selected_router_scores = torch.tensor([
         [1.0, 1.0, 0.0],
         [1.0, 0.0, 0.0],
     ])
-    experts._update_gate_proj_bias_shift_stats(selected_router_scores)
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        experts._update_gate_proj_bias_shift_stats(selected_router_scores)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
 
     shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
     normalized_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
-    shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     torch.testing.assert_close(shift_abs_mean, torch.tensor([10.0 / 3.0]))
     expected_normalized = torch.tensor([(2.0 * (2.0**0.5) + 6.0) / ((2.0**0.5) + 1.0)])
     torch.testing.assert_close(normalized_shift_abs_mean, expected_normalized)
-    expected_loss = torch.tensor(2.25 / (2.0**0.5 + 1.0))
-    torch.testing.assert_close(shift_abs_mean_loss, expected_loss)
 
 
 def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
@@ -646,8 +489,6 @@ def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
         n_embd=4,
         use_exp_gate_proj_bias=True,
         use_gate_proj_bias_as_slope_scaler=True,
-        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
-        gate_proj_bias_shift_abs_mean_full_slope_start=4.5,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -657,7 +498,6 @@ def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     selected_router_scores = torch.tensor([
         [1.0, 0.5],
@@ -667,11 +507,15 @@ def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
         experts.gate_proj_bias,
         selected_router_scores,
     )
-    experts._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        experts._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
 
     shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
     normalized_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
-    shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
 
     expected_scale_1 = math.exp(math.log(4.0) * math.tanh(-2.0))
     expected_scale_2 = math.exp(math.log(4.0) * math.tanh(-1.0))
@@ -679,11 +523,9 @@ def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     torch.testing.assert_close(shift_abs_mean, expected_mean)
     torch.testing.assert_close(normalized_shift_abs_mean, expected_mean)
-    assert shift_abs_mean_loss == 0
 
 
 def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled():
@@ -700,7 +542,6 @@ def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled()
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
     old_collect = MANAGER.collect_load_balancing_stats
     MANAGER.collect_load_balancing_stats = False
@@ -713,12 +554,10 @@ def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled()
 
     assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean") is None
     assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized") is None
-    assert MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss") == 0
     assert experts.last_gate_stats is None
 
     MANAGER.reset("gate_proj_bias_shift_abs_mean")
     MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
 
 
 def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
@@ -826,14 +665,10 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric_in_slope_scale
     )
 
 
-    assert losses['gate_grad_scale_min'].numel() == 0
-    assert losses['gate_grad_scale_max'].numel() == 0
-    assert losses['gate_grad_scale_top5p_mean'].numel() == 0
-    assert losses['gate_grad_scale_bottom5p_mean'].numel() == 0
-    assert 'gate_grad_scale_min_1' not in losses
-    assert 'gate_grad_scale_max_1' not in losses
-    assert 'gate_grad_scale_top5p_mean_1' not in losses
-    assert 'gate_grad_scale_bottom5p_mean_1' not in losses
+    assert losses['gate_proj_bias_shift_abs_top5p_mean'].numel() == 1
+    assert losses['gate_proj_bias_shift_abs_bottom5p_mean'].numel() == 1
+    assert 'gate_proj_bias_shift_abs_top5p_mean_1' in losses
+    assert 'gate_proj_bias_shift_abs_bottom5p_mean_1' in losses
 
 
 def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in():
@@ -917,24 +752,6 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
     assert experts.gate_proj_bias is not None
     assert experts.gate_proj_bias.ndim == 2
     assert experts.gate_proj_bias.shape == (config.n_exp, 4 * config.n_embd)
-
-
-def test_rank1_gate_projection_bias_has_expected_factor_shapes_when_enabled():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1",
-        debug=False,
-    )
-
-    experts = Qwen3MLPExperts(config)
-
-    assert experts.gate_proj_bias is None
-    assert experts.gate_proj_bias_expert is not None
-    assert experts.gate_proj_bias_intermediate is not None
-    assert experts.gate_proj_bias_expert.shape == (config.n_exp,)
-    assert experts.gate_proj_bias_intermediate.shape == (4 * config.n_embd,)
 
 
 def test_gate_projection_bias_respects_start_layer_cutoff():

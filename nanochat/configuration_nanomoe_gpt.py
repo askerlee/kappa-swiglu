@@ -33,8 +33,6 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
-        gate_proj_bias_shift_abs_mean_half_slope_start: float | None = None,  # applied to E[|s*b|] / E[|s|], so it behaves like a bias-magnitude budget
-        gate_proj_bias_shift_abs_mean_full_slope_start: float | None = None,  # band loss: no penalty below half-slope start, half-slope until this point, then full slope
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -120,25 +118,6 @@ class GPTConfig:
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
         self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
-        if gate_proj_bias_shift_abs_mean_half_slope_start is None:
-            self.gate_proj_bias_shift_abs_mean_half_slope_start = None
-            self.gate_proj_bias_shift_abs_mean_full_slope_start = None
-        else:
-            self.gate_proj_bias_shift_abs_mean_half_slope_start = float(gate_proj_bias_shift_abs_mean_half_slope_start)
-            if self.gate_proj_bias_shift_abs_mean_half_slope_start <= 0:
-                raise ValueError(
-                    "gate_proj_bias_shift_abs_mean_half_slope_start must be > 0 when specified, "
-                    f"got {gate_proj_bias_shift_abs_mean_half_slope_start}"
-                )
-            if gate_proj_bias_shift_abs_mean_full_slope_start is None:
-                self.gate_proj_bias_shift_abs_mean_full_slope_start = 1.3 * self.gate_proj_bias_shift_abs_mean_half_slope_start
-            else:
-                self.gate_proj_bias_shift_abs_mean_full_slope_start = float(gate_proj_bias_shift_abs_mean_full_slope_start)
-                if self.gate_proj_bias_shift_abs_mean_full_slope_start <= self.gate_proj_bias_shift_abs_mean_half_slope_start:
-                    raise ValueError(
-                        "gate_proj_bias_shift_abs_mean_full_slope_start must be > gate_proj_bias_shift_abs_mean_half_slope_start, "
-                        f"got lower={self.gate_proj_bias_shift_abs_mean_half_slope_start} and upper={gate_proj_bias_shift_abs_mean_full_slope_start}"
-                    )
         self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight

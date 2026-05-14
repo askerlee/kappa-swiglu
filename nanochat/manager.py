@@ -15,9 +15,6 @@ class MOEManager:
             "router_z_loss": [],
             "router_ortho_loss": [],
             "router_ortho_loss_gate_proj": [],
-            "gate_proj_bias_shift_abs_mean_loss": [],
-            "gate_grad_scale_min": [],
-            "gate_grad_scale_max": [],
             "gate_proj_bias_shift_abs_top5p_mean": [],
             "gate_proj_bias_shift_abs_bottom5p_mean": [],
             "gate_grad_scale_mean": [],
@@ -34,10 +31,6 @@ class MOEManager:
         self._expert_utilities_size = 0
         self._selected_scores_buffer = None
         self._selected_scores_size = 0
-        self._gate_grad_scale_min_buffer = None
-        self._gate_grad_scale_min_size = 0
-        self._gate_grad_scale_max_buffer = None
-        self._gate_grad_scale_max_size = 0
         self._gate_proj_bias_shift_abs_top5p_mean_buffer = None
         self._gate_proj_bias_shift_abs_top5p_mean_size = 0
         self._gate_proj_bias_shift_abs_bottom5p_mean_buffer = None
@@ -55,8 +48,6 @@ class MOEManager:
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
                                      "selected_scores",
-                                     "gate_grad_scale_min",
-                                     "gate_grad_scale_max",
                                      "gate_proj_bias_shift_abs_top5p_mean",
                                      "gate_proj_bias_shift_abs_bottom5p_mean",
                                      "gate_grad_scale_mean",
@@ -72,12 +63,6 @@ class MOEManager:
             return
         if name == "selected_scores":
             self._selected_scores_size = 0
-            return
-        if name == "gate_grad_scale_min":
-            self._gate_grad_scale_min_size = 0
-            return
-        if name == "gate_grad_scale_max":
-            self._gate_grad_scale_max_size = 0
             return
         if name == "gate_proj_bias_shift_abs_top5p_mean":
             self._gate_proj_bias_shift_abs_top5p_mean_size = 0
@@ -133,30 +118,6 @@ class MOEManager:
                 new_size = self._selected_scores_size + 1
                 self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
                 self._selected_scores_size = new_size
-            return
-        if name == "gate_grad_scale_min":
-            with torch.inference_mode(False):
-                if self._gate_grad_scale_min_buffer is None:
-                    self._gate_grad_scale_min_buffer = torch.empty(
-                        (self._tensor_var_capacity,),
-                        device=value.device,
-                        dtype=value.dtype,
-                    )
-                new_size = self._gate_grad_scale_min_size + 1
-                self._gate_grad_scale_min_buffer[self._gate_grad_scale_min_size:new_size].copy_(value.reshape(1))
-                self._gate_grad_scale_min_size = new_size
-            return
-        if name == "gate_grad_scale_max":
-            with torch.inference_mode(False):
-                if self._gate_grad_scale_max_buffer is None:
-                    self._gate_grad_scale_max_buffer = torch.empty(
-                        (self._tensor_var_capacity,),
-                        device=value.device,
-                        dtype=value.dtype,
-                    )
-                new_size = self._gate_grad_scale_max_size + 1
-                self._gate_grad_scale_max_buffer[self._gate_grad_scale_max_size:new_size].copy_(value.reshape(1))
-                self._gate_grad_scale_max_size = new_size
             return
         if name == "gate_proj_bias_shift_abs_top5p_mean":
             with torch.inference_mode(False):
@@ -252,16 +213,6 @@ class MOEManager:
             if self._selected_scores_buffer is None or self._selected_scores_size == 0:
                 return None
             values = self._selected_scores_buffer[:self._selected_scores_size]
-            return values
-        elif name == "gate_grad_scale_min":
-            if self._gate_grad_scale_min_buffer is None or self._gate_grad_scale_min_size == 0:
-                return None
-            values = self._gate_grad_scale_min_buffer[:self._gate_grad_scale_min_size]
-            return values
-        elif name == "gate_grad_scale_max":
-            if self._gate_grad_scale_max_buffer is None or self._gate_grad_scale_max_size == 0:
-                return None
-            values = self._gate_grad_scale_max_buffer[:self._gate_grad_scale_max_size]
             return values
         elif name == "gate_proj_bias_shift_abs_top5p_mean":
             if (

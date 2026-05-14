@@ -133,27 +133,6 @@ class IdentityWithScaledGrad(torch.autograd.Function):
 
         return grad_input, grad_alpha
 
-
-class ExpTanh(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input_):
-        output = input_.tanh()
-        output.exp_()
-        ctx.save_for_backward(output)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):  # pragma: no cover
-        (output,) = ctx.saved_tensors
-        tanh_output = output.log()
-        grad_input = grad_output * output * (1 - tanh_output.square())
-        return grad_input
-
-
-def band_hinge_loss(value, half_slope_start, full_slope_start):
-    return 0.5 * F.relu(value - half_slope_start) + 0.5 * F.relu(value - full_slope_start)
-
-
 def _mean_extreme_percentile(values: torch.Tensor, fraction: float, largest: bool) -> torch.Tensor:
     if values.numel() == 0:
         return values.new_zeros(())
@@ -811,16 +790,6 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.gate_proj_bias_shift_abs_mean_half_slope_start = getattr(
-            config,
-            'gate_proj_bias_shift_abs_mean_half_slope_start',
-            None,
-        )
-        self.gate_proj_bias_shift_abs_mean_full_slope_start = getattr(
-            config,
-            'gate_proj_bias_shift_abs_mean_full_slope_start',
-            None,
-        )
         # Since we update router_confidence_gate_bias_grad_scale 
         # continuously during training, if it's just a float, Dynamo would
         # compile guards around its value and recompile whenever it changes.
@@ -921,8 +890,6 @@ class Qwen3MLPExperts(nn.Module):
         ):
             return
 
-        half_slope_start = self.gate_proj_bias_shift_abs_mean_half_slope_start
-        full_slope_start = self.gate_proj_bias_shift_abs_mean_full_slope_start
         score_abs = selected_router_scores.detach().float().abs()
         if self.use_gate_proj_bias_as_slope_scaler:
             score_abs = 4.0 * score_abs
@@ -960,47 +927,23 @@ class Qwen3MLPExperts(nn.Module):
                 largest=True,
             ).detach(),
         )
-        if half_slope_start is not None:
-            active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
-            total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
-            # Normalize by the active confidence scale so one threshold transfers better
-            # across architectures whose selected-score magnitudes differ.
-            normalized_shift_abs_mean_per_expert = bias_abs_mean_per_expert
-            normalized_shift_abs_mean = (
-                normalized_shift_abs_mean_per_expert * active_token_counts_sqrt
-            ).sum() / total_active_tokens_sqrt
-            
-            '''
-            NOTE:
-            You can observe spikes of gate_proj_bias_shift_abs_mean_loss right after CORE eval.
-            During CORE, the model runs many targets=None forwards in core_eval.py:145.
-            In each forward, gpt.py still calls _update_gate_proj_bias_shift_stats(...), which does:
-            MANAGER.add("gate_proj_bias_shift_abs_mean", ...)
-            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", ...)
-            MANAGER.add("gate_proj_bias_shift_abs_mean_loss", ...)
-            In GPT.forward(), the first two inference stats are aggregated and reset 
-            even when targets is None.
-            But gate_proj_bias_shift_abs_mean_loss is only reset in the targets is 
-            not None branch.
-            So CORE eval can accumulate a big gate_proj_bias_shift_abs_mean_loss buffer 
-            across many inference examples, and then the very next training forward reads 
-            that leftover buffer via compute_gate_proj_bias_magnitude_losses() at gpt.py 
-            and logs it as if it were a training-step value.
-            The buffer is **intentionally** not reset to remind us how different the inference
-            distribution can be from training.
-            '''
-            gate_proj_bias_shift_abs_mean_loss_per_expert = band_hinge_loss(
-                normalized_shift_abs_mean_per_expert,
-                half_slope_start,
-                full_slope_start,
-            ) * active_token_counts_sqrt
-            gate_proj_bias_shift_abs_mean_loss = gate_proj_bias_shift_abs_mean_loss_per_expert.sum() / total_active_tokens_sqrt
-            if self.use_gate_proj_bias_as_slope_scaler:
-                gate_proj_bias_shift_abs_mean_loss = gate_proj_bias_shift_abs_mean_loss.detach()
-            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
-            MANAGER.add("gate_proj_bias_shift_abs_mean_loss", gate_proj_bias_shift_abs_mean_loss)
-        else:
-            MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", shift_abs_mean.detach())
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_bottom5p_mean",
+            _mean_extreme_percentile(
+                shift_abs_mean_per_expert[active_expert_mask],
+                fraction=0.05,
+                largest=False,
+            ).detach(),
+        )
+        active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
+        total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
+        # Normalize by the active confidence scale so one threshold transfers better
+        # across architectures whose selected-score magnitudes differ.
+        normalized_shift_abs_mean_per_expert = bias_abs_mean_per_expert
+        normalized_shift_abs_mean = (
+            normalized_shift_abs_mean_per_expert * active_token_counts_sqrt
+        ).sum() / total_active_tokens_sqrt
+        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales, selected_router_scores):
@@ -1028,6 +971,14 @@ class Qwen3MLPExperts(nn.Module):
         ).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
         active_expert_mask = active_token_counts > 0
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_top5p_mean",
+            _mean_extreme_percentile(
+                slope_scale_mean_per_expert[active_expert_mask],
+                fraction=0.05,
+                largest=True,
+            ).detach(),
+        )
         MANAGER.add(
             "gate_proj_bias_shift_abs_bottom5p_mean",
             _mean_extreme_percentile(
@@ -1332,12 +1283,7 @@ class GPT(nn.Module):
 
         device = self.transformer.wte.weight.device
         l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
-        abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
-        if abs_mean_loss is None:
-            abs_mean_loss = torch.zeros((), device=device)
-        elif not isinstance(abs_mean_loss, torch.Tensor):
-            abs_mean_loss = torch.as_tensor(abs_mean_loss, device=device)
-        return l2_loss, abs_mean_loss
+        return l2_loss
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1749,13 +1695,10 @@ class GPT(nn.Module):
                    'router_ortho_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
                    'gate_grad_scale_mean': None,
-                   'gate_grad_scale_min': 0,
-                   'gate_grad_scale_max': 0,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
-                   'gate_proj_bias_shift_abs_mean_loss': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -1781,20 +1724,6 @@ class GPT(nn.Module):
             else None
         )
         MANAGER.reset("gate_grad_scale_mean")
-        gate_grad_scale_min = MANAGER.aggregate("gate_grad_scale_min")
-        losses['gate_grad_scale_min'] = (
-            gate_grad_scale_min.detach()
-            if gate_grad_scale_min is not None
-            else torch.zeros((0,), device=x.device)
-        )
-        MANAGER.reset("gate_grad_scale_min")
-        gate_grad_scale_max = MANAGER.aggregate("gate_grad_scale_max")
-        losses['gate_grad_scale_max'] = (
-            gate_grad_scale_max.detach()
-            if gate_grad_scale_max is not None
-            else torch.zeros((0,), device=x.device)
-        )
-        MANAGER.reset("gate_grad_scale_max")
         gate_proj_bias_shift_abs_top5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_top5p_mean")
         losses['gate_proj_bias_shift_abs_top5p_mean'] = (
             gate_proj_bias_shift_abs_top5p_mean.detach()
@@ -1857,10 +1786,6 @@ class GPT(nn.Module):
                 losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean_normalized[gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_min'].shape[0]:
-                losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][gate_proj_bias_stats_idx].item()
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_max'].shape[0]:
-                losses[f'gate_grad_scale_max_{layer_idx}'] = losses['gate_grad_scale_max'][gate_proj_bias_stats_idx].item()
             if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_top5p_mean'].shape[0]:
                 losses[f'gate_proj_bias_shift_abs_top5p_mean_{layer_idx}'] = (
                     losses['gate_proj_bias_shift_abs_top5p_mean'][gate_proj_bias_stats_idx].item()
@@ -1901,11 +1826,7 @@ class GPT(nn.Module):
                     losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
                     MANAGER.reset(sub_loss_name)
 
-            (
-                losses['gate_proj_bias_l2_loss'],
-                losses['gate_proj_bias_shift_abs_mean_loss'],
-            ) = self.compute_gate_proj_bias_magnitude_losses()
-            MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+            losses['gate_proj_bias_l2_loss'] = self.compute_gate_proj_bias_magnitude_losses()
         else:
             return logits
 
