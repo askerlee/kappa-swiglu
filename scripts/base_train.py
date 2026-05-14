@@ -347,8 +347,12 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
         "0 <= final_frac <= stage1_frac <= 1"
     )
-# If use_gate_proj_bias_as_lr_scaler, then we should always use "router_probs" 
-# as the input to the gate_proj_bias for more stable training.
+# Aurora and gate-proj-bias interact more stably when the confidence input is
+# router_probs instead of top_logits, so force that setting here.
+if args.matrix_optimizer == "aurora":
+    args.exp_gate_proj_bias_input = "router_probs"
+# If use_gate_proj_bias_as_lr_scaler, then default to "router_probs" as the
+# input to the gate_proj_bias for more stable training.
 if (
     args.use_gate_proj_bias_as_lr_scaler
     and not exp_gate_proj_bias_input_was_specified
