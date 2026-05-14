@@ -884,18 +884,23 @@ def test_gpt_forward_reports_gate_grad_scale_per_moe_layer():
         MANAGER.collect_load_balancing_stats = False
 
     assert losses['gate_grad_scale_min'].ndim == 1
+    assert losses['gate_grad_scale_max'].ndim == 1
     assert losses['gate_grad_scale_top5p_mean'].ndim == 1
     assert losses['gate_grad_scale_bottom5p_mean'].ndim == 1
     assert losses['gate_grad_scale_min'].shape == (2,)
+    assert losses['gate_grad_scale_max'].shape == (2,)
     assert losses['gate_grad_scale_top5p_mean'].shape == (2,)
     assert losses['gate_grad_scale_bottom5p_mean'].shape == (2,)
     assert 'gate_grad_scale_min_1' in losses
+    assert 'gate_grad_scale_max_1' in losses
     assert 'gate_grad_scale_top5p_mean_1' in losses
     assert 'gate_grad_scale_bottom5p_mean_1' in losses
     assert 'gate_grad_scale_min_2' in losses
+    assert 'gate_grad_scale_max_2' in losses
     assert 'gate_grad_scale_top5p_mean_2' in losses
     assert 'gate_grad_scale_bottom5p_mean_2' in losses
     torch.testing.assert_close(losses['gate_grad_scale_min'][0], torch.tensor(losses['gate_grad_scale_min_1']))
+    torch.testing.assert_close(losses['gate_grad_scale_max'][0], torch.tensor(losses['gate_grad_scale_max_1']))
     torch.testing.assert_close(
         losses['gate_grad_scale_top5p_mean'][0],
         torch.tensor(losses['gate_grad_scale_top5p_mean_1'])
@@ -905,6 +910,7 @@ def test_gpt_forward_reports_gate_grad_scale_per_moe_layer():
         torch.tensor(losses['gate_grad_scale_bottom5p_mean_1'])
     )
     torch.testing.assert_close(losses['gate_grad_scale_min'][1], torch.tensor(losses['gate_grad_scale_min_2']))
+    torch.testing.assert_close(losses['gate_grad_scale_max'][1], torch.tensor(losses['gate_grad_scale_max_2']))
     torch.testing.assert_close(
         losses['gate_grad_scale_top5p_mean'][1],
         torch.tensor(losses['gate_grad_scale_top5p_mean_2'])

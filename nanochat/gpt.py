@@ -904,6 +904,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_grad_scale_bottom5p_mean = gate_grad_scale_stats.reshape(-1).topk(top_k, largest=False).values.mean()
                 MANAGER.add("gate_grad_scale_mean", gate_grad_scale_mean)
                 MANAGER.add("gate_grad_scale_min",  gate_grad_scale_stats.amin())
+                MANAGER.add("gate_grad_scale_max",  gate_grad_scale_stats.amax())
                 MANAGER.add("gate_grad_scale_top5p_mean",    gate_grad_scale_top5p_mean)
                 MANAGER.add("gate_grad_scale_bottom5p_mean", gate_grad_scale_bottom5p_mean)
             gate_out_raw = scale_grad(
@@ -924,7 +925,7 @@ class Qwen3MLPExperts(nn.Module):
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
-        inv_tau = (-log_tau).exp().clamp_(0.5, 2.0).to(dtype=gate_out_raw.dtype)
+        inv_tau = (-log_tau).exp().clamp(0.5, 2.0).to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * inv_tau)
 
     def _update_gate_stats(self, gate_out_acts):
@@ -1721,6 +1722,7 @@ class GPT(nn.Module):
                    'gate_proj_bias_l2_loss': 0,
                    'gate_grad_scale_mean': None,
                    'gate_grad_scale_min': 0,
+                   'gate_grad_scale_max': 0,
                    'gate_grad_scale_top5p_mean': 0,
                    'gate_grad_scale_bottom5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
@@ -1758,6 +1760,13 @@ class GPT(nn.Module):
             else torch.zeros((0,), device=x.device)
         )
         MANAGER.reset("gate_grad_scale_min")
+        gate_grad_scale_max = MANAGER.aggregate("gate_grad_scale_max")
+        losses['gate_grad_scale_max'] = (
+            gate_grad_scale_max.detach()
+            if gate_grad_scale_max is not None
+            else torch.zeros((0,), device=x.device)
+        )
+        MANAGER.reset("gate_grad_scale_max")
         gate_grad_scale_top5p_mean = MANAGER.aggregate("gate_grad_scale_top5p_mean")
         losses['gate_grad_scale_top5p_mean'] = (
             gate_grad_scale_top5p_mean.detach()
