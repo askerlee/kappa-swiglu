@@ -190,9 +190,9 @@ def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
         experts.c_proj.copy_(torch.randn_like(experts.c_proj))
 
         raw_gate_out = torch.bmm(x, experts.gate_proj)
-        log_tau = experts.gate_proj_bias.unsqueeze(1) * router_probs.unsqueeze(-1)
+        log_tau = 4 * experts.gate_proj_bias.unsqueeze(1) * router_probs.unsqueeze(-1)
         tau = log_tau.exp().clamp(0.5, 2.0)
-        expected_gate_out_acts = experts.act_fn(raw_gate_out / tau)
+        expected_gate_out_acts = raw_gate_out * torch.sigmoid(raw_gate_out / tau)
 
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)

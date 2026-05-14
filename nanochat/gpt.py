@@ -875,9 +875,7 @@ class Qwen3MLPExperts(nn.Module):
 
         selected_router_scores = selected_router_scores.float()
         if self.use_gate_proj_bias_as_slope_scaler:
-            log_tau = gate_proj_bias.float().unsqueeze(1) * selected_router_scores.unsqueeze(-1)
-            tau = log_tau.exp().clamp_(0.5, 2.0).to(dtype=gate_out_raw.dtype)
-            return gate_out_raw / tau
+            return gate_out_raw
 
         if self.exp_gate_proj_bias_input == 'router_probs':
             selected_router_scores = 4.0 * (2.0 * selected_router_scores - 1.0)
@@ -923,6 +921,11 @@ class Qwen3MLPExperts(nn.Module):
                 value=-1,
             )
             return gate_out_raw
+
+    def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores):
+        log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
+        inv_tau = (-log_tau).exp().clamp_(0.5, 2.0).to(dtype=gate_out_raw.dtype)
+        return gate_out_raw * torch.sigmoid(gate_out_raw * inv_tau)
 
     def _update_gate_stats(self, gate_out_acts):
         abs_gate = gate_out_acts.abs().float()
@@ -1030,24 +1033,15 @@ class Qwen3MLPExperts(nn.Module):
             grad_scale=self.router_confidence_gate_bias_grad_scale,
         )
         self._update_gate_proj_bias_shift_stats(selected_router_scores)
-        gate_out_acts = self._apply_gate_activation(gate_out_raw)
-        self._update_gate_stats(gate_out_acts)
-
-        if self.debug:
-            router_weight_for_gate = router.w_g.weight.unsqueeze(-1)
-            gate_proj_ortho = ortho_subtract(
-                self.gate_proj,
-                router_weight_for_gate,
-                dims=[1],
-            )
-            gate_out_ortho_raw = torch.bmm(x, gate_proj_ortho)
-            gate_out_ortho_raw = self._apply_gate_proj_bias(
-                gate_out_ortho_raw,
+        if self.use_gate_proj_bias_as_slope_scaler and selected_router_scores is not None:
+            gate_out_acts = self._apply_gate_slope_scaled_activation(
+                gate_out_raw,
                 gate_proj_bias,
                 selected_router_scores,
-                grad_scale=self.router_confidence_gate_bias_grad_scale,
             )
-            gate_out_ortho_acts = self._apply_gate_activation(gate_out_ortho_raw)
+        else:
+            gate_out_acts = self._apply_gate_activation(gate_out_raw)
+        self._update_gate_stats(gate_out_acts)
 
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
