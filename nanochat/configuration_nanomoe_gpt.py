@@ -26,8 +26,7 @@ class GPTConfig:
         use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        exp_gate_proj_bias_mode: str = "full",
-        exp_gate_proj_bias_input: str = "top_logits",
+        exp_gate_proj_bias_input: str = "router_probs",
         use_gate_proj_bias_as_slope_scaler: bool = False,
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
@@ -89,15 +88,10 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
+        kwargs.pop('exp_gate_proj_bias_mode', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
         kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
-        valid_exp_gate_proj_bias_modes = {"full"}
-        if exp_gate_proj_bias_mode not in valid_exp_gate_proj_bias_modes:
-            raise ValueError(
-                "exp_gate_proj_bias_mode must be one of "
-                f"{sorted(valid_exp_gate_proj_bias_modes)}, got {exp_gate_proj_bias_mode!r}"
-            )
-        self.exp_gate_proj_bias_mode = exp_gate_proj_bias_mode
+        self.exp_gate_proj_bias_mode = "full"
         valid_exp_gate_proj_bias_inputs = {"top_logits", "router_probs"}
         if exp_gate_proj_bias_input not in valid_exp_gate_proj_bias_inputs:
             raise ValueError(

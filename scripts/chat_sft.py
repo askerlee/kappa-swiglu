@@ -97,8 +97,6 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
 parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=None,
                     help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope (default: inherit from base model)")
-parser.add_argument("--exp-gate-proj-bias-mode", type=str, default=None, choices=["full"],
-                    help="parameterization for expert gate projection bias (default: inherit from base model)")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -141,7 +139,6 @@ if args.gate_proj_bias_delay_start_iterations < 0:
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
 user_config = vars(args).copy()
-exp_gate_proj_bias_mode_was_specified = arg_was_explicitly_set(sys.argv[1:], '--exp-gate-proj-bias-mode')
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
 # -----------------------------------------------------------------------------
@@ -199,7 +196,6 @@ model, tokenizer, meta = load_model(
     model_tag=args.model_tag,
     step=args.model_step,
     use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
-    exp_gate_proj_bias_mode=args.exp_gate_proj_bias_mode,
     refresh_gate_proj_bias_references=refresh_gate_proj_bias_references,
 )
 if args.use_gate_proj_bias_as_slope_scaler is None:
@@ -215,18 +211,11 @@ else:
         "Specified use_gate_proj_bias_as_slope_scaler: "
         f"{args.use_gate_proj_bias_as_slope_scaler}"
     )
-if exp_gate_proj_bias_mode_was_specified:
-    print0(f"Specified exp_gate_proj_bias_mode: {args.exp_gate_proj_bias_mode}")
-else:
-    args.exp_gate_proj_bias_mode = model.config.exp_gate_proj_bias_mode
-    print0(f"Inherited exp_gate_proj_bias_mode: {args.exp_gate_proj_bias_mode}")
-user_config["exp_gate_proj_bias_mode"] = args.exp_gate_proj_bias_mode
 user_config["use_gate_proj_bias_as_slope_scaler"] = args.use_gate_proj_bias_as_slope_scaler
 user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
-            "exp_gate_proj_bias_mode": args.exp_gate_proj_bias_mode,
             "use_gate_proj_bias_as_slope_scaler": args.use_gate_proj_bias_as_slope_scaler,
             "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
         },
