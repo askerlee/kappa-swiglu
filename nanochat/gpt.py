@@ -1809,6 +1809,8 @@ class GPT(nn.Module):
                 )
             if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_min'].shape[0]:
                 losses[f'gate_grad_scale_min_{layer_idx}'] = losses['gate_grad_scale_min'][gate_proj_bias_stats_idx].item()
+            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_max'].shape[0]:
+                losses[f'gate_grad_scale_max_{layer_idx}'] = losses['gate_grad_scale_max'][gate_proj_bias_stats_idx].item()
             if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_grad_scale_top5p_mean'].shape[0]:
                 losses[f'gate_grad_scale_top5p_mean_{layer_idx}'] = (
                     losses['gate_grad_scale_top5p_mean'][gate_proj_bias_stats_idx].item()

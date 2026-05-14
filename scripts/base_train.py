@@ -303,6 +303,10 @@ gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set
     sys.argv[1:],
     '--gate-proj-bias-abs-mean-loss-weight-scale',
 )
+exp_gate_proj_bias_input_was_specified = arg_was_explicitly_set(
+    sys.argv[1:],
+    '--exp-gate-proj-bias-input',
+)
 if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
@@ -343,6 +347,14 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= args.gate_proj_bias_l2_
         "--gate-proj-bias-l2-loss-final-frac and --gate-proj-bias-l2-loss-stage1-frac must satisfy "
         "0 <= final_frac <= stage1_frac <= 1"
     )
+# If use_gate_proj_bias_as_lr_scaler, then we should always use "router_probs" 
+# as the input to the gate_proj_bias for more stable training.
+if (
+    args.use_gate_proj_bias_as_lr_scaler
+    and not exp_gate_proj_bias_input_was_specified
+    and args.exp_gate_proj_bias_input == parser.get_default("exp_gate_proj_bias_input")
+):
+    args.exp_gate_proj_bias_input = "router_probs"
 if (
     args.use_gate_proj_bias_as_lr_scaler
     and not gate_proj_bias_l2_loss_weight_was_specified
@@ -1649,6 +1661,8 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
             if f'gate_grad_scale_min_{i}' in losses:
                 log_data.update({f"inspect/gate_grad_scale_min_{i}": losses[f'gate_grad_scale_min_{i}']})
+            if f'gate_grad_scale_max_{i}' in losses:
+                log_data.update({f"inspect/gate_grad_scale_max_{i}": losses[f'gate_grad_scale_max_{i}']})
             if f'gate_grad_scale_top5p_mean_{i}' in losses:
                 log_data.update({
                     f"inspect/gate_grad_scale_top5p_mean_{i}": losses[f'gate_grad_scale_top5p_mean_{i}']
