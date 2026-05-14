@@ -191,8 +191,8 @@ def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
 
         raw_gate_out = torch.bmm(x, experts.gate_proj)
         log_tau = 4 * experts.gate_proj_bias.unsqueeze(1) * router_probs.unsqueeze(-1)
-        tau = log_tau.exp().clamp(0.5, 2.0)
-        expected_gate_out_acts = raw_gate_out * torch.sigmoid(raw_gate_out / tau)
+        inv_tau = torch.exp(torch.log(torch.tensor(2.0)) * torch.tanh(-log_tau / 2.0))
+        expected_gate_out_acts = raw_gate_out * torch.sigmoid(raw_gate_out * inv_tau)
 
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
@@ -799,6 +799,41 @@ def test_gate_proj_bias_shift_abs_mean_metrics_are_expert_specific_then_sqrt_tok
     torch.testing.assert_close(normalized_shift_abs_mean, expected_normalized)
     expected_loss = torch.tensor(2.25 / (2.0**0.5 + 1.0))
     torch.testing.assert_close(shift_abs_mean_loss, expected_loss)
+
+
+def test_gate_proj_bias_shift_abs_mean_loss_is_detached_in_slope_scaler_mode():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_slope_scaler=True,
+        gate_proj_bias_shift_abs_mean_half_slope_start=3.0,
+        gate_proj_bias_shift_abs_mean_full_slope_start=4.5,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    with torch.no_grad():
+        experts.gate_proj_bias.fill_(1.0)
+
+    MANAGER.reset("gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+
+    experts._update_gate_proj_bias_shift_stats(torch.tensor([
+        [1.0, 0.5],
+        [0.0, 0.0],
+    ], requires_grad=True))
+
+    shift_abs_mean_loss = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_loss")
+
+    MANAGER.reset("gate_proj_bias_shift_abs_mean")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+    MANAGER.reset("gate_proj_bias_shift_abs_mean_loss")
+
+    assert torch.isfinite(shift_abs_mean_loss)
+    assert shift_abs_mean_loss.item() >= 0.0
+    assert shift_abs_mean_loss.requires_grad is False
 
 
 def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():

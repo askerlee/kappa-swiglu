@@ -925,7 +925,7 @@ class Qwen3MLPExperts(nn.Module):
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
-        inv_tau = (-log_tau).exp().clamp(0.5, 2.0).to(dtype=gate_out_raw.dtype)
+        inv_tau = torch.exp(math.log(2.0) * torch.tanh(-log_tau / 2.0)).to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * inv_tau)
 
     def _update_gate_stats(self, gate_out_acts):
@@ -1015,6 +1015,8 @@ class Qwen3MLPExperts(nn.Module):
                 full_slope_start,
             ) * active_token_counts_sqrt
             gate_proj_bias_shift_abs_mean_loss = gate_proj_bias_shift_abs_mean_loss_per_expert.sum() / total_active_tokens_sqrt
+            if self.use_gate_proj_bias_as_slope_scaler:
+                gate_proj_bias_shift_abs_mean_loss = gate_proj_bias_shift_abs_mean_loss.detach()
             MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
             MANAGER.add("gate_proj_bias_shift_abs_mean_loss", gate_proj_bias_shift_abs_mean_loss)
         else:

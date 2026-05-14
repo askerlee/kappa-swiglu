@@ -1263,6 +1263,9 @@ while True:
     gate_proj_bias_shift_abs_mean_loss_weight = (
         gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
     )
+    gate_proj_bias_shift_abs_mean_effective_loss_weight = (
+        0.0 if args.use_gate_proj_bias_as_slope_scaler else gate_proj_bias_shift_abs_mean_loss_weight
+    )
     router_ortho_blockwise_active = False
     if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
         router_ortho_blockwise_active = True
@@ -1533,7 +1536,7 @@ while True:
             gate_proj_bias_shift_abs_mean_loss = micro_losses.get("gate_proj_bias_shift_abs_mean_loss")
             if gate_proj_bias_shift_abs_mean_loss is None:
                 gate_proj_bias_shift_abs_mean_loss = 0.0
-            loss = loss + gate_proj_bias_shift_abs_mean_loss_weight * gate_proj_bias_shift_abs_mean_loss
+            loss = loss + gate_proj_bias_shift_abs_mean_effective_loss_weight * gate_proj_bias_shift_abs_mean_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1629,7 +1632,7 @@ while True:
         log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
-        log_data["train/gate_proj_bias_shift_abs_mean_loss_weight"] = gate_proj_bias_shift_abs_mean_loss_weight
+        log_data["train/gate_proj_bias_shift_abs_mean_loss_weight"] = gate_proj_bias_shift_abs_mean_effective_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
             if sub_loss is not None:

@@ -823,6 +823,9 @@ while True:
     gate_proj_bias_shift_abs_mean_loss_weight = (
         args.gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
     )
+    gate_proj_bias_shift_abs_mean_effective_loss_weight = (
+        0.0 if args.use_gate_proj_bias_as_slope_scaler else gate_proj_bias_shift_abs_mean_loss_weight
+    )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * gate_proj_bias_lr_scale)
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
@@ -838,7 +841,7 @@ while True:
         gate_proj_bias_shift_abs_mean_loss = losses.get("gate_proj_bias_shift_abs_mean_loss")
         if gate_proj_bias_shift_abs_mean_loss is None:
             gate_proj_bias_shift_abs_mean_loss = 0.0
-        loss = loss + gate_proj_bias_shift_abs_mean_loss_weight * gate_proj_bias_shift_abs_mean_loss
+        loss = loss + gate_proj_bias_shift_abs_mean_effective_loss_weight * gate_proj_bias_shift_abs_mean_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -903,7 +906,7 @@ while True:
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
             "train/gate_proj_bias_shift_abs_mean_loss_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_loss']),
             "train/gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
-            "train/gate_proj_bias_shift_abs_mean_loss_weight": gate_proj_bias_shift_abs_mean_loss_weight,
+            "train/gate_proj_bias_shift_abs_mean_loss_weight": gate_proj_bias_shift_abs_mean_effective_loss_weight,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
