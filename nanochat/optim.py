@@ -100,6 +100,7 @@ def aurora_grad_update_fused(
     momentum_t: Tensor,
     pp_beta_t: Tensor,
     aspect_scale_t: Tensor,
+    ns_steps: int,
     pp_iterations: int,
     nesterov: bool,
 ) -> Tensor:
@@ -110,7 +111,7 @@ def aurora_grad_update_fused(
 
     m, n = update.size(-2), update.size(-1)
     if m == n:
-        update = _polar_factor_simple_quintic(update)
+        update = _polar_factor_simple_quintic(update, num_iters=ns_steps)
     else:
         transposed = m < n
         if transposed:
@@ -124,7 +125,7 @@ def aurora_grad_update_fused(
         pp_beta = pp_beta_t.to(update_f32.dtype)
         U = None
         for iteration in range(pp_iterations):
-            U = _polar_factor_simple_quintic(D * update_f32)
+            U = _polar_factor_simple_quintic(D * update_f32, num_iters=ns_steps)
             if iteration < pp_iterations - 1:
                 row_sq = U.float().square().sum(dim=-1, keepdim=True).clamp_(min=eps * eps)
                 D = D * (target_row_sq / row_sq).pow(pp_beta)
@@ -143,6 +144,7 @@ def aurora_step_fused(
     wd_t: Tensor,
     pp_beta_t: Tensor,
     aspect_scale_t: Tensor,
+    ns_steps: int,
     pp_iterations: int,
     nesterov: bool,
 ) -> None:
@@ -152,6 +154,7 @@ def aurora_step_fused(
         momentum_t,
         pp_beta_t,
         aspect_scale_t,
+        ns_steps,
         pp_iterations,
         nesterov,
     )
@@ -852,6 +855,7 @@ class AuroraAdamW(torch.optim.Optimizer):
                 self._aurora_wd_t,
                 self._aurora_pp_beta_t,
                 self._aurora_aspect_scale_t,
+                group.get('ns_steps', 12),
                 group.get('pp_iterations', 2),
                 group.get('nesterov', True),
             )
@@ -1022,6 +1026,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                     self._aurora_wd_t,
                     self._aurora_pp_beta_t,
                     self._aurora_aspect_scale_t,
+                    group.get('ns_steps', 12),
                     group.get('pp_iterations', 2),
                     group.get('nesterov', True),
                 )
