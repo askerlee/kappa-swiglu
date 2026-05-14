@@ -200,7 +200,7 @@ def main():
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
-    parser.add_argument('--exp-gate-proj-bias-mode', type=str, default=None, choices=['full', 'rank1', 'rank1_residual'],
+    parser.add_argument('--exp-gate-proj-bias-mode', type=str, default=None, choices=['full'],
                         help='Override expert gate_proj_bias parameterization for nanochat checkpoints')
     parser.add_argument('--exp-gate-proj-bias-fill-value', type=float, default=None,
                         help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value')

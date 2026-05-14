@@ -189,8 +189,8 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-gate-proj-bias-as-lr-scaler", type=str2bool, nargs='?', const=True, default=False,
                     help="apply expert gate_proj_bias as an unscaled forward bias and use router confidence only to scale its gradients")
-parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="rank1_residual", choices=["full", "rank1", "rank1_residual"],
-                    help="parameterization for expert gate_proj_bias: full matrix, rank-1 expert/intermediate factors, or rank-1 plus dense residual")
+parser.add_argument("--exp-gate-proj-bias-mode", type=str, default="full", choices=["full"],
+                    help="parameterization for expert gate_proj_bias")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
@@ -208,7 +208,6 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
 # So we set the default weight of the hinge loss to 10x the L2 loss weight 
 # to make the grad scale of the hinge loss comparable to that of the L2 loss. 
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
-parser.add_argument("--gate-proj-bias-residual-l2-loss-weight", type=float, default=0.0, help="weight for the dense residual part of MoE gate_proj_bias when using rank1_residual")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2")
@@ -298,10 +297,6 @@ gate_proj_bias_l2_loss_final_frac_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-final-frac',
 )
-gate_proj_bias_residual_l2_loss_weight_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-residual-l2-loss-weight',
-)
 gate_proj_bias_abs_mean_loss_weight_scale_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-abs-mean-loss-weight-scale',
@@ -352,32 +347,6 @@ if (
     and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
 ):
     args.gate_proj_bias_l2_loss_weight = 2e-2
-if (
-    args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
-    and not gate_proj_bias_l2_loss_weight_was_specified
-    and args.gate_proj_bias_l2_loss_weight == parser.get_default("gate_proj_bias_l2_loss_weight")
-):
-    args.gate_proj_bias_l2_loss_weight = 5e-3
-if (
-    args.exp_gate_proj_bias_mode in {"rank1", "rank1_residual"}
-    and not gate_proj_bias_abs_mean_loss_weight_scale_was_specified
-    and args.gate_proj_bias_abs_mean_loss_weight_scale == parser.get_default("gate_proj_bias_abs_mean_loss_weight_scale")
-):
-    args.gate_proj_bias_abs_mean_loss_weight_scale = 0
-if (
-    args.exp_gate_proj_bias_mode == "rank1_residual"
-    and not gate_proj_bias_residual_l2_loss_weight_was_specified
-    and args.gate_proj_bias_residual_l2_loss_weight == parser.get_default("gate_proj_bias_residual_l2_loss_weight")
-):
-    # Use the same L2 loss weight for the residual part as for the rank-1 part by default.
-    # gate_proj_bias_l2_loss is computed on the full materialized bias, and 
-    # for rank1_residual that materialized bias is rank1 + residual. 
-    # Then gate_proj_bias_residual_l2_loss adds a second penalty on just the residual matrix.
-    # i.e., the residual is penalized more strongly than the rank-1 part, 
-    # which encourages the model to be approximately rank-1 and only use the residual 
-    # for smaller corrections.
-    args.gate_proj_bias_residual_l2_loss_weight = args.gate_proj_bias_l2_loss_weight * 2
-    
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -517,7 +486,6 @@ def build_model_meta(depth):
         exp_gate_proj_bias_input="top_logits",
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
-        gate_proj_bias_residual_l2_loss_weight=args.gate_proj_bias_residual_l2_loss_weight,
         gate_proj_bias_shift_abs_mean_half_slope_start=args.gate_proj_bias_shift_abs_mean_half_slope_start,
         gate_proj_bias_shift_abs_mean_full_slope_start=args.gate_proj_bias_shift_abs_mean_full_slope_start,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
@@ -1276,15 +1244,6 @@ while True:
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
-    gate_proj_bias_residual_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.gate_proj_bias_residual_l2_loss_weight,
-        step,
-        total_iterations=num_iterations,
-        stage1_iterations=gate_proj_bias_l2_stage1_iterations,
-        stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
-        final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
-        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
-    )
     gate_proj_bias_shift_abs_mean_loss_weight = (
         gate_proj_bias_l2_loss_weight * args.gate_proj_bias_abs_mean_loss_weight_scale
     )
@@ -1555,10 +1514,6 @@ while True:
             if gate_proj_bias_l2_loss is None:
                 gate_proj_bias_l2_loss = 0.0
             loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
-            gate_proj_bias_residual_l2_loss = micro_losses.get("gate_proj_bias_residual_l2_loss")
-            if gate_proj_bias_residual_l2_loss is None:
-                gate_proj_bias_residual_l2_loss = 0.0
-            loss = loss + gate_proj_bias_residual_l2_loss_weight * gate_proj_bias_residual_l2_loss
             gate_proj_bias_shift_abs_mean_loss = micro_losses.get("gate_proj_bias_shift_abs_mean_loss")
             if gate_proj_bias_shift_abs_mean_loss is None:
                 gate_proj_bias_shift_abs_mean_loss = 0.0
@@ -1583,7 +1538,7 @@ while True:
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-                if group.get("name") in {"gate_proj_bias", "gate_proj_bias_residual"} and group['kind'] == 'adamw':
+                if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
                     group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
                 else:
                     group["lr"] = group["initial_lr"] * lrm
@@ -1638,7 +1593,6 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
-            "train/gate_proj_bias_residual_l2_loss_step": losses['gate_proj_bias_residual_l2_loss'],
             "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
             "train/gate_proj_bias_shift_abs_mean_normalized_step": losses['gate_proj_bias_shift_abs_mean_normalized'],
             "train/gate_proj_bias_shift_abs_mean_loss_step": losses['gate_proj_bias_shift_abs_mean_loss'],
@@ -1653,7 +1607,6 @@ while True:
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
-        log_data["train/gate_proj_bias_residual_l2_loss_weight"] = gate_proj_bias_residual_l2_loss_weight
         log_data["train/gate_proj_bias_shift_abs_mean_loss_weight"] = gate_proj_bias_shift_abs_mean_loss_weight
         for sub_loss_name in router_ortho_sub_loss_names:
             sub_loss = losses.get(sub_loss_name)
