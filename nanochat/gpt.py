@@ -923,9 +923,10 @@ class Qwen3MLPExperts(nn.Module):
             )
             return gate_out_raw
 
-    def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores):
+    def _apply_gate_slope_scaled_activation(self, gate_out_raw, gate_proj_bias, selected_router_scores, 
+                                            max_scale=4.0, softness=2.0):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
-        inv_tau = torch.exp(math.log(2.0) * torch.tanh(-log_tau / 2.0)).to(dtype=gate_out_raw.dtype)
+        inv_tau = torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness)).to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * inv_tau)
 
     def _update_gate_stats(self, gate_out_acts):
