@@ -169,6 +169,38 @@ def test_gate_projection_bias_can_use_router_confidence_only_as_bias_grad_scaler
     torch.testing.assert_close(actual, expected)
 
 
+def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_slope_scaler=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    router_probs = torch.rand(config.n_exp, 5)
+
+    with torch.no_grad():
+        experts.gate_proj.copy_(torch.randn_like(experts.gate_proj))
+        experts.gate_proj_bias.copy_(torch.randn_like(experts.gate_proj_bias))
+        experts.c_fc.copy_(torch.randn_like(experts.c_fc))
+        experts.c_proj.copy_(torch.randn_like(experts.c_proj))
+
+        raw_gate_out = torch.bmm(x, experts.gate_proj)
+        log_tau = experts.gate_proj_bias.unsqueeze(1) * router_probs.unsqueeze(-1)
+        tau = log_tau.exp().clamp(0.5, 2.0)
+        expected_gate_out_acts = experts.act_fn(raw_gate_out / tau)
+
+        fc_out = torch.bmm(x, experts.c_fc)
+        expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
+
+    actual = experts(x, selected_router_scores=router_probs)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_gate_projection_bias_lr_scaler_mode_uses_unit_grad_scale_when_confidence_is_zero():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -602,6 +634,25 @@ def test_gate_proj_bias_lr_scaler_flag_defaults_and_overrides_from_config():
 
     assert default_config.use_gate_proj_bias_as_lr_scaler is False
     assert override_config.use_gate_proj_bias_as_lr_scaler is True
+
+
+def test_gate_proj_bias_slope_scaler_flag_defaults_and_overrides_from_config():
+    default_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    override_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias_as_slope_scaler=True,
+        debug=False,
+    )
+
+    assert default_config.use_gate_proj_bias_as_slope_scaler is False
+    assert override_config.use_gate_proj_bias_as_slope_scaler is True
 
 
 def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():

@@ -29,6 +29,7 @@ class GPTConfig:
         exp_gate_proj_bias_mode: str = "full",
         exp_gate_proj_bias_input: str = "top_logits",
         use_gate_proj_bias_as_lr_scaler: bool = False,
+        use_gate_proj_bias_as_slope_scaler: bool = False,
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
@@ -108,6 +109,11 @@ class GPTConfig:
             )
         self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
         self.use_gate_proj_bias_as_lr_scaler = bool(use_gate_proj_bias_as_lr_scaler)
+        self.use_gate_proj_bias_as_slope_scaler = bool(use_gate_proj_bias_as_slope_scaler)
+        if self.use_gate_proj_bias_as_lr_scaler and self.use_gate_proj_bias_as_slope_scaler:
+            raise ValueError(
+                "use_gate_proj_bias_as_lr_scaler and use_gate_proj_bias_as_slope_scaler are mutually exclusive"
+            )
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(

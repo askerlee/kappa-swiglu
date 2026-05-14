@@ -777,6 +777,13 @@ class Qwen3MLPExperts(nn.Module):
         self.use_gate_proj_bias_as_lr_scaler = bool(
             getattr(config, 'use_gate_proj_bias_as_lr_scaler', False)
         )
+        self.use_gate_proj_bias_as_slope_scaler = bool(
+            getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
+        )
+        if self.use_gate_proj_bias_as_lr_scaler and self.use_gate_proj_bias_as_slope_scaler:
+            raise ValueError(
+                "use_gate_proj_bias_as_lr_scaler and use_gate_proj_bias_as_slope_scaler are mutually exclusive"
+            )
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
@@ -867,6 +874,11 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
 
         selected_router_scores = selected_router_scores.float()
+        if self.use_gate_proj_bias_as_slope_scaler:
+            log_tau = gate_proj_bias.float().unsqueeze(1) * selected_router_scores.unsqueeze(-1)
+            tau = log_tau.exp().clamp_(0.5, 2.0).to(dtype=gate_out_raw.dtype)
+            return gate_out_raw / tau
+
         if self.exp_gate_proj_bias_input == 'router_probs':
             selected_router_scores = 4.0 * (2.0 * selected_router_scores - 1.0)
         
@@ -928,7 +940,11 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch._dynamo.disable
     def _update_gate_proj_bias_shift_stats(self, selected_router_scores):
-        if not self.use_gate_proj_bias or selected_router_scores is None:
+        if (
+            not self.use_gate_proj_bias
+            or self.use_gate_proj_bias_as_slope_scaler
+            or selected_router_scores is None
+        ):
             return
 
         half_slope_start = self.gate_proj_bias_shift_abs_mean_half_slope_start
@@ -1066,6 +1082,9 @@ class MOELayer(nn.Module):
         self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
+        self.use_gate_proj_bias_as_slope_scaler = bool(
+            getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
+        )
         self.router_ortho_loss_grad_scale = 0.1
 
     def update_aux_free_load_balancing(self):
@@ -1135,7 +1154,7 @@ class MOELayer(nn.Module):
         selected_gate_confidence = top_k_scores
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
-            if self.exp_gate_proj_bias_input == 'router_probs':
+            if self.use_gate_proj_bias_as_slope_scaler or self.exp_gate_proj_bias_input == 'router_probs':
                 selected_gate_confidence = router_probs
             expert_router_scores = torch.zeros(
                 self.n_exp, exp_capacity, dtype=selected_gate_confidence.dtype, device=selected_gate_confidence.device
