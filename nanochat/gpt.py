@@ -767,6 +767,7 @@ class Qwen3MLPExperts(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
+        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
@@ -866,6 +867,8 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
 
         selected_router_scores = selected_router_scores.float()
+        if self.exp_gate_proj_bias_input == 'router_probs':
+            selected_router_scores = 4.0 * (2.0 * selected_router_scores - 1.0)
         
         if self.use_gate_proj_bias_as_lr_scaler:
             router_confidence_gate_scale = (selected_router_scores * grad_scale).to(dtype=self.gate_proj.dtype)
