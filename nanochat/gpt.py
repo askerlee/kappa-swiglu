@@ -1794,14 +1794,14 @@ class GPT(nn.Module):
         losses['gate_proj_bias_shift_abs_top5p_mean'] = (
             gate_proj_bias_shift_abs_top5p_mean.detach()
             if gate_proj_bias_shift_abs_top5p_mean is not None
-            else torch.zeros((0,), device=x.device)
+            else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_top5p_mean")
         gate_proj_bias_shift_abs_bottom5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_bottom5p_mean")
         losses['gate_proj_bias_shift_abs_bottom5p_mean'] = (
             gate_proj_bias_shift_abs_bottom5p_mean.detach()
             if gate_proj_bias_shift_abs_bottom5p_mean is not None
-            else torch.zeros((0,), device=x.device)
+            else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_bottom5p_mean")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
