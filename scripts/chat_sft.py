@@ -149,6 +149,10 @@ def combine_router_ortho_sublosses(losses):
         return 0.0
     return gate_proj_loss
 
+
+def drop_none_log_values(log_data):
+    return {key: value for key, value in log_data.items() if value is not None}
+
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
@@ -691,12 +695,12 @@ while True:
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
-        wandb_run.log({
+        wandb_run.log(drop_none_log_values({
             "step": step,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
-        }, step=step)
+        }), step=step)
         model.train()
 
     # save checkpoint at the end of the run before the expensive final chat eval
@@ -758,7 +762,7 @@ while True:
             wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
         if "ChatCORE metric (without SpellingBee)" in chatcore_metric_dict:
             wandb_log_data["chat_eval/ChatCORE_without_SpellingBee"] = chatcore_metric_dict["ChatCORE metric (without SpellingBee)"]
-        wandb_run.log(wandb_log_data, step=step)
+        wandb_run.log(drop_none_log_values(wandb_log_data), step=step)
         model.train()
 
     if last_step:
@@ -929,7 +933,7 @@ while True:
                 log_data[f"inspect/selected_scores_top_{i}"] = losses[f'selected_scores_top_{i}']
             if f'selected_scores_bottom_{i}' in losses:
                 log_data[f"inspect/selected_scores_bottom_{i}"] = losses[f'selected_scores_bottom_{i}']
-        wandb_run.log(log_data, step=step)
+        wandb_run.log(drop_none_log_values(log_data), step=step)
 
 # print a few more stats
 print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")

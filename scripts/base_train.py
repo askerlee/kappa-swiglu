@@ -881,6 +881,10 @@ def scalar_loss_to_item(value):
         return value.detach().item()
     return float(value)
 
+
+def drop_none_log_values(log_data):
+    return {key: value for key, value in log_data.items() if value is not None}
+
 # Hard-coded warmup before enabling blockwise router-ortho gating.
 ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
 
@@ -1231,14 +1235,14 @@ while True:
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
-        wandb_run.log({
+        wandb_run.log(drop_none_log_values({
             "step": step,
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
             "val/loss": ntp_loss,
-        }, step=step)
+        }), step=step)
         model.train()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
@@ -1362,14 +1366,14 @@ while True:
         core_metric = core_results["core_metric"]
         print0(f"Step {step:05d} | CORE metric: {core_metric:.4f}")
         print0(f"Step {step:05d} | CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
-        wandb_run.log({
+        wandb_run.log(drop_none_log_values({
             "step": step,
             "tokens_seen": tokens_seen,
             "total_training_flops": flops_so_far,
             "core_metric": core_metric,
             "core_metric_no_boolq": core_results["core_metric_no_boolq"],
             "centered_results": core_results["centered_results"],
-        }, step=step)
+        }), step=step)
         last_core_eval_step = step
         model.train()
 
@@ -1629,7 +1633,7 @@ while True:
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
                         
-        wandb_run.log(log_data, step=step)
+        wandb_run.log(drop_none_log_values(log_data), step=step)
 
     # state update
     first_step_of_run = (step == 0) or (resuming and step == args.resume_from_step)
