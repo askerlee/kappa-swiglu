@@ -927,6 +927,10 @@ class Qwen3MLPExperts(nn.Module):
         abs_gate_sum = abs_gate.sum(dim=-1)
         gate_probs = abs_gate / abs_gate_sum.clamp_min(1e-8).unsqueeze(-1)
         entropy = -(gate_probs * gate_probs.clamp_min(1e-8).log()).sum(dim=-1)
+        # abs_gate: [n_exp, capacity, intermediate_size].
+        # topk: 16. topk_share is the sum of the top-16 gate values 
+        # divided by the sum of all gate values, averaged across tokens. 
+        # It measures how concentrated the top gates are. 
         topk_share = abs_gate.topk(topk, dim=-1).values.sum(dim=-1) / abs_gate_sum.clamp_min(1e-8)
         self.last_gate_stats = {
             'mean_abs_gate': abs_gate.mean().detach(),
@@ -1027,6 +1031,7 @@ class Qwen3MLPExperts(nn.Module):
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
+        # slope_scales: [n_exp, capacity, intermediate_size]
         slope_scales_flat = slope_scales.reshape(slope_scales.size(0), -1)
         active_slope_mask_flat = active_mask.unsqueeze(-1).expand_as(slope_scales).reshape(slope_scales.size(0), -1)
         MANAGER.add(
@@ -1067,6 +1072,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_proj_bias,
                 selected_router_scores,
             )
+            # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
                 gate_out_raw,

@@ -36,6 +36,34 @@ def test_gate_proj_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final
     assert get_two_stage_annealed_loss_weight(1.0, 10, total_iterations=10) == 0.01
 
 
+def test_gate_proj_bias_l2_two_stage_schedule_can_increase_during_stage_2():
+    get_two_stage_annealed_loss_weight = load_function_from_script("get_two_stage_annealed_loss_weight")
+
+    assert get_two_stage_annealed_loss_weight(
+        1.0,
+        5,
+        total_iterations=10,
+        stage1_floor_frac=0.1,
+        final_floor_frac=0.4,
+    ) == 0.1
+    assert abs(
+        get_two_stage_annealed_loss_weight(
+            1.0,
+            7,
+            total_iterations=10,
+            stage1_floor_frac=0.1,
+            final_floor_frac=0.4,
+        ) - 0.22
+    ) < 1e-12
+    assert get_two_stage_annealed_loss_weight(
+        1.0,
+        10,
+        total_iterations=10,
+        stage1_floor_frac=0.1,
+        final_floor_frac=0.4,
+    ) == 0.4
+
+
 def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
     build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
 

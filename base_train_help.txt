@@ -171,7 +171,9 @@ options:
                         annealing)
   --gate-proj-bias-l2-loss-final-frac GATE_PROJ_BIAS_L2_LOSS_FINAL_FRAC
                         fraction of the MoE (2D) gate_proj_bias L2 base weight
-                        to reach at the end of training during stage 2
+                        to reach at the end of training during stage 2 (can
+                        be above --gate-proj-bias-l2-loss-stage1-frac to
+                        re-increase in stage 2)
   --bilinear-mlp-moe [BILINEAR_MLP_MOE]
                         disable the SiLU gate in Qwen3-style MoE MLPs only,
                         using raw bilinear gating in expert layers
