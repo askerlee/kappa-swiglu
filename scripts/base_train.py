@@ -207,8 +207,8 @@ parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the L2 loss frac is reduced gradually from 1 to 0.1 in stage 1,
 # then further reduced from 0.1 to 0.02 in stage 2.
-# If --use-gate-proj-bias-as-slope-scaler, then the final frac is set to
-# 0.1 by default to push the gate_proj_bias values towards 0
+# If --use-gate-proj-bias-as-slope-scaler, then the stage1 frac and final frac 
+# are set to 1  to push the gate_proj_bias values towards 0
 # so that the slopes are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
@@ -346,7 +346,9 @@ if (
     and not gate_proj_bias_l2_loss_final_frac_was_specified
     and args.gate_proj_bias_l2_loss_final_frac == parser.get_default("gate_proj_bias_l2_loss_final_frac")
 ):
-    args.gate_proj_bias_l2_loss_final_frac = 0.1
+    args.gate_proj_bias_l2_loss_stage1_frac = 1
+    args.gate_proj_bias_l2_loss_final_frac = 1
+
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model

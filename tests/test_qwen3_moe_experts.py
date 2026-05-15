@@ -694,48 +694,48 @@ def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in(
 
     assert model.transformer.h[1].mlp.experts.initial_gate_proj_bias is None
 
-
-    def test_gate_proj_bias_shift_stats_default_to_zero_when_bias_disabled():
-        torch.manual_seed(0)
-        config = GPTConfig(
-            sequence_len=8,
-            vocab_size=32,
-            n_layer=3,
-            moe_start_layer=1,
-            num_moe_layers=1,
-            moe_layer_stride=1,
-            n_exp=2,
-            n_embd=32,
-            n_head=4,
-            use_aux_loss=False,
-            use_router_z_loss=False,
-            use_router_ortho_loss=False,
-            use_exp_gate_proj_bias=False,
-            debug=False,
-        )
-        model = GPT(config)
-        model.init_weights()
-
-        idx = torch.randint(0, config.vocab_size, (2, 4))
-        targets = torch.randint(0, config.vocab_size, (2, 4))
-
-        old_collect = MANAGER.collect_load_balancing_stats
-        MANAGER.collect_load_balancing_stats = True
-        try:
-            _, losses = model(idx, targets)
-        finally:
-            MANAGER.collect_load_balancing_stats = old_collect
-
-        assert losses['gate_proj_bias_shift_abs_top5p_mean'].shape == torch.Size([])
-        assert losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape == torch.Size([])
-        assert losses['gate_proj_bias_shift_abs_top5p_mean'].item() == 0.0
-        assert losses['gate_proj_bias_shift_abs_bottom5p_mean'].item() == 0.0
-        assert torch.isfinite(losses['gate_proj_bias_shift_abs_top5p_mean'])
-        assert torch.isfinite(losses['gate_proj_bias_shift_abs_bottom5p_mean'])
-
     model.refresh_gate_proj_bias_references()
 
     assert model.transformer.h[1].mlp.experts.initial_gate_proj_bias is not None
+
+
+def test_gate_proj_bias_shift_stats_default_to_zero_when_bias_disabled():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_router_ortho_loss=False,
+        use_exp_gate_proj_bias=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
+
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    try:
+        _, losses = model(idx, targets)
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
+
+    assert losses['gate_proj_bias_shift_abs_top5p_mean'].shape == torch.Size([])
+    assert losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape == torch.Size([])
+    assert losses['gate_proj_bias_shift_abs_top5p_mean'].item() == 0.0
+    assert losses['gate_proj_bias_shift_abs_bottom5p_mean'].item() == 0.0
+    assert torch.isfinite(losses['gate_proj_bias_shift_abs_top5p_mean'])
+    assert torch.isfinite(losses['gate_proj_bias_shift_abs_bottom5p_mean'])
 
 
 def test_gate_proj_bias_references_can_auto_refresh_when_config_enabled():
