@@ -140,6 +140,60 @@ def _mean_extreme_percentile(values: torch.Tensor, fraction: float, largest: boo
     return values.topk(k, largest=largest).values.mean()
 
 
+def _mean_extreme_percentile_per_row(
+    values: torch.Tensor,
+    active_mask: torch.Tensor,
+    fraction: float,
+    largest: bool,
+) -> torch.Tensor:
+    if values.ndim != 2:
+        raise ValueError("values must be 2D")
+    if active_mask.shape != values.shape:
+        raise ValueError("active_mask must have the same shape as values")
+
+    row_means = []
+    for row_values, row_mask in zip(values, active_mask):
+        active_values = row_values[row_mask]
+        if active_values.numel() == 0:
+            continue
+        row_means.append(_mean_extreme_percentile(active_values, fraction=fraction, largest=largest))
+
+    if not row_means:
+        return values.new_zeros(())
+    return torch.stack(row_means).mean()
+
+
+def _mean_extreme_outer_product_percentile_per_row(
+    left_values: torch.Tensor,
+    right_values: torch.Tensor,
+    left_active_mask: torch.Tensor,
+    fraction: float,
+    largest: bool,
+) -> torch.Tensor:
+    if left_values.ndim != 2:
+        raise ValueError("left_values must be 2D")
+    if right_values.ndim != 2:
+        raise ValueError("right_values must be 2D")
+    if left_active_mask.shape != left_values.shape:
+        raise ValueError("left_active_mask must have the same shape as left_values")
+    if left_values.size(0) != right_values.size(0):
+        raise ValueError("left_values and right_values must have the same number of rows")
+
+    row_means = []
+    for row_left_values, row_right_values, row_left_mask in zip(left_values, right_values, left_active_mask):
+        active_left_values = row_left_values[row_left_mask]
+        if active_left_values.numel() == 0 or row_right_values.numel() == 0:
+            continue
+        row_products = active_left_values.unsqueeze(-1) * row_right_values.unsqueeze(0)
+        row_means.append(
+            _mean_extreme_percentile(row_products.reshape(-1), fraction=fraction, largest=largest)
+        )
+
+    if not row_means:
+        return left_values.new_zeros(())
+    return torch.stack(row_means).mean()
+
+
 class SoftcapInPlace(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, softcap):
@@ -918,19 +972,22 @@ class Qwen3MLPExperts(nn.Module):
         total_active_tokens = active_token_counts.sum()
         shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
-        active_expert_mask = active_token_counts > 0
         MANAGER.add(
             "gate_proj_bias_shift_abs_top5p_mean",
-            _mean_extreme_percentile(
-                shift_abs_mean_per_expert[active_expert_mask],
+            _mean_extreme_outer_product_percentile_per_row(
+                score_abs,
+                gate_proj_bias.float().abs(),
+                active_mask,
                 fraction=0.05,
                 largest=True,
             ).detach(),
         )
         MANAGER.add(
             "gate_proj_bias_shift_abs_bottom5p_mean",
-            _mean_extreme_percentile(
-                shift_abs_mean_per_expert[active_expert_mask],
+            _mean_extreme_outer_product_percentile_per_row(
+                score_abs,
+                gate_proj_bias.float().abs(),
+                active_mask,
                 fraction=0.05,
                 largest=False,
             ).detach(),
@@ -970,19 +1027,22 @@ class Qwen3MLPExperts(nn.Module):
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
-        active_expert_mask = active_token_counts > 0
+        slope_scales_flat = slope_scales.reshape(slope_scales.size(0), -1)
+        active_slope_mask_flat = active_mask.unsqueeze(-1).expand_as(slope_scales).reshape(slope_scales.size(0), -1)
         MANAGER.add(
             "gate_proj_bias_shift_abs_top5p_mean",
-            _mean_extreme_percentile(
-                slope_scale_mean_per_expert[active_expert_mask],
+            _mean_extreme_percentile_per_row(
+                slope_scales_flat,
+                active_slope_mask_flat,
                 fraction=0.05,
                 largest=True,
             ).detach(),
         )
         MANAGER.add(
             "gate_proj_bias_shift_abs_bottom5p_mean",
-            _mean_extreme_percentile(
-                slope_scale_mean_per_expert[active_expert_mask],
+            _mean_extreme_percentile_per_row(
+                slope_scales_flat,
+                active_slope_mask_flat,
                 fraction=0.05,
                 largest=False,
             ).detach(),
