@@ -1410,7 +1410,7 @@ class GPT(nn.Module):
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
                         weight_decay=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
-                        matrix_optimizer='muon',
+                        matrix_optimizer='aurora',
                         gate_proj_bias_lr_final_scale=1.0,
                         gate_proj_bias_lr_max_scale=1.0,
                         gate_proj_bias_delay_start_iterations=0,
