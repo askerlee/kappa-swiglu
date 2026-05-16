@@ -23,8 +23,6 @@ class GPTConfig:
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
-        use_router_ortho_loss: bool = True,  # apply router orthogonality loss
-        router_ortho_loss_target: str = "gate_proj",  # which expert projection to orthogonalize against router.w_g
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "router_probs",
         use_gate_proj_bias_as_slope_scaler: bool = False,
@@ -38,8 +36,6 @@ class GPTConfig:
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
         router_z_loss_weight: float = 1e-5,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_z_loss_input_grad_scale: float = 0.1,  # scale down gradients to router input when computing router z loss.
-        router_ortho_loss_weight: float = 1e-5,  # default weight for orthogonality loss
-        router_ortho_neg_corr_weight: float = 1.0,  # weight for negative correlations in router-ortho loss
         train_capacity: float = 1,      # slightly smaller than 1.25, the default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
@@ -77,14 +73,10 @@ class GPTConfig:
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
-        self.use_router_ortho_loss = use_router_ortho_loss
-        valid_router_ortho_loss_targets = {"gate_proj"}
-        if router_ortho_loss_target not in valid_router_ortho_loss_targets:
-            raise ValueError(
-                "router_ortho_loss_target must be one of "
-                f"{sorted(valid_router_ortho_loss_targets)}, got {router_ortho_loss_target!r}"
-            )
-        self.router_ortho_loss_target = router_ortho_loss_target
+        kwargs.pop('use_router_ortho_loss', None)
+        kwargs.pop('router_ortho_loss_target', None)
+        kwargs.pop('router_ortho_loss_weight', None)
+        kwargs.pop('router_ortho_neg_corr_weight', None)
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
@@ -117,8 +109,6 @@ class GPTConfig:
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale
-        self.router_ortho_loss_weight = router_ortho_loss_weight
-        self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.train_capacity = train_capacity
         self.eval_capacity = eval_capacity
         self.min_capacity = min_capacity

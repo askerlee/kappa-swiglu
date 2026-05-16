@@ -32,59 +32,6 @@ from nanochat.optim import AuroraAdamW, DistAuroraAdamW, MuonAdamW, DistMuonAdam
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
-# Orthogonal subtraction of b from a: the residual is orthogonal to b on the specified dims.
-# NOTE: ortho_subtract(a, b) is scale-invariant w.r.t. (b * b_discount),
-# but scales proportionally with a.
-# a, b are n-dimensional tensors. Subtraction happens on `dims`, or on the last
-# `on_last_n_dims` dims for backward compatibility.
-# ortho_subtract(a, b) is not symmetric w.r.t. a and b, nor is ortho_l2loss(a, b).
-# NOTE: always choose a to be something we care about, and b to be something as a reference.
-def ortho_subtract(a, b, b_discount=1, on_last_n_dims=1, return_align_coeffs=False, dims=None):
-    assert a.ndim == b.ndim, "Tensors a and b must have the same number of dimensions"
-
-    if dims is None:
-        assert 1 <= on_last_n_dims <= a.ndim, "on_last_n_dims must be between 1 and a.ndim"
-        dims = list(range(a.ndim - on_last_n_dims, a.ndim))
-    else:
-        assert len(dims) > 0, "dims must be a non-empty list"
-        dims = [dim if dim >= 0 else a.ndim + dim for dim in dims]
-        assert all(0 <= dim < a.ndim for dim in dims), "dims must be valid dimension indices"
-        assert len(set(dims)) == len(dims), "dims must not contain duplicates"
-
-    for dim in dims:
-        assert a.shape[dim] == b.shape[dim] or a.shape[dim] == 1 or b.shape[dim] == 1, \
-          f"Tensors a and b must have the same shape or be broadcastable on dims={dims}"
-
-    # There could still be exceptions if a and b have singleton dims at non-matching dims.
-    # Leave the full broadcast check to torch.
-    a, b = torch.broadcast_tensors(a, b)
-
-    keep_dims = [dim for dim in range(a.ndim) if dim not in dims]
-    permute_order = keep_dims + dims
-    inverse_permute = [0] * a.ndim
-    for idx, dim in enumerate(permute_order):
-        inverse_permute[dim] = idx
-
-    a_perm = a.permute(permute_order)
-    b_perm = b.permute(permute_order)
-    projected_ndim = len(dims)
-    a2 = a_perm.reshape(*a_perm.shape[:-projected_ndim], -1)
-    b2 = b_perm.reshape(*b_perm.shape[:-projected_ndim], -1)
-
-    dot_a_b = (a2 * b2).sum(dim=-1)
-    dot_b_b = (b2 * b2).sum(dim=-1)
-
-    w_optimal = dot_a_b / (dot_b_b + 1e-6)
-    result = a2 - b2 * w_optimal.unsqueeze(-1) * b_discount
-
-    result = result.reshape(a_perm.shape).permute(inverse_permute)
-    w_optimal = w_optimal.reshape(*a_perm.shape[:-projected_ndim], *([1] * projected_ndim)).permute(inverse_permute)
-
-    if return_align_coeffs:
-        return result, w_optimal
-    else:
-        return result
-
 def scale_grad(x, alpha):
     if torch.is_tensor(alpha) and alpha.requires_grad:
         return IdentityWithScaledGrad.apply(x, alpha)
@@ -1094,10 +1041,6 @@ class Qwen3MLPExperts(nn.Module):
         proj_out = torch.bmm(x, self.c_proj)
 
         if self.debug:
-            # ortho_diffs: [n_exp, capacity].
-            # ortho_diffs are almost negative at every element, -0.03 ~ -0.08.
-            # Negative values mean the current router-aligned component of gate_proj
-            # is suppressing gate activations on average relative to the orthogonalized gate_proj.            ortho_diffs = (gate_out_acts - gate_out_ortho_acts).mean(dim=-1)
             breakpoint()
 
         return proj_out
@@ -1118,14 +1061,10 @@ class MOELayer(nn.Module):
         self.n_exp = config.n_exp
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
-        self.use_router_ortho_loss = config.use_router_ortho_loss
-        self.router_ortho_loss_weight = float(getattr(config, 'router_ortho_loss_weight', 0.0))
-        self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
         self.use_gate_proj_bias_as_slope_scaler = bool(
             getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
         )
-        self.router_ortho_loss_grad_scale = 0.1
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1168,15 +1107,6 @@ class MOELayer(nn.Module):
         expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(x)
 
         # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
-        if self.training and self.use_router_ortho_loss:
-            router_ortho_ctx = torch.no_grad if self.router_ortho_loss_weight == 0 else nullcontext
-            with router_ortho_ctx():
-                router_ortho_loss, router_ortho_sub_losses = self.compute_router_ortho_loss()
-            # Keep the graph of router_ortho_loss only when the configured orthogonality weight is non-zero.
-            MANAGER.add("router_ortho_loss", router_ortho_loss)
-            for loss_name, loss_value in router_ortho_sub_losses.items():
-                MANAGER.add(loss_name, loss_value)
-
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
 
@@ -1247,37 +1177,6 @@ class MOELayer(nn.Module):
             expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
             expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
             MANAGER.add("expert_utilities", expert_utilities.detach())
-
-    def compute_router_ortho_loss(self):
-        if not self.use_qwen3_moe_mlp:
-            # Only apply orthogonality loss when using Qwen3-style MoE MLPs
-            # new_zeros(()) returns a zero scalar.
-            zero = self.experts.c_fc.new_zeros(())
-            sub_losses = {'router_ortho_loss_gate_proj': zero}
-            return zero, sub_losses
-
-        router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-        # Reduce the grad to router_weights by 0.1 to avoid blowing up the router.
-        router_weights = scale_grad(router_weights, self.router_ortho_loss_grad_scale)
-        # expert_weights: [n_exp, n_embd, intermediate_size]
-        expert_weights = self.experts.gate_proj
-        # Use cosine instead of unnormalized dot product. Otherwise, the loss
-        # will reduce itself by suppressing the increase of the magnitudes of
-        # router_weights and expert_weights, which will hurt performance.
-        ortho_losses_signed = F.cosine_similarity(router_weights, expert_weights, dim=1, eps=1e-6)
-        ortho_losses_weights = torch.ones_like(ortho_losses_signed)
-        # Negative correlations could be more tolerated by setting router_ortho_neg_corr_weight < 1.
-        ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight
-        # NOTE: the ortho loss is summed over all feature columns (intermediate_size dimension)
-        # and averaged over rows (expert dimension).
-        # Later the ortho losses of different MoE layers are added up.
-        # So the magnitude could be as large as 50~200.
-        ortho_loss = (
-            ortho_losses_signed.square() * ortho_losses_weights
-        ).sum(dim=1).mean()
-        sub_losses = {'router_ortho_loss_gate_proj': ortho_loss}
-        return ortho_loss, sub_losses
-
 
 class GPT(nn.Module):
     def __init__(self, config, pad_vocab_size_to=64):
@@ -1726,7 +1625,6 @@ class GPT(nn.Module):
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
-        router_ortho_sub_loss_names = ('router_ortho_loss_gate_proj',)
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
@@ -1758,7 +1656,6 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
-                   'router_ortho_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
                    'gate_grad_scale_mean': None,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
@@ -1769,8 +1666,6 @@ class GPT(nn.Module):
                    'expert_utilities': None,
                    'selected_scores': None,
                  }
-        for sub_loss_name in router_ortho_sub_loss_names:
-            losses[sub_loss_name] = 0
 
         # If MANAGER.collect_load_balancing_stats is False, these will return None
         expert_utilities = MANAGER.aggregate("expert_utilities")
@@ -1883,14 +1778,6 @@ class GPT(nn.Module):
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
-            if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
-                router_ortho_loss = MANAGER.aggregate("router_ortho_loss")
-                losses['router_ortho_loss'] = router_ortho_loss if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
-                MANAGER.reset("router_ortho_loss")
-                for sub_loss_name in router_ortho_sub_loss_names:
-                    sub_loss = MANAGER.aggregate(sub_loss_name)
-                    losses[sub_loss_name] = sub_loss if isinstance(sub_loss, torch.Tensor) else sub_loss
-                    MANAGER.reset(sub_loss_name)
 
             losses['gate_proj_bias_l2_loss'] = self.compute_gate_proj_bias_magnitude_losses()
         else:

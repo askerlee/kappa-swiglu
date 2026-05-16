@@ -8,14 +8,6 @@ usage: base_train.py [-h] [--device-type DEVICE_TYPE] [--seed SEED]
                      [--aux-loss-weight AUX_LOSS_WEIGHT]
                      [--aux-loss-weight-init-scale AUX_LOSS_WEIGHT_INIT_SCALE]
                      [--aux-loss-weight-init-anneal-iterations AUX_LOSS_WEIGHT_INIT_ANNEAL_ITERATIONS]
-                     [--router-ortho-loss-weight ROUTER_ORTHO_LOSS_WEIGHT]
-                     [--router-ortho-loss-warmup-iterations ROUTER_ORTHO_LOSS_WARMUP_ITERATIONS]
-                     [--router-ortho-loss-anneal-iterations ROUTER_ORTHO_LOSS_ANNEAL_ITERATIONS]
-                     [--router-ortho-loss-floor-frac ROUTER_ORTHO_LOSS_FLOOR_FRAC]
-                     [--use-router-ortho-blockwise [USE_ROUTER_ORTHO_BLOCKWISE]]
-                     [--router-ortho-block-size ROUTER_ORTHO_BLOCK_SIZE]
-                     [--router-ortho-on-prob ROUTER_ORTHO_ON_PROB]
-                     [--router-ortho-neg-corr-weight ROUTER_ORTHO_NEG_CORR_WEIGHT]
                      [--use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]]
                      [--use-gate-proj-bias-as-slope-scaler [USE_GATE_PROJ_BIAS_AS_SLOPE_SCALER]]
                      [--exp-gate-proj-bias-input {top_logits,router_probs}]
@@ -106,28 +98,6 @@ options:
                         number of iterations used to anneal aux loss weight
                         from --aux-loss-weight * --aux-loss-weight-init-scale
                         down to --aux-loss-weight
-  --router-ortho-loss-weight ROUTER_ORTHO_LOSS_WEIGHT
-                        weight for router orthogonality loss
-  --router-ortho-loss-warmup-iterations ROUTER_ORTHO_LOSS_WARMUP_ITERATIONS
-                        number of iterations to linearly ramp router ortho
-                        loss weight from 0 up to --router-ortho-loss-weight
-                        before annealing
-  --router-ortho-loss-anneal-iterations ROUTER_ORTHO_LOSS_ANNEAL_ITERATIONS
-                        Total anneal iterations for the router ortho loss
-  --router-ortho-loss-floor-frac ROUTER_ORTHO_LOSS_FLOOR_FRAC
-                        fraction of the base router ortho loss weight to keep
-                        after annealing completes
-  --use-router-ortho-blockwise [USE_ROUTER_ORTHO_BLOCKWISE]
-                        Enable blockwise on/off schedule for router-ortho loss
-                        to counter the memory effect of Muon
-  --router-ortho-block-size ROUTER_ORTHO_BLOCK_SIZE
-                        block size (in optimizer steps) for blockwise router-
-                        ortho loss gating
-  --router-ortho-on-prob ROUTER_ORTHO_ON_PROB
-                        probability a router-ortho block is active; set to 1.0
-                        to disable blockwise gating
-  --router-ortho-neg-corr-weight ROUTER_ORTHO_NEG_CORR_WEIGHT
-                        weight for negative correlations in router-ortho loss.
   --use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]
                         add a learnable bias to Qwen3 expert gate activations
                         after gate_proj and SiLU

@@ -175,16 +175,6 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=1e-3, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
 parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
-# router ortho loss is around 10 (if the loss is enabled). So * weight = 1e-4.
-parser.add_argument("--router-ortho-loss-weight", type=float, default=0, help="weight for router orthogonality loss")
-parser.add_argument("--router-ortho-loss-warmup-iterations", type=int, default=500, help="number of iterations to linearly ramp router ortho loss weight from 0 up to --router-ortho-loss-weight before annealing")
-parser.add_argument("--router-ortho-loss-anneal-iterations", type=int, default=-1, help="Total anneal iterations for the router ortho loss")
-parser.add_argument("--router-ortho-loss-floor-frac", type=float, default=0, help="fraction of the base router ortho loss weight to keep after annealing completes")
-parser.add_argument("--use-router-ortho-blockwise", type=str2bool, nargs='?', const=True, default=True, 
-                    help="Enable blockwise on/off schedule for router-ortho loss to counter the memory effect of Muon")
-parser.add_argument("--router-ortho-block-size", type=int, default=100, help="block size (in optimizer steps) for blockwise router-ortho loss gating")
-parser.add_argument("--router-ortho-on-prob", type=float, default=0.8, help="probability a router-ortho block is active; set to 1.0 to disable blockwise gating")
-parser.add_argument("--router-ortho-neg-corr-weight", type=float, default=1, help="weight for negative correlations in router-ortho loss.")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=False,
@@ -305,12 +295,6 @@ if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed')
 if args.debug:
     args.compile = False
 
-if args.router_ortho_block_size <= 0:
-    raise ValueError("--router-ortho-block-size must be > 0")
-if not (0.0 < args.router_ortho_on_prob <= 1.0):
-    raise ValueError("--router-ortho-on-prob must be in (0, 1]")
-if args.router_ortho_loss_warmup_iterations < 0:
-    raise ValueError("--router-ortho-loss-warmup-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
 if args.aux_loss_weight_init_scale <= 0.0:
@@ -355,9 +339,6 @@ if (
 # N: N moe layers from moe_start_layer
 if args.num_moe_layers < -1:
     raise ValueError("--num-moe-layers must be >= -1")
-elif args.num_moe_layers == 0:
-    args.router_ortho_loss_weight = 0
-    print("Setting router orthogonality loss weight to 0 because --num-moe-layers=0")
 effective_moe_layer_count = len(get_moe_layer_indices(argparse.Namespace(
     n_exp=args.n_exp,
     num_moe_layers=args.num_moe_layers,
@@ -480,8 +461,6 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        router_ortho_loss_weight=args.router_ortho_loss_weight,
-        router_ortho_neg_corr_weight=args.router_ortho_neg_corr_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
@@ -627,8 +606,6 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-router_ortho_loss_name = "router_ortho_loss"
-router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
 
 if args.compile:
     model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
@@ -819,21 +796,6 @@ def get_muon_momentum(it):
 def get_weight_decay(base_weight_decay, it, num_iterations):
     return base_weight_decay * (1 - it / num_iterations)
 
-def get_router_ortho_loss_weight(base_weight, it, num_warmup_iterations=0, num_anneal_iterations=-1, floor_frac=0.01):
-    warmup_weight = base_weight
-    if num_warmup_iterations > 0:
-        warmup_progress = min(max(it, 0), num_warmup_iterations) / num_warmup_iterations
-        warmup_weight = base_weight * warmup_progress
-
-    if num_anneal_iterations <= 0:
-        return warmup_weight
-
-    anneal_step = max(it - num_warmup_iterations, 0)
-    anneal_progress = min(anneal_step, num_anneal_iterations) / num_anneal_iterations
-    # Warm up router_ortho_loss_weight to base_weight, then anneal it to a small floor.
-    anneal_multiplier = floor_frac + (1.0 - floor_frac) * (1.0 - anneal_progress)
-    return warmup_weight * anneal_multiplier
-
 
 def get_annealed_loss_weight(base_weight, it, num_anneal_iterations=500, final_weight=1e-3):
     if num_anneal_iterations <= 0 or base_weight <= final_weight:
@@ -912,25 +874,6 @@ def scalar_loss_to_item(value):
 
 def drop_none_log_values(log_data):
     return {key: value for key, value in log_data.items() if value is not None}
-
-# Hard-coded warmup before enabling blockwise router-ortho gating.
-ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS = 1000
-
-def get_router_ortho_blockwise_gate(it, block_size, on_prob, seed):
-    """Deterministic per-block Bernoulli gate shared across ranks."""
-    if on_prob >= 1.0:
-        return 1.0, 1.0, it // block_size
-    block_idx = it // block_size
-    # Deterministic 64-bit mix to produce a stable pseudo-random value in [0, 1).
-    state = (int(seed) ^ (block_idx * 0x9E3779B97F4A7C15)) & 0xFFFFFFFFFFFFFFFF
-    state ^= (state >> 30)
-    state = (state * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
-    state ^= (state >> 27)
-    state = (state * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
-    state ^= (state >> 31)
-    u = state / float(1 << 64)
-    gate = 1.0 if u < on_prob else 0.0
-    return gate, u, block_idx
 
 def accumulate_step_losses(step_losses, micro_losses):
     """Accumulate detached per-microstep losses for step-level logging."""
@@ -1199,19 +1142,6 @@ while True:
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
-    router_ortho_num_anneal_iterations = num_iterations
-    if args.router_ortho_loss_anneal_iterations > 0:
-        router_ortho_num_anneal_iterations = min(
-            router_ortho_num_anneal_iterations,
-            args.router_ortho_loss_anneal_iterations,
-        )
-    router_ortho_loss_weight = get_router_ortho_loss_weight(
-        args.router_ortho_loss_weight,
-        step,
-        num_warmup_iterations=args.router_ortho_loss_warmup_iterations,
-        num_anneal_iterations=router_ortho_num_anneal_iterations,
-        floor_frac=args.router_ortho_loss_floor_frac,
-    )
     aux_loss_weight = get_annealed_loss_weight(
         args.aux_loss_weight * args.aux_loss_weight_init_scale,
         step,
@@ -1231,28 +1161,6 @@ while True:
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
-    router_ortho_blockwise_active = False
-    if args.use_router_ortho_blockwise and step >= ROUTER_ORTHO_BLOCKWISE_WARMUP_STEPS:
-        router_ortho_blockwise_active = True
-    if router_ortho_blockwise_active:
-        # router_ortho_gate_random_u is the underlying random sample u in [0, 1),
-        # It is the random score that gets compared against on_prob to decide the gate:
-        # if u < on_prob, then router_ortho_is_on = 1.0, otherwise router_ortho_is_on = 0.0.
-        router_ortho_is_on, router_ortho_gate_random_u, router_ortho_block_idx = get_router_ortho_blockwise_gate(
-            step,
-            args.router_ortho_block_size,
-            args.router_ortho_on_prob,
-            args.seed,
-        )
-    else:
-        router_ortho_is_on, router_ortho_gate_random_u, router_ortho_block_idx = 1.0, 1.0, step // args.router_ortho_block_size
-
-    router_ortho_loss_on_scale = 1.0
-    # If blockwise router-ortho is active but the gate is only on for a fraction of the blocks, 
-    # we scale up the loss when it's on to maintain a stable loss scale and avoid underflow issues.
-    if router_ortho_blockwise_active and router_ortho_is_on > 0.0 and args.router_ortho_on_prob < 1.0:
-        router_ortho_loss_on_scale = 1.0 / args.router_ortho_on_prob
-    router_ortho_effective_loss_weight = router_ortho_loss_weight * router_ortho_is_on * router_ortho_loss_on_scale
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
@@ -1477,8 +1385,6 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
-            router_ortho_loss_name: 0.0,
-            'router_ortho_loss_gate_proj': 0.0,
             'gate_proj_bias_l2_loss': 0.0,
             'gate_proj_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
@@ -1500,11 +1406,6 @@ while True:
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
-            # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-            router_ortho_loss = micro_losses.get("router_ortho_loss_gate_proj")
-            if router_ortho_loss is None:
-                router_ortho_loss = 0.0
-            loss = loss + router_ortho_effective_loss_weight * router_ortho_loss
             gate_proj_bias_l2_loss = micro_losses.get("gate_proj_bias_l2_loss")
             if gate_proj_bias_l2_loss is None:
                 gate_proj_bias_l2_loss = 0.0
@@ -1516,9 +1417,6 @@ while True:
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
 
         losses = average_step_losses(step_losses, grad_accum_steps)
-        losses[router_ortho_loss_name] = losses.get("router_ortho_loss_gate_proj")
-        if losses[router_ortho_loss_name] is None:
-            losses[router_ortho_loss_name] = 0.0
 
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)
@@ -1548,7 +1446,7 @@ while True:
 
     # logging (CPU action only)
     ema_beta = 0.9 # EMA decay factor for some smoothing just for nicer logging
-    # We don't do EMA on other types of losses (e.g. router ortho loss). Just the main NTP loss.
+    # We don't do EMA on other types of losses. Just the main NTP loss.
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f # EMA the training loss
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1)) # debias the EMA
     pct_done = 100 * step / num_iterations
@@ -1595,14 +1493,8 @@ while True:
             "mfu": mfu,
             "epoch": epoch,
         }
-        log_data[f"train/{router_ortho_loss_name}_step"] = scalar_loss_to_item(losses[router_ortho_loss_name])
         log_data["train/aux_loss_weight"] = aux_loss_weight
-        log_data[f"train/{router_ortho_loss_name}_weight"] = router_ortho_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
-        for sub_loss_name in router_ortho_sub_loss_names:
-            sub_loss = losses.get(sub_loss_name)
-            if sub_loss is not None:
-                log_data[f"train/{sub_loss_name}_step"] = scalar_loss_to_item(sub_loss)
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

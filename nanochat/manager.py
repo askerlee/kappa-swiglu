@@ -6,15 +6,12 @@ class MOEManager:
     losses across multiple MoE layers in the model
     """
 
-    def __init__(self, ortho_loss_start_frac=0):
-        self.ortho_loss_start_frac = ortho_loss_start_frac
+    def __init__(self):
         self.collect_load_balancing_stats = False
         self.collect_backward_stats = False
         self._values = {
             "aux_loss": [],
             "router_z_loss": [],
-            "router_ortho_loss": [],
-            "router_ortho_loss_gate_proj": [],
             "gate_proj_bias_shift_abs_top5p_mean": [],
             "gate_proj_bias_shift_abs_bottom5p_mean": [],
             "gate_grad_scale_mean": [],
@@ -41,10 +38,6 @@ class MOEManager:
         self._gate_proj_bias_shift_abs_mean_size = 0
         self._gate_proj_bias_shift_abs_mean_normalized_buffer = None
         self._gate_proj_bias_shift_abs_mean_normalized_size = 0
-        self._start_frac_names = {
-            "router_ortho_loss",
-            "router_ortho_loss_gate_proj",
-        }
         self.tensor_var_names = set(["drop_rate_per_ks", 
                                      "expert_utilities",
                                      "selected_scores",
@@ -191,12 +184,6 @@ class MOEManager:
 
     def aggregate(self, name):
         values = self._values.get(name, [])
-        if name in self._start_frac_names:
-            # If ortho_loss_start_frac = 0.25 and there are 8 moe layers, then 0.25*8 = 2.0, 
-            # so start from layer 2, i.e. skip first two layers.
-            # But usually we set ortho_loss_start_frac = 0, i.e. sum losses on all layers.
-            start_layer = int(len(values) * self.ortho_loss_start_frac)
-            values = values[start_layer:]
         if name == "drop_rate_per_ks":
             if self._drop_rate_buffer is None or self._drop_rate_size == 0:
                 return None
@@ -257,4 +244,4 @@ class MOEManager:
         else:
             return sum(values)
     
-MANAGER = MOEManager(ortho_loss_start_frac=0.)
+MANAGER = MOEManager()

@@ -101,13 +101,6 @@ parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initia
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
-parser.add_argument("--router-ortho-loss-weight", type=float, default=-1.0, 
-                    help="weight for router orthogonality loss (default: -1.0, inherit from saved config of base model)")
-# If the base model is trained without the router ortho loss, i.e., the weight is 0, then * 0.1 is still 0.
-# If the base model is trained with a 1e-4 router ortho loss weight, then * 0.1 will be 1e-5.
-parser.add_argument("--router-ortho-loss-weight-scale", type=float, default=0.1,
-                    help="scaling factor for router orthogonality loss weight (multiplied with the weight from saved config of base model). "
-                         "Only effective when --router-ortho-loss-weight is not specified.")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
 
@@ -141,13 +134,6 @@ if args.gate_proj_bias_lr_warmup_iterations < 0:
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
-# -----------------------------------------------------------------------------
-
-def combine_router_ortho_sublosses(losses):
-    gate_proj_loss = losses.get("router_ortho_loss_gate_proj")
-    if gate_proj_loss is None:
-        return 0.0
-    return gate_proj_loss
 
 
 def drop_none_log_values(log_data):
@@ -190,7 +176,6 @@ if not use_dummy_wandb:
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
-# NOTE: We don't have to update router_ortho_loss_weight here, since it's used outside the model.
 refresh_gate_proj_bias_references = args.exp_gate_proj_bias_l2_anchor == "initial"
 print0(f"exp gate proj bias L2 anchor: {args.exp_gate_proj_bias_l2_anchor}")
 model, tokenizer, meta = load_model(
@@ -269,16 +254,9 @@ if not use_dummy_wandb:
     wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
 
 orig_model = model
-router_ortho_sub_loss_names = ("router_ortho_loss_gate_proj",)
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 moe_layer_indices = get_moe_layer_indices(model.config)
-if args.router_ortho_loss_weight == -1:
-    # model.config.router_ortho_loss_weight is the weight used in base training.
-    args.router_ortho_loss_weight = model.config.router_ortho_loss_weight * args.router_ortho_loss_weight_scale
-    print0(f"Scaled router_ortho_loss_weight: {args.router_ortho_loss_weight}")
-else:
-    print0(f"Specfied router_ortho_loss_weight: {args.router_ortho_loss_weight}")
     
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -543,10 +521,6 @@ def get_muon_momentum(it):
 def get_weight_decay(progress, weight_decay_scaled):
     progress = min(max(progress, 0.0), 1.0)
     return weight_decay_scaled * (1 - progress)
-
-def get_router_ortho_loss_weight(progress, base_weight):
-    # Linear to zero over the course of training
-    return base_weight * (1 - progress)
 
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
@@ -813,9 +787,6 @@ while True:
         with autocast_ctx:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
-        # Most values in losses are detached and for logging only, but router_ortho_loss is not.
-        router_ortho_loss = combine_router_ortho_sublosses(losses)
-        loss = loss + get_router_ortho_loss_weight(progress, args.router_ortho_loss_weight) * router_ortho_loss
         gate_proj_bias_l2_loss = losses.get("gate_proj_bias_l2_loss")
         if gate_proj_bias_l2_loss is None:
             gate_proj_bias_l2_loss = 0.0
@@ -825,8 +796,6 @@ while True:
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
-
-    losses['router_ortho_loss'] = combine_router_ortho_sublosses(losses)
 
     if MANAGER.collect_load_balancing_stats:
         collect_weight_grad_stats(model, losses, moe_layer_indices)
@@ -895,11 +864,6 @@ while True:
             "train/skipped_overlong_conversations": train_skipped_conversations,
             "train/skipped_overlong_fraction": discard_fraction,
         }
-        log_data[f"train/router_ortho_loss_step"] = scalar_loss_to_item(losses['router_ortho_loss'])
-        for sub_loss_name in router_ortho_sub_loss_names:
-            sub_loss = losses.get(sub_loss_name)
-            if sub_loss is not None:
-                log_data[f"train/{sub_loss_name}_step"] = scalar_loss_to_item(sub_loss)
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:
