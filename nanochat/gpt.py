@@ -875,6 +875,17 @@ class Qwen3MLPExperts(nn.Module):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
         return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
 
+    def _accumulate_gate_slope_l2_losses(self, gate_proj_bias, slope_scales, selected_router_scores):
+        slope_delta = slope_scales.float() - 1.0
+        MANAGER.add(
+            "gate_proj_slope_l2_loss_above_1",
+            slope_delta.clamp_min(0).square().mean(),
+        )
+        MANAGER.add(
+            "gate_proj_slope_l2_loss_below_1",
+            (-slope_delta).clamp_min(0).square().mean(),
+        )
+
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
         slope_scales = slope_scales.to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_scales)
@@ -964,6 +975,11 @@ class Qwen3MLPExperts(nn.Module):
             gate_proj_bias = self._materialize_gate_proj_bias()
             slope_scales = self._compute_gate_slope_scales(
                 gate_proj_bias,
+                selected_router_scores,
+            )
+            self._accumulate_gate_slope_l2_losses(
+                gate_proj_bias,
+                slope_scales,
                 selected_router_scores,
             )
             # slope_scales: [n_exp, capacity, intermediate_size]
@@ -1188,21 +1204,18 @@ class GPT(nn.Module):
         for experts in bias_enabled_experts:
             experts.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
 
-    def compute_gate_proj_bias_magnitude_losses(self):
-        moe_l2_losses = []
-        for block in self.transformer.h:
-            mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, MOELayer):
-                experts = getattr(mlp, 'experts', None)
-                if experts is not None and experts.use_gate_proj_bias:
-                    gate_proj_bias_delta = experts._materialize_gate_proj_bias().float()
-                    if experts.initial_gate_proj_bias is not None:
-                        gate_proj_bias_delta = gate_proj_bias_delta - experts.initial_gate_proj_bias.float()
-                    moe_l2_losses.append(gate_proj_bias_delta.square().mean())
-
+    def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
-        l2_loss = torch.stack(moe_l2_losses).mean() if moe_l2_losses else torch.zeros((), device=device)
-        return l2_loss
+        losses = {}
+        for name in ('gate_proj_slope_l2_loss_above_1', 'gate_proj_slope_l2_loss_below_1'):
+            value = MANAGER.aggregate(name)
+            losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
+            MANAGER.reset(name)
+        losses['gate_proj_slope_l2_loss'] = (
+            losses['gate_proj_slope_l2_loss_above_1']
+            + losses['gate_proj_slope_l2_loss_below_1']
+        )
+        return losses
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1636,7 +1649,9 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
-                   'gate_proj_bias_l2_loss': 0,
+                   'gate_proj_slope_l2_loss': 0,
+                   'gate_proj_slope_l2_loss_above_1': 0,
+                   'gate_proj_slope_l2_loss_below_1': 0,
                    'gate_grad_scale_mean': None,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,
@@ -1759,7 +1774,7 @@ class GPT(nn.Module):
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
 
-            losses['gate_proj_bias_l2_loss'] = self.compute_gate_proj_bias_magnitude_losses()
+            losses.update(self.compute_gate_proj_slope_magnitude_losses())
         else:
             return logits
 

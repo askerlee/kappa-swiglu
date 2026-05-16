@@ -1380,7 +1380,7 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
-            'gate_proj_bias_l2_loss': 0.0,
+            'gate_proj_slope_l2_loss': 0.0,
             'gate_proj_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -1401,10 +1401,10 @@ while True:
             with autocast_ctx:
                 loss, micro_losses = model(micro_x, micro_y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
-            gate_proj_bias_l2_loss = micro_losses.get("gate_proj_bias_l2_loss")
-            if gate_proj_bias_l2_loss is None:
-                gate_proj_bias_l2_loss = 0.0
-            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
+            gate_proj_slope_l2_loss = micro_losses.get("gate_proj_slope_l2_loss")
+            if gate_proj_slope_l2_loss is None:
+                gate_proj_slope_l2_loss = 0.0
+            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_slope_l2_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1477,7 +1477,7 @@ while True:
             "total_training_time": total_training_time,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
+            "train/gate_proj_slope_l2_loss_step": losses['gate_proj_slope_l2_loss'],
             "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),

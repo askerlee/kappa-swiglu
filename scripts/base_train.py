@@ -195,7 +195,10 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-above-1", type=float, default=4e-3,
+                    help="L2 weight on slope-scale deviations above 1")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-below-1", type=float, default=2e-3,
+                    help="L2 weight on slope-scale deviations below 1")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
 # push the gate_proj_bias values towards 0 so that the slopes 
@@ -427,7 +430,6 @@ def build_model_meta(depth):
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
-        gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -1114,8 +1116,17 @@ while True:
     # In this case, it's set as half of the total iterations in 
     # get_two_stage_annealed_loss_weight().
     gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
-    gate_proj_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.gate_proj_bias_l2_loss_weight,
+    gate_proj_bias_l2_loss_weight_above_1 = get_two_stage_annealed_loss_weight(
+        args.gate_proj_bias_l2_loss_weight_above_1,
+        step,
+        total_iterations=num_iterations,
+        stage1_iterations=gate_proj_bias_l2_stage1_iterations,
+        stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
+        final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
+        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+    )
+    gate_proj_bias_l2_loss_weight_below_1 = get_two_stage_annealed_loss_weight(
+        args.gate_proj_bias_l2_loss_weight_below_1,
         step,
         total_iterations=num_iterations,
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
@@ -1347,7 +1358,9 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
-            'gate_proj_bias_l2_loss': 0.0,
+            'gate_proj_slope_l2_loss': 0.0,
+            'gate_proj_slope_l2_loss_above_1': 0.0,
+            'gate_proj_slope_l2_loss_below_1': 0.0,
             'gate_proj_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -1368,10 +1381,14 @@ while True:
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
-            gate_proj_bias_l2_loss = micro_losses.get("gate_proj_bias_l2_loss")
-            if gate_proj_bias_l2_loss is None:
-                gate_proj_bias_l2_loss = 0.0
-            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
+            gate_proj_slope_l2_loss_above_1 = micro_losses.get("gate_proj_slope_l2_loss_above_1")
+            if gate_proj_slope_l2_loss_above_1 is None:
+                gate_proj_slope_l2_loss_above_1 = 0.0
+            gate_proj_slope_l2_loss_below_1 = micro_losses.get("gate_proj_slope_l2_loss_below_1")
+            if gate_proj_slope_l2_loss_below_1 is None:
+                gate_proj_slope_l2_loss_below_1 = 0.0
+            loss = loss + gate_proj_bias_l2_loss_weight_above_1 * gate_proj_slope_l2_loss_above_1
+            loss = loss + gate_proj_bias_l2_loss_weight_below_1 * gate_proj_slope_l2_loss_below_1
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             loss.backward()
@@ -1443,7 +1460,9 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
+            "train/gate_proj_slope_l2_loss_step": losses['gate_proj_slope_l2_loss'],
+            "train/gate_proj_slope_l2_loss_above_1_step": losses['gate_proj_slope_l2_loss_above_1'],
+            "train/gate_proj_slope_l2_loss_below_1_step": losses['gate_proj_slope_l2_loss_below_1'],
             "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
@@ -1456,7 +1475,8 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
-        log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
+        log_data["train/gate_proj_bias_l2_loss_weight_above_1"] = gate_proj_bias_l2_loss_weight_above_1
+        log_data["train/gate_proj_bias_l2_loss_weight_below_1"] = gate_proj_bias_l2_loss_weight_below_1
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

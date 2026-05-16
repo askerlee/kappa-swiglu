@@ -94,7 +94,10 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=5e-3, help="weight for exp gate projection bias L2 loss")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-above-1", type=float, default=2e-3,
+                    help="L2 weight on slope-scale deviations above 1")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-below-1", type=float, default=1e-3,
+                    help="L2 weight on slope-scale deviations below 1")
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor exp gate projection bias L2 either around the loaded initial value or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -119,10 +122,6 @@ parser.add_argument("--log-grad-stats", action="store_true", help="log gradient 
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
-gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-l2-loss-weight',
-)
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.gate_proj_bias_delay_start_iterations < 0:
@@ -184,11 +183,13 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     refresh_gate_proj_bias_references=refresh_gate_proj_bias_references,
 )
-user_config["gate_proj_bias_l2_loss_weight"] = args.gate_proj_bias_l2_loss_weight
+user_config["gate_proj_bias_l2_loss_weight_above_1"] = args.gate_proj_bias_l2_loss_weight_above_1
+user_config["gate_proj_bias_l2_loss_weight_below_1"] = args.gate_proj_bias_l2_loss_weight_below_1
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
-            "gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
+            "gate_proj_bias_l2_loss_weight_above_1": args.gate_proj_bias_l2_loss_weight_above_1,
+            "gate_proj_bias_l2_loss_weight_below_1": args.gate_proj_bias_l2_loss_weight_below_1,
         },
         allow_val_change=True,
     )
@@ -769,10 +770,14 @@ while True:
         with autocast_ctx:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
-        gate_proj_bias_l2_loss = losses.get("gate_proj_bias_l2_loss")
-        if gate_proj_bias_l2_loss is None:
-            gate_proj_bias_l2_loss = 0.0
-        loss = loss + args.gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
+        gate_proj_slope_l2_loss_above_1 = losses.get("gate_proj_slope_l2_loss_above_1")
+        if gate_proj_slope_l2_loss_above_1 is None:
+            gate_proj_slope_l2_loss_above_1 = 0.0
+        gate_proj_slope_l2_loss_below_1 = losses.get("gate_proj_slope_l2_loss_below_1")
+        if gate_proj_slope_l2_loss_below_1 is None:
+            gate_proj_slope_l2_loss_below_1 = 0.0
+        loss = loss + args.gate_proj_bias_l2_loss_weight_above_1 * gate_proj_slope_l2_loss_above_1
+        loss = loss + args.gate_proj_bias_l2_loss_weight_below_1 * gate_proj_slope_l2_loss_below_1
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -830,12 +835,15 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss']),
+            "train/gate_proj_slope_l2_loss_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss']),
+            "train/gate_proj_slope_l2_loss_above_1_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss_above_1']),
+            "train/gate_proj_slope_l2_loss_below_1_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss_below_1']),
             "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean']),
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
-            "train/gate_proj_bias_l2_loss_weight": args.gate_proj_bias_l2_loss_weight,
+            "train/gate_proj_bias_l2_loss_weight_above_1": args.gate_proj_bias_l2_loss_weight_above_1,
+            "train/gate_proj_bias_l2_loss_weight_below_1": args.gate_proj_bias_l2_loss_weight_below_1,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,

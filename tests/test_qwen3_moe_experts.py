@@ -323,9 +323,46 @@ def test_gate_proj_bias_slope_scaler_config_is_always_enabled():
     assert explicit_false_config.use_gate_proj_bias_as_slope_scaler is True
 
 
-def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
+def test_gate_proj_bias_slope_l2_losses_split_above_and_below_one():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    MANAGER.reset("gate_proj_slope_l2_loss_above_1")
+    MANAGER.reset("gate_proj_slope_l2_loss_below_1")
+
+    gate_proj_bias = torch.tensor([
+        [-0.5, 0.5],
+        [-0.25, 0.25],
+    ])
+    selected_router_scores = torch.ones(2, 2)
+    slope_scales = torch.tensor([
+        [[0.5, 1.0], [1.5, 0.75]],
+        [[2.0, 1.0], [1.0, 0.25]],
+    ])
+    experts._accumulate_gate_slope_l2_losses(
+        gate_proj_bias,
+        slope_scales,
+        selected_router_scores,
+    )
+
+    above_1 = MANAGER.aggregate("gate_proj_slope_l2_loss_above_1")
+    below_1 = MANAGER.aggregate("gate_proj_slope_l2_loss_below_1")
+
+    MANAGER.reset("gate_proj_slope_l2_loss_above_1")
+    MANAGER.reset("gate_proj_slope_l2_loss_below_1")
+
+    torch.testing.assert_close(above_1, torch.tensor(1.25 / 8.0))
+    torch.testing.assert_close(below_1, torch.tensor(0.875 / 8.0))
+
+
+def test_gate_proj_slope_l2_losses_are_reported_from_slope_scales():
     torch.manual_seed(0)
-    base_config = GPTConfig(
+    config = GPTConfig(
         sequence_len=8,
         vocab_size=32,
         n_layer=3,
@@ -338,52 +375,31 @@ def test_gate_proj_bias_l2_losses_are_reported_for_moe_layers_only():
         use_aux_loss=False,
         use_router_z_loss=False,
         use_exp_gate_proj_bias=True,
-        gate_proj_bias_l2_loss_weight=0.0,
-        debug=False,
-    )
-    penalized_config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=3,
-        moe_start_layer=1,
-        num_moe_layers=1,
-        moe_layer_stride=1,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
-        gate_proj_bias_l2_loss_weight=0.7,
         debug=False,
     )
 
-    base_model = GPT(base_config)
-    penalized_model = GPT(penalized_config)
-    base_model.init_weights()
-    penalized_model.init_weights()
-    penalized_model.load_state_dict(deepcopy(base_model.state_dict()))
+    model = GPT(config)
+    model.init_weights()
 
     with torch.no_grad():
-        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(1.0)
-    penalized_model.refresh_gate_proj_bias_references()
+        gate_proj_bias = model.transformer.h[1].mlp.experts.gate_proj_bias
+        gate_proj_bias[0].fill_(2.0)
+        gate_proj_bias[1].fill_(-2.0)
 
-    with torch.no_grad():
-        penalized_model.transformer.h[1].mlp.experts.gate_proj_bias.fill_(4.0)
-        base_model.load_state_dict(deepcopy(penalized_model.state_dict()))
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
 
-    idx = torch.randint(0, base_config.vocab_size, (2, 4))
-    targets = torch.randint(0, base_config.vocab_size, (2, 4))
+    _, losses = model(idx, targets)
 
-    base_loss, base_losses = base_model(idx, targets)
-    penalized_loss, penalized_losses = penalized_model(idx, targets)
-
-    assert penalized_losses['gate_proj_bias_l2_loss'].item() == 9.0
-    assert base_losses['gate_proj_bias_l2_loss'].item() == 16.0
-    if torch.isnan(base_loss) and torch.isnan(penalized_loss):
-        assert True
-    else:
-        torch.testing.assert_close(penalized_loss, base_loss)
+    assert torch.isfinite(losses['gate_proj_slope_l2_loss'])
+    assert torch.isfinite(losses['gate_proj_slope_l2_loss_above_1'])
+    assert torch.isfinite(losses['gate_proj_slope_l2_loss_below_1'])
+    assert losses['gate_proj_slope_l2_loss_above_1'].item() > 0.0
+    assert losses['gate_proj_slope_l2_loss_below_1'].item() > 0.0
+    torch.testing.assert_close(
+        losses['gate_proj_slope_l2_loss'],
+        losses['gate_proj_slope_l2_loss_above_1'] + losses['gate_proj_slope_l2_loss_below_1'],
+    )
 
 
 def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
