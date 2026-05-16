@@ -1415,6 +1415,19 @@ while True:
                     f.write(f"{label:<35}, {acc:<10.6f}, {centered:<10.6f}\n")
                 f.write(f"{'CORE':<35}, {'':<10}, {core_results['core_metric']:<10.6f}\n")
                 f.write(f"{'CORE (no boolq)':<35}, {'':<10}, {core_results['core_metric_no_boolq']:<10.6f}\n")
+            if not use_dummy_wandb:
+                artifact = wandb.Artifact(
+                    name=f"{model_slug}-core-eval",
+                    type="core-eval-results",
+                    metadata={
+                        "model_slug": model_slug,
+                        "step": step,
+                        "core_metric": core_results["core_metric"],
+                        "core_metric_no_boolq": core_results["core_metric_no_boolq"],
+                    },
+                )
+                artifact.add_file(output_csv_path, name=os.path.basename(output_csv_path))
+                wandb_run.log_artifact(artifact)
             print0(f"\nResults written to: {output_csv_path}")
             print0(f"CORE metric: {core_results['core_metric']:.4f}")
             print0(f"CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")

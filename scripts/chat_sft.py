@@ -763,6 +763,36 @@ while True:
         if "ChatCORE metric (without SpellingBee)" in chatcore_metric_dict:
             wandb_log_data["chat_eval/ChatCORE_without_SpellingBee"] = chatcore_metric_dict["ChatCORE metric (without SpellingBee)"]
         wandb_run.log(drop_none_log_values(wandb_log_data), step=step)
+        if ddp_rank == 0:
+            model_slug = ckpt_prefix2 + f"_chat_{step:06d}"
+            output_csv_path = os.path.join(base_dir, "chat_eval", f"{model_slug}.csv")
+            os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+            with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:
+                f.write(f"{'Task':<35}, {'Accuracy':<10}\n")
+                for task_name, acc in chat_eval_results.items():
+                    f.write(f"{task_name:<35}, {acc:<10.6f}\n")
+                for metric_name, metric_value in chatcore_metric_dict.items():
+                    f.write(f"{metric_name:<35}, {metric_value:<10.6f}\n")
+            if not use_dummy_wandb:
+                artifact = wandb.Artifact(
+                    name=f"{model_slug}-chat-eval",
+                    type="chat-eval-results",
+                    metadata={
+                        "model_slug": model_slug,
+                        "step": step,
+                        "task_names": list(chat_eval_results.keys()),
+                        "max_problems": args.chat_eval_max_problems,
+                        "batch_size": args.chat_eval_batch_size,
+                        "num_samples": args.chat_eval_num_samples,
+                        "max_new_tokens": args.chat_eval_max_new_tokens,
+                        "temperature": args.chat_eval_temperature,
+                        "top_k": args.chat_eval_top_k,
+                        **chatcore_metric_dict,
+                    },
+                )
+                artifact.add_file(output_csv_path, name=os.path.basename(output_csv_path))
+                wandb_run.log_artifact(artifact)
+            print0(f"\nChat eval results written to: {output_csv_path}")
         model.train()
 
     if last_step:
