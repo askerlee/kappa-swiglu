@@ -588,8 +588,15 @@ def disable_fp8(model):
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 
-if args.compile:
-    model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+
+def build_training_model(orig_model, compile_enabled):
+    if not compile_enabled:
+        return orig_model
+    if hasattr(torch, "_dynamo"):
+        torch._dynamo.reset()
+    return torch.compile(orig_model, dynamic=False)
+
+model = build_training_model(orig_model, args.compile)
 
 # -----------------------------------------------------------------------------
 # Determine the optimization horizon based on the model size
@@ -1121,6 +1128,7 @@ signal.signal(signal.SIGINT, handle_shutdown_signal)
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
+    refresh_compiled_training_model = False
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
     aux_loss_weight = get_annealed_loss_weight(
@@ -1305,6 +1313,7 @@ while True:
         }), step=step)
         last_core_eval_step = step
         model.train()
+        refresh_compiled_training_model = args.compile
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1369,10 +1378,17 @@ while True:
                 print0(tokenizer.decode(sample[0]))
             model.train()
             trace_rank(f"step {step}: finished master-only sampling")
+            refresh_compiled_training_model = args.compile
         if ddp:
             trace_rank(f"step {step}: waiting at post-sample barrier")
             torch.distributed.barrier()
             trace_rank(f"step {step}: passed post-sample barrier")
+
+    if refresh_compiled_training_model:
+        trace_rank(f"step {step}: rebuilding compiled training wrapper")
+        orig_model.train()
+        model = build_training_model(orig_model, args.compile)
+        trace_rank(f"step {step}: rebuilt compiled training wrapper")
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if is_last_step:

@@ -503,8 +503,15 @@ def disable_fp8(model):
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 
-if args.compile:
-    model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+
+def build_training_model(orig_model, compile_enabled):
+    if not compile_enabled:
+        return orig_model
+    if hasattr(torch, "_dynamo"):
+        torch._dynamo.reset()
+    return torch.compile(orig_model, dynamic=False)
+
+model = build_training_model(orig_model, args.compile)
 
 # -----------------------------------------------------------------------------
 # Determine the optimization horizon based on the model size
@@ -1144,6 +1151,7 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     should_terminate_after_checkpoint = sigterm_requested and not is_last_step
+    refresh_compiled_training_model = False
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
     gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
@@ -1310,6 +1318,7 @@ while True:
         }, step=step)
         last_core_eval_step = step
         model.train()
+        refresh_compiled_training_model = args.compile
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1370,8 +1379,13 @@ while True:
                     sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
                 print0(tokenizer.decode(sample[0]))
             model.train()
+            refresh_compiled_training_model = args.compile
         if ddp:
             torch.distributed.barrier()
+
+    if refresh_compiled_training_model:
+        orig_model.train()
+        model = build_training_model(orig_model, args.compile)
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if is_last_step:
