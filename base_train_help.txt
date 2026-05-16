@@ -10,6 +10,7 @@ usage: base_train.py [-h] [--device-type DEVICE_TYPE] [--seed SEED]
                      [--aux-loss-weight-init-anneal-iterations AUX_LOSS_WEIGHT_INIT_ANNEAL_ITERATIONS]
                      [--use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]]
                      [--exp-gate-proj-bias-input {top_logits,router_probs}]
+                     [--global-gate-proj-bias-granularity {per-gate,per-expert,per-layer,global}]
                      [--gate-proj-bias-start-layer GATE_PROJ_BIAS_START_LAYER]
                      [--gate-proj-bias-lr-max-scale GATE_PROJ_BIAS_LR_MAX_SCALE]
                      [--gate-proj-bias-lr-final-scale GATE_PROJ_BIAS_LR_FINAL_SCALE]
@@ -104,6 +105,9 @@ options:
                         router confidence signal used by expert
                         gate_proj_bias: raw selected logits or top-k router
                         probabilities
+  --global-gate-proj-bias-granularity {per-gate,per-expert,per-layer,global}
+                        sharing granularity for MoE gate_proj_bias: per-
+                        gate (default), per-expert, per-layer, or global
   --gate-proj-bias-start-layer GATE_PROJ_BIAS_START_LAYER
                         first transformer layer index where MoE gate_proj_bias
                         is enabled (default: when omitted and MoE is enabled,

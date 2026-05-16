@@ -180,6 +180,9 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs"],
                     help="router confidence signal used by expert gate_proj_bias: raw selected logits or top-k router probabilities")
+parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
+                    choices=["per-gate", "per-expert", "per-layer", "global"],
+                    help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
@@ -422,6 +425,7 @@ def build_model_meta(depth):
         aux_loss_weight=args.aux_loss_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
+        global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         bilinear_mlp_moe=args.bilinear_mlp_moe,

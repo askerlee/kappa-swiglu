@@ -755,17 +755,23 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
+        self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
+        self._shared_gate_proj_bias = None
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
         if self.use_gate_proj_bias:
-            self.gate_proj_bias = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size))
+            gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
+            if self.global_gate_proj_bias_granularity == 'global':
+                self.register_parameter('gate_proj_bias', None)
+            else:
+                self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_parameter('gate_proj_bias_residual', None)
@@ -808,6 +814,28 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         return self.act_fn(gate_out_raw)
 
+    def _get_gate_proj_bias_parameter_shape(self):
+        if self.global_gate_proj_bias_granularity == 'per-gate':
+            return (self.n_exp, self.intermediate_size)
+        if self.global_gate_proj_bias_granularity == 'per-expert':
+            return (self.n_exp,)
+        if self.global_gate_proj_bias_granularity in {'per-layer', 'global'}:
+            return (1,)
+        raise ValueError(
+            f"Unsupported gate proj bias granularity: {self.global_gate_proj_bias_granularity!r}"
+        )
+
+    def bind_shared_gate_proj_bias(self, gate_proj_bias):
+        if self.global_gate_proj_bias_granularity != 'global':
+            raise ValueError("Shared gate_proj_bias binding is only valid for global granularity")
+        self._shared_gate_proj_bias = gate_proj_bias
+
+    def _get_gate_proj_bias_parameter(self):
+        gate_proj_bias = self.gate_proj_bias
+        if gate_proj_bias is not None:
+            return gate_proj_bias
+        return self._shared_gate_proj_bias
+
     @torch.no_grad()
     def snapshot_gate_proj_bias_reference(self):
         if not self.use_gate_proj_bias:
@@ -834,7 +862,14 @@ class Qwen3MLPExperts(nn.Module):
     def _materialize_gate_proj_bias(self):
         if not self.use_gate_proj_bias:
             return self.disabled_gate_proj_bias.detach().requires_grad_(True)
-        return self.gate_proj_bias + 0
+        gate_proj_bias = self._get_gate_proj_bias_parameter()
+        if gate_proj_bias is None:
+            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
+        if self.global_gate_proj_bias_granularity == 'per-gate':
+            return gate_proj_bias + 0
+        if self.global_gate_proj_bias_granularity == 'per-expert':
+            return gate_proj_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
+        return gate_proj_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
     def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, max_scale=4.0, softness=2.0):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
@@ -1113,6 +1148,8 @@ class GPT(nn.Module):
             "wte": nn.Embedding(padded_vocab_size, config.n_embd),
             "h": blocks,
         })
+        self.register_parameter("global_gate_proj_bias", None)
+        self._configure_gate_proj_bias_sharing()
 
         self.lm_head = nn.Linear(config.n_embd, padded_vocab_size, bias=False)
         # Per-layer learnable scalars (inspired by modded-nanogpt)
@@ -1134,6 +1171,22 @@ class GPT(nn.Module):
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
+
+    def _configure_gate_proj_bias_sharing(self):
+        if getattr(self.config, 'global_gate_proj_bias_granularity', 'per-gate') != 'global':
+            return
+        bias_enabled_experts = []
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                experts = getattr(mlp, 'experts', None)
+                if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
+                    bias_enabled_experts.append(experts)
+        if not bias_enabled_experts:
+            return
+        self.global_gate_proj_bias = nn.Parameter(torch.empty(1))
+        for experts in bias_enabled_experts:
+            experts.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
 
     def compute_gate_proj_bias_magnitude_losses(self):
         moe_l2_losses = []
@@ -1218,14 +1271,20 @@ class GPT(nn.Module):
                 experts = block.mlp.experts
                 if isinstance(experts, Qwen3MLPExperts):
                     torch.nn.init.uniform_(experts.gate_proj, -s, s)
-                    if experts.use_gate_proj_bias:
-                        torch.nn.init.zeros_(experts.gate_proj_bias)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
                 else:
                     # Ordinary MLPExperts doesn't have gate_proj.
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
+        if self.global_gate_proj_bias is not None:
+            torch.nn.init.zeros_(self.global_gate_proj_bias)
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                experts = getattr(mlp, 'experts', None)
+                if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias is not None:
+                    torch.nn.init.zeros_(experts.gate_proj_bias)
             
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
@@ -1424,22 +1483,42 @@ class GPT(nn.Module):
         moe_matrix_params = []
         moe_nonmatrix_params = []
         gate_proj_bias_params = []
+        seen_param_ids = set()
+
+        def append_param(target, param):
+            if param is None:
+                return
+            param_id = id(param)
+            if param_id in seen_param_ids:
+                return
+            seen_param_ids.add(param_id)
+            target.append(param)
+
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
                 if name.startswith('mlp.experts.gate_proj_bias'):
-                    gate_proj_bias_params.append(param)
+                    append_param(gate_proj_bias_params, param)
                 elif param.ndim < 2:
-                    target_nonmatrix_params.append(param)
+                    append_param(target_nonmatrix_params, param)
                 else:
-                    target_matrix_params.append(param)
-        value_embeds_params = list(self.value_embeds.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
-        lm_head_params = list(self.lm_head.parameters())
-        resid_params = [self.resid_lambdas]
-        x0_params = [self.x0_lambdas]
+                    append_param(target_matrix_params, param)
+        append_param(gate_proj_bias_params, self.global_gate_proj_bias)
+        value_embeds_params = []
+        for param in self.value_embeds.parameters():
+            append_param(value_embeds_params, param)
+        embedding_params = []
+        for param in self.transformer.wte.parameters():
+            append_param(embedding_params, param)
+        lm_head_params = []
+        for param in self.lm_head.parameters():
+            append_param(lm_head_params, param)
+        resid_params = []
+        append_param(resid_params, self.resid_lambdas)
+        x0_params = []
+        append_param(x0_params, self.x0_lambdas)
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +

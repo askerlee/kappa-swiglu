@@ -692,6 +692,86 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
     assert experts.gate_proj_bias.shape == (config.n_exp, 4 * config.n_embd)
 
 
+@pytest.mark.parametrize(
+    ("granularity", "parameter_shape", "expected_materialized_shape"),
+    [
+        ("per-gate", (2, 16), (2, 16)),
+        ("per-expert", (2,), (2, 16)),
+        ("per-layer", (1,), (2, 16)),
+    ],
+)
+def test_gate_projection_bias_materializes_expected_shape_for_local_granularities(
+    granularity,
+    parameter_shape,
+    expected_materialized_shape,
+):
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        global_gate_proj_bias_granularity=granularity,
+        debug=False,
+    )
+
+    experts = Qwen3MLPExperts(config)
+
+    assert experts.gate_proj_bias is not None
+    assert tuple(experts.gate_proj_bias.shape) == parameter_shape
+    assert tuple(experts._materialize_gate_proj_bias().shape) == expected_materialized_shape
+
+
+def test_gate_projection_bias_materialization_broadcasts_per_expert_values():
+    config = GPTConfig(
+        n_exp=3,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        global_gate_proj_bias_granularity="per-expert",
+        debug=False,
+    )
+
+    experts = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        experts.gate_proj_bias.copy_(torch.tensor([1.0, 2.0, 3.0]))
+
+    materialized = experts._materialize_gate_proj_bias()
+
+    torch.testing.assert_close(materialized[0], torch.ones(16))
+    torch.testing.assert_close(materialized[1], torch.full((16,), 2.0))
+    torch.testing.assert_close(materialized[2], torch.full((16,), 3.0))
+
+
+def test_gate_projection_bias_global_granularity_shares_one_parameter_across_layers():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=4,
+        moe_start_layer=1,
+        num_moe_layers=2,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_exp_gate_proj_bias=True,
+        global_gate_proj_bias_granularity="global",
+        debug=False,
+    )
+
+    model = GPT(config)
+    moe_experts = [
+        block.mlp.experts
+        for block in model.transformer.h
+        if hasattr(block.mlp, 'experts') and isinstance(block.mlp.experts, Qwen3MLPExperts)
+    ]
+
+    assert model.global_gate_proj_bias is not None
+    assert tuple(model.global_gate_proj_bias.shape) == (1,)
+    assert all(experts.gate_proj_bias is None for experts in moe_experts)
+    assert all(experts._get_gate_proj_bias_parameter() is model.global_gate_proj_bias for experts in moe_experts)
+    assert all(tuple(experts._materialize_gate_proj_bias().shape) == (config.n_exp, 4 * config.n_embd) for experts in moe_experts)
+
+
 def test_gate_projection_bias_respects_start_layer_cutoff():
     config = GPTConfig(
         n_exp=2,
