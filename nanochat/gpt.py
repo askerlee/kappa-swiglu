@@ -761,9 +761,6 @@ class Qwen3MLPExperts(nn.Module):
         self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
-        self.use_gate_proj_bias_as_slope_scaler = bool(
-            getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
-        )
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
@@ -839,24 +836,6 @@ class Qwen3MLPExperts(nn.Module):
             return self.disabled_gate_proj_bias.detach().requires_grad_(True)
         return self.gate_proj_bias + 0
 
-    def _apply_gate_proj_bias(self, gate_out_raw, gate_proj_bias, selected_router_scores, grad_scale=0.1):
-        if selected_router_scores is None or not self.use_gate_proj_bias:
-            return gate_out_raw
-
-        selected_router_scores = selected_router_scores.float()
-
-        if self.exp_gate_proj_bias_input == 'router_probs':
-            selected_router_scores = 4.0 * (2.0 * selected_router_scores - 1.0)
-
-        router_confidence_gate_scale = scale_grad(selected_router_scores, grad_scale)
-        router_confidence_gate_scale = router_confidence_gate_scale.to(dtype=self.gate_proj.dtype)
-        gate_out_raw.addcmul_(
-            router_confidence_gate_scale.unsqueeze(-1),
-            gate_proj_bias.unsqueeze(1),
-            value=-1,
-        )
-        return gate_out_raw
-
     def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, max_scale=4.0, softness=2.0):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
         return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
@@ -885,73 +864,6 @@ class Qwen3MLPExperts(nn.Module):
             'topk_share': topk_share.mean().detach(),
             'entropy': entropy.mean().detach(),
         }
-
-    @torch._dynamo.disable
-    def _update_gate_proj_bias_shift_stats(self, selected_router_scores):
-        if (
-            not MANAGER.collect_load_balancing_stats
-            or not self.use_gate_proj_bias
-            or selected_router_scores is None
-        ):
-            return
-
-        score_abs = selected_router_scores.detach().float().abs()
-        if self.use_gate_proj_bias_as_slope_scaler:
-            score_abs = 4.0 * score_abs
-        active_mask = score_abs > 0
-        if not active_mask.any():
-            return
-
-        # E_t,j[|s_t| * |b_j|] factorizes into E_t[|s_t|] * E_j[|b_j|], so we can
-        # avoid materializing the full [expert, token, intermediate] tensor.
-        # For a fixed expert, the scores are [token] which are shared across the
-        # intermediate dimension, and the bias is [intermediate] which are shared
-        # across the token dimension. So the matrix over (token, intermediate) 
-        # is an outer product: M_{t,j} = |s_{e,t}|\,|b_{e,j}|
-        # its mean factorizes exactly:
-        # \frac{1}{TJ}\sum_t\sum_j |s_{e,t}|\,|b_{e,j}|
-        # =
-        # \left(\frac{1}{T}\sum_t |s_{e,t}|\right)
-        # \left(\frac{1}{J}\sum_j |b_{e,j}|\right)
-        active_mask_f = active_mask.to(dtype=score_abs.dtype)
-        active_token_counts = active_mask_f.sum(dim=1)
-        score_abs_sum_per_expert = (score_abs * active_mask_f).sum(dim=1)
-        score_abs_mean_per_expert = score_abs_sum_per_expert / active_token_counts.clamp_min(1)
-        gate_proj_bias = self._materialize_gate_proj_bias()
-        bias_abs_mean_per_expert = gate_proj_bias.float().abs().mean(dim=1)
-        shift_abs_mean_per_expert = score_abs_mean_per_expert * bias_abs_mean_per_expert
-        total_active_tokens = active_token_counts.sum()
-        shift_abs_mean = (shift_abs_mean_per_expert * active_token_counts).sum() / total_active_tokens.clamp_min(1)
-        MANAGER.add("gate_proj_bias_shift_abs_mean", shift_abs_mean.detach())
-        MANAGER.add(
-            "gate_proj_bias_shift_abs_top5p_mean",
-            _mean_extreme_outer_product_percentile_per_row(
-                score_abs,
-                gate_proj_bias.float().abs(),
-                active_mask,
-                fraction=0.05,
-                largest=True,
-            ).detach(),
-        )
-        MANAGER.add(
-            "gate_proj_bias_shift_abs_bottom5p_mean",
-            _mean_extreme_outer_product_percentile_per_row(
-                score_abs,
-                gate_proj_bias.float().abs(),
-                active_mask,
-                fraction=0.05,
-                largest=False,
-            ).detach(),
-        )
-        active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
-        total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
-        # Normalize by the active confidence scale so one threshold transfers better
-        # across architectures whose selected-score magnitudes differ.
-        normalized_shift_abs_mean_per_expert = bias_abs_mean_per_expert
-        normalized_shift_abs_mean = (
-            normalized_shift_abs_mean_per_expert * active_token_counts_sqrt
-        ).sum() / total_active_tokens_sqrt
-        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_shift_abs_mean.detach())
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales, selected_router_scores):
@@ -1013,8 +925,8 @@ class Qwen3MLPExperts(nn.Module):
         router = self._get_router() if self.debug else None
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        gate_proj_bias = self._materialize_gate_proj_bias()
-        if self.use_gate_proj_bias_as_slope_scaler and selected_router_scores is not None:
+        if selected_router_scores is not None:
+            gate_proj_bias = self._materialize_gate_proj_bias()
             slope_scales = self._compute_gate_slope_scales(
                 gate_proj_bias,
                 selected_router_scores,
@@ -1026,13 +938,6 @@ class Qwen3MLPExperts(nn.Module):
                 slope_scales,
             )
         else:
-            self._update_gate_proj_bias_shift_stats(selected_router_scores)
-            gate_out_raw = self._apply_gate_proj_bias(
-                gate_out_raw,
-                gate_proj_bias,
-                selected_router_scores,
-                grad_scale=self.router_confidence_gate_bias_grad_scale,
-            )
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
         self._update_gate_stats(gate_out_acts)
 
@@ -1062,9 +967,6 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
-        self.use_gate_proj_bias_as_slope_scaler = bool(
-            getattr(config, 'use_gate_proj_bias_as_slope_scaler', False)
-        )
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1124,8 +1026,7 @@ class MOELayer(nn.Module):
         selected_gate_confidence = top_k_scores
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
-            if self.use_gate_proj_bias_as_slope_scaler or self.exp_gate_proj_bias_input == 'router_probs':
-                selected_gate_confidence = router_probs
+            selected_gate_confidence = router_probs
             expert_router_scores = torch.zeros(
                 self.n_exp, exp_capacity, dtype=selected_gate_confidence.dtype, device=selected_gate_confidence.device
             )

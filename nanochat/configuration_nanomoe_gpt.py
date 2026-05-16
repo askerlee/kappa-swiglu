@@ -25,7 +25,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "router_probs",
-        use_gate_proj_bias_as_slope_scaler: bool = False,
+        use_gate_proj_bias_as_slope_scaler: bool = True,
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
@@ -92,7 +92,8 @@ class GPTConfig:
             )
         self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
         kwargs.pop('use_gate_proj_bias_as_lr_scaler', None)
-        self.use_gate_proj_bias_as_slope_scaler = bool(use_gate_proj_bias_as_slope_scaler)
+        kwargs.pop('use_gate_proj_bias_as_slope_scaler', None)
+        self.use_gate_proj_bias_as_slope_scaler = True
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(

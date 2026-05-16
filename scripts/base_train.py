@@ -108,6 +108,7 @@ def build_chat_sft_exec_argv(
         python_executable,
         "-m",
         "scripts.chat_sft",
+        "--log-grad-stats",
         "--model-tag",
         model_tag,
         "--model-step",
@@ -177,16 +178,14 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope via tau = exp(gate_proj_bias * router_probs).clamp(0.5, 2.0)")
 parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs"],
                     help="router confidence signal used by expert gate_proj_bias: raw selected logits or top-k router probabilities")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
-# If use_gate_proj_bias_as_slope_scaler, then --gate-proj-bias-lr-final-scale
-# is changed to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
+# With slope scaling always enabled, --gate-proj-bias-lr-final-scale
+# defaults to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=200,
@@ -197,8 +196,8 @@ parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the L2 loss frac is reduced gradually from 1 to 0.1 in stage 1,
 # then further reduced from 0.1 to 0.02 in stage 2.
-# If --use-gate-proj-bias-as-slope-scaler, then the stage1 frac and final frac 
-# are set to 1  to push the gate_proj_bias values towards 0
+# With slope scaling always enabled, the stage1 frac and final frac 
+# are set to 1 to push the gate_proj_bias values towards 0
 # so that the slopes are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
 parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
@@ -257,7 +256,7 @@ parser.add_argument("--core-metric-every", type=int, default=1000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=1000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
-parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=True, help="save optimizer shards alongside model checkpoints")
+parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=False, help="save optimizer shards alongside model checkpoints")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
 parser.add_argument("--continue-to-chat-sft", action="store_true", help="after a successful base training run, exec scripts.chat_sft from the final base checkpoint; when launched under torchrun, each existing worker continues in place with the same world size")
@@ -265,7 +264,7 @@ parser.add_argument("--continue-to-chat-sft-args", type=str, default="", help="e
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
-parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
+parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, default=True, help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
@@ -314,20 +313,17 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= 1.0):
 if args.matrix_optimizer == "aurora":
     args.exp_gate_proj_bias_input = "router_probs"
 if (
-    args.use_gate_proj_bias_as_slope_scaler
-    and not exp_gate_proj_bias_input_was_specified
+    not exp_gate_proj_bias_input_was_specified
     and args.exp_gate_proj_bias_input == parser.get_default("exp_gate_proj_bias_input")
 ):
     args.exp_gate_proj_bias_input = "router_probs"
 if (
-    args.use_gate_proj_bias_as_slope_scaler
-    and not gate_proj_bias_lr_final_scale_was_specified
+    not gate_proj_bias_lr_final_scale_was_specified
     and args.gate_proj_bias_lr_final_scale == parser.get_default("gate_proj_bias_lr_final_scale")
 ):
     args.gate_proj_bias_lr_final_scale = 0.5 * args.gate_proj_bias_lr_max_scale
 if (
-    args.use_gate_proj_bias_as_slope_scaler
-    and not gate_proj_bias_l2_loss_final_frac_was_specified
+    not gate_proj_bias_l2_loss_final_frac_was_specified
     and args.gate_proj_bias_l2_loss_final_frac == parser.get_default("gate_proj_bias_l2_loss_final_frac")
 ):
     args.gate_proj_bias_l2_loss_stage1_frac = 1
@@ -462,7 +458,6 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,

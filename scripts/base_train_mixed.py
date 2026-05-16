@@ -124,8 +124,6 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight for the Switch-style router auxiliary load-balancing loss")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-gate-proj-bias-as-slope-scaler", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply expert gate_proj_bias as a router-probability coefficient that rescales the pre-SiLU gate slope via tau = exp(gate_proj_bias * router_probs).clamp(0.5, 2.0)")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
@@ -359,7 +357,6 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        use_gate_proj_bias_as_slope_scaler=args.use_gate_proj_bias_as_slope_scaler,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,

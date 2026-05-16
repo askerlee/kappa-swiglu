@@ -9,7 +9,6 @@ usage: base_train.py [-h] [--device-type DEVICE_TYPE] [--seed SEED]
                      [--aux-loss-weight-init-scale AUX_LOSS_WEIGHT_INIT_SCALE]
                      [--aux-loss-weight-init-anneal-iterations AUX_LOSS_WEIGHT_INIT_ANNEAL_ITERATIONS]
                      [--use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]]
-                     [--use-gate-proj-bias-as-slope-scaler [USE_GATE_PROJ_BIAS_AS_SLOPE_SCALER]]
                      [--exp-gate-proj-bias-input {top_logits,router_probs}]
                      [--gate-proj-bias-start-layer GATE_PROJ_BIAS_START_LAYER]
                      [--gate-proj-bias-lr-max-scale GATE_PROJ_BIAS_LR_MAX_SCALE]
@@ -101,11 +100,6 @@ options:
   --use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]
                         add a learnable bias to Qwen3 expert gate activations
                         after gate_proj and SiLU
-  --use-gate-proj-bias-as-slope-scaler [USE_GATE_PROJ_BIAS_AS_SLOPE_SCALER]
-                        apply expert gate_proj_bias as a router-probability
-                        coefficient that rescales the pre-SiLU gate slope via
-                        tau = exp(gate_proj_bias * router_probs).clamp(0.5,
-                        2.0)
   --exp-gate-proj-bias-input {top_logits,router_probs}
                         router confidence signal used by expert
                         gate_proj_bias: raw selected logits or top-k router
