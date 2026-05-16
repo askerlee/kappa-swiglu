@@ -186,7 +186,7 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 # With slope scaling always enabled, --gate-proj-bias-lr-final-scale
 # defaults to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=200,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
@@ -267,18 +267,7 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
-gate_proj_bias_lr_final_scale_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-lr-final-scale',
-)
-gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-l2-loss-weight',
-)
-exp_gate_proj_bias_input_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--exp-gate-proj-bias-input',
-)
+
 if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
@@ -302,16 +291,6 @@ if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= 1.0):
 # router_probs instead of top_logits, so force that setting here.
 if args.matrix_optimizer == "aurora":
     args.exp_gate_proj_bias_input = "router_probs"
-if (
-    not exp_gate_proj_bias_input_was_specified
-    and args.exp_gate_proj_bias_input == parser.get_default("exp_gate_proj_bias_input")
-):
-    args.exp_gate_proj_bias_input = "router_probs"
-if (
-    not gate_proj_bias_lr_final_scale_was_specified
-    and args.gate_proj_bias_lr_final_scale == parser.get_default("gate_proj_bias_lr_final_scale")
-):
-    args.gate_proj_bias_lr_final_scale = 0.5 * args.gate_proj_bias_lr_max_scale
 
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
