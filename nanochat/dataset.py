@@ -109,14 +109,62 @@ def download_single_file(index):
     return False
 
 
+def parse_shard_ranges(spec):
+    """Parse 1-based inclusive shard ranges like `1-10,25-` into 0-based ids."""
+    ids_to_download = []
+    seen_ids = set()
+    max_shard_number = MAX_SHARD + 1
+
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+
+        if "-" not in part:
+            start_num = int(part)
+            end_num = start_num
+        else:
+            start_str, end_str = part.split("-", 1)
+            start_num = 1 if start_str == "" else int(start_str)
+            end_num = max_shard_number if end_str == "" else int(end_str)
+
+        if start_num < 1 or end_num < 1:
+            raise argparse.ArgumentTypeError("Shard ranges are 1-based and must be >= 1")
+        if start_num > end_num:
+            raise argparse.ArgumentTypeError(f"Invalid shard range: {part}")
+
+        start_idx = start_num - 1
+        end_idx = min(end_num, max_shard_number) - 1
+        for shard_idx in range(start_idx, end_idx + 1):
+            if shard_idx not in seen_ids:
+                ids_to_download.append(shard_idx)
+                seen_ids.add(shard_idx)
+
+    if not ids_to_download:
+        raise argparse.ArgumentTypeError("No shard ids selected")
+
+    return ids_to_download
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download FineWeb-Edu 100BT dataset shards")
     parser.add_argument("-n", "--num-files", type=int, default=-1, help="Number of shards to download (default: -1), -1 = disable")
+    parser.add_argument(
+        "-s",
+        "--shards",
+        type=parse_shard_ranges,
+        default=None,
+        help="Comma-separated 1-based inclusive shard ranges, e.g. 1-100,250- or 5,9-12",
+    )
     parser.add_argument("-w", "--num-workers", type=int, default=4, help="Number of parallel download workers (default: 4)")
     args = parser.parse_args()
 
-    num = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
-    ids_to_download = list(range(num))
+    if args.shards is not None:
+        ids_to_download = args.shards
+    else:
+        num = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
+        ids_to_download = list(range(num))
+
     print(f"Downloading {len(ids_to_download)} shards using {args.num_workers} workers...")
     print(f"Target directory: {DATA_DIR}")
     print()
