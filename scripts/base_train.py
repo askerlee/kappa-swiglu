@@ -56,6 +56,13 @@ def arg_was_explicitly_set(argv, option_name):
     return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
 
 
+def env_flag_is_true(name):
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return str2bool(value)
+
+
 def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
     if core_metric_every <= 0 or not os.path.isdir(checkpoint_dir):
         return None
@@ -347,6 +354,16 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 # it is never wrapped in DistributedDataParallel(...).
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type, seed=args.seed)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+trace_ddp_progress = args.debug or env_flag_is_true("NANOCHAT_TRACE_DDP_PROGRESS")
+
+
+def trace_rank(message):
+    if not trace_ddp_progress:
+        return
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}] rank {ddp_rank}/{ddp_world_size} | {message}", file=sys.stderr, flush=True)
+
+
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16) if device_type == "cuda" else nullcontext()
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
@@ -1329,8 +1346,11 @@ while True:
     )
     if should_sample:
         if ddp:
+            trace_rank(f"step {step}: waiting at pre-sample barrier")
             torch.distributed.barrier()
+            trace_rank(f"step {step}: passed pre-sample barrier")
         if master_process:
+            trace_rank(f"step {step}: starting master-only sampling")
             model.eval()
             prompts = [
                 "The capital of France is",
@@ -1348,8 +1368,11 @@ while True:
                     sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
                 print0(tokenizer.decode(sample[0]))
             model.train()
+            trace_rank(f"step {step}: finished master-only sampling")
         if ddp:
+            trace_rank(f"step {step}: waiting at post-sample barrier")
             torch.distributed.barrier()
+            trace_rank(f"step {step}: passed post-sample barrier")
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if is_last_step:
@@ -1378,7 +1401,10 @@ while True:
         train_loss_f = 0.0
         dt = 1.0
     else:
+        trace_rank(f"step {step}: entering training step")
+        trace_rank(f"step {step}: synchronizing before timer")
         synchronize()
+        trace_rank(f"step {step}: synchronize before timer complete")
         t0 = time.time()
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
@@ -1389,6 +1415,8 @@ while True:
             MANAGER.collect_backward_stats = (
                 MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
             )
+            if micro_step == 0 or micro_step == grad_accum_steps - 1:
+                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
@@ -1402,9 +1430,15 @@ while True:
             loss = loss + gate_proj_bias_l2_loss_weight_below_1 * gate_proj_slope_l2_loss_below_1
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+            if micro_step == 0 or micro_step == grad_accum_steps - 1:
+                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
             loss.backward()
             MANAGER.collect_backward_stats = False
+            if micro_step == 0 or micro_step == grad_accum_steps - 1:
+                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
             x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+            if micro_step == 0 or micro_step == grad_accum_steps - 1:
+                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetched next batch")
 
         losses = average_step_losses(step_losses, grad_accum_steps)
 
@@ -1425,10 +1459,16 @@ while True:
                     group["momentum"] = muon_momentum
                 group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
         orig_model.update_aux_free_load_balancing()
+        trace_rank(f"step {step}: starting optimizer.step()")
         optimizer.step()
+        trace_rank(f"step {step}: finished optimizer.step()")
         model.zero_grad(set_to_none=True)
+        trace_rank(f"step {step}: converting ntp_loss to host scalar")
         train_loss_f = losses['ntp_loss'].item() # .item() is a CPU-GPU sync point
+        trace_rank(f"step {step}: ntp_loss host scalar ready")
+        trace_rank(f"step {step}: synchronizing after optimizer")
         synchronize()
+        trace_rank(f"step {step}: synchronize after optimizer complete")
         t1 = time.time()
         dt = t1 - t0
 
