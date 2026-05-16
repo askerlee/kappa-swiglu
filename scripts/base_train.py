@@ -194,13 +194,11 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE gate_proj_bias L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
-# By default, the L2 loss frac is reduced gradually from 1 to 0.1 in stage 1,
-# then further reduced from 0.1 to 0.02 in stage 2.
-# With slope scaling always enabled, the stage1 frac and final frac 
-# are set to 1 to push the gate_proj_bias values towards 0
-# so that the slopes are pushed towards 1.
-parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+# By default, the stage1 frac and final frac are set to 1 to 
+# push the gate_proj_bias values towards 0 so that the slopes 
+# are pushed towards 1.
+parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -277,14 +275,6 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--gate-proj-bias-l2-loss-weight',
 )
-gate_proj_bias_l2_loss_stage1_frac_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-l2-loss-stage1-frac',
-)
-gate_proj_bias_l2_loss_final_frac_was_specified = arg_was_explicitly_set(
-    sys.argv[1:],
-    '--gate-proj-bias-l2-loss-final-frac',
-)
 exp_gate_proj_bias_input_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
     '--exp-gate-proj-bias-input',
@@ -322,12 +312,6 @@ if (
     and args.gate_proj_bias_lr_final_scale == parser.get_default("gate_proj_bias_lr_final_scale")
 ):
     args.gate_proj_bias_lr_final_scale = 0.5 * args.gate_proj_bias_lr_max_scale
-if (
-    not gate_proj_bias_l2_loss_final_frac_was_specified
-    and args.gate_proj_bias_l2_loss_final_frac == parser.get_default("gate_proj_bias_l2_loss_final_frac")
-):
-    args.gate_proj_bias_l2_loss_stage1_frac = 1
-    args.gate_proj_bias_l2_loss_final_frac = 1
 
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
