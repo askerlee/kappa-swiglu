@@ -88,7 +88,7 @@ parser.add_argument("--matrix-optimizer", type=str, default="muon", choices=["mu
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.01,
+parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.05,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to --gate-proj-bias-lr-max-scale")
 parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=50,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
