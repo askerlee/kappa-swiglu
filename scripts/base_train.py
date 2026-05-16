@@ -285,6 +285,12 @@ if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed')
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
     args.compile = False
+if args.compile and args.log_grad_stats:
+    print(
+        "Disabling --log-grad-stats because compiled training can hang when "
+        "load-balancing stats mutate manager buffers inside the forward pass."
+    )
+    args.log_grad_stats = False
 
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
