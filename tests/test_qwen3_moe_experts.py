@@ -200,6 +200,39 @@ def test_dynamic_gate_projection_bias_backprops_into_selected_router_scores():
     assert selected_router_scores.grad is not None
 
 
+def test_dynamic_gate_projection_bias_scales_selected_router_score_gradients():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_exp_gate_proj_bias=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    with torch.no_grad():
+        experts.gate_proj.fill_(0.1)
+        experts.c_fc.fill_(0.2)
+        experts.c_proj.fill_(0.3)
+        experts.gate_proj_bias.fill_(0.05)
+
+    x = torch.randn(config.n_exp, 5, config.n_embd)
+    selected_router_scores = torch.randn(config.n_exp, 5)
+
+    experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
+    selected_router_scores_full = selected_router_scores.clone().requires_grad_(True)
+    experts(x, selected_router_scores=selected_router_scores_full).sum().backward()
+    grad_full = selected_router_scores_full.grad.clone()
+
+    experts.zero_grad(set_to_none=True)
+    experts.router_confidence_gate_bias_grad_scale.fill_(0.25)
+    selected_router_scores_scaled = selected_router_scores.clone().requires_grad_(True)
+    experts(x, selected_router_scores=selected_router_scores_scaled).sum().backward()
+    grad_scaled = selected_router_scores_scaled.grad.clone()
+
+    torch.testing.assert_close(grad_scaled, grad_full * 0.25, rtol=1e-4, atol=1e-6)
+
+
 def test_router_returns_selected_top_k_router_scores():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -344,11 +377,8 @@ def test_gate_proj_bias_l2_losses_split_above_and_below_zero():
         [[0.5, 1.0], [1.5, 0.75]],
         [[2.0, 1.0], [1.0, 0.25]],
     ])
-    experts._accumulate_gate_proj_bias_l2_losses(
-        gate_proj_bias,
-        slope_scales,
-        selected_router_scores,
-    )
+    del slope_scales, selected_router_scores
+    experts._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
 
     above_0 = MANAGER.aggregate("gate_proj_bias_l2_loss_above_0")
     below_0 = MANAGER.aggregate("gate_proj_bias_l2_loss_below_0")

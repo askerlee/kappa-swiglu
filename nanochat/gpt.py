@@ -964,9 +964,13 @@ class Qwen3MLPExperts(nn.Module):
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         if selected_router_scores is not None:
             gate_proj_bias = self._materialize_gate_proj_bias()
+            scaled_selected_router_scores = scale_grad(
+                selected_router_scores,
+                self.router_confidence_gate_bias_grad_scale,
+            )
             slope_scales = self._compute_gate_slope_scales(
                 gate_proj_bias,
-                selected_router_scores,
+                scaled_selected_router_scores,
             )
             self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
             # slope_scales: [n_exp, capacity, intermediate_size]
