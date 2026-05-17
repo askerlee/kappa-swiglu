@@ -1434,7 +1434,10 @@ while True:
     else:
         if should_sample or refresh_compiled_training_model:
             print0("resuming training after eval/sample")
+            print0("about to synchronize before resumed training step")
         synchronize()
+        if should_sample or refresh_compiled_training_model:
+            print0("finished synchronize before resumed training step")
         t0 = time.time()
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
@@ -1445,8 +1448,12 @@ while True:
             )
             micro_x = chat_sft_x if is_chat_sft_step else x
             micro_y = chat_sft_y if is_chat_sft_step else y
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("starting first resumed forward")
             with autocast_ctx:
                 loss, micro_losses = model(micro_x, micro_y)
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             gate_proj_slope_l2_loss = micro_losses.get("gate_proj_slope_l2_loss")
             if gate_proj_slope_l2_loss is None:
@@ -1454,7 +1461,11 @@ while True:
             loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_slope_l2_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("starting first resumed backward")
             loss.backward()
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("finished first resumed backward")
             MANAGER.collect_backward_stats = False
             if is_chat_sft_step:
                 chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)

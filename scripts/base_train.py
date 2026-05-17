@@ -1431,9 +1431,12 @@ while True:
     else:
         if should_sample or refresh_compiled_training_model:
             print0("resuming training after eval/sample")
+            print0("about to synchronize before resumed training step")
         trace_rank(f"step {step}: entering training step")
         trace_rank(f"step {step}: synchronizing before timer")
         synchronize()
+        if should_sample or refresh_compiled_training_model:
+            print0("finished synchronize before resumed training step")
         trace_rank(f"step {step}: synchronize before timer complete")
         t0 = time.time()
         step_losses = None
@@ -1447,8 +1450,12 @@ while True:
             )
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("starting first resumed forward")
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             gate_proj_bias_l2_loss_above_0 = micro_losses.get("gate_proj_bias_l2_loss_above_0")
             if gate_proj_bias_l2_loss_above_0 is None:
@@ -1462,7 +1469,11 @@ while True:
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("starting first resumed backward")
             loss.backward()
+            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+                print0("finished first resumed backward")
             MANAGER.collect_backward_stats = False
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
