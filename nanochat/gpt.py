@@ -996,7 +996,6 @@ class MOELayer(nn.Module):
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
             self.experts = Qwen3MLPExperts(config, layer_idx=layer_idx)
             self.use_qwen3_moe_mlp = True
-            self.experts.set_router(self.router)
         else:
             self.experts = MLPExperts(config)
             self.use_qwen3_moe_mlp = False
