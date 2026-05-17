@@ -298,14 +298,7 @@ if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
     raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
-if not (0.0 <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
-    raise ValueError(
-        "--gate-proj-bias-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
-    )
-if not (0.0 <= args.gate_proj_bias_l2_loss_final_frac <= 1.0):
-    raise ValueError(
-        "--gate-proj-bias-l2-loss-final-frac must satisfy 0 <= final_frac <= 1"
-    )
+
 # Aurora and gate-proj-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
 if args.matrix_optimizer == "aurora":
