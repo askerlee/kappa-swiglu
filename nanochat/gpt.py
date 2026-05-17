@@ -842,15 +842,7 @@ class Qwen3MLPExperts(nn.Module):
             self.initial_gate_proj_bias = None
             return
         self.initial_gate_proj_bias = self._materialize_gate_proj_bias().detach().clone()
-
-    def set_router(self, router):
-        self._router_ref = weakref.ref(router)
-
-    def _get_router(self):
-        assert self._router_ref is not None, "Router reference is not set"
-        router = self._router_ref()
-        assert router is not None, "Router reference is no longer valid"
-        return router
+        return self.initial_gate_proj_bias
 
     '''
     Bias-enabled layers use a dense gate_proj_bias matrix parameter.
@@ -875,15 +867,15 @@ class Qwen3MLPExperts(nn.Module):
         log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
         return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
 
-    def _accumulate_gate_slope_l2_losses(self, gate_proj_bias, slope_scales, selected_router_scores):
-        slope_delta = slope_scales.float() - 1.0
+    def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
+        gate_proj_bias = gate_proj_bias.float()
         MANAGER.add(
-            "gate_proj_slope_l2_loss_above_1",
-            slope_delta.clamp_min(0).square().mean(),
+            "gate_proj_bias_l2_loss_above_0",
+            gate_proj_bias.clamp_min(0).square().mean(),
         )
         MANAGER.add(
-            "gate_proj_slope_l2_loss_below_1",
-            (-slope_delta).clamp_min(0).square().mean(),
+            "gate_proj_bias_l2_loss_below_0",
+            gate_proj_bias.clamp_max(0).square().mean(),
         )
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
@@ -968,7 +960,6 @@ class Qwen3MLPExperts(nn.Module):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
-        router = self._get_router() if self.debug else None
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         if selected_router_scores is not None:
@@ -977,11 +968,7 @@ class Qwen3MLPExperts(nn.Module):
                 gate_proj_bias,
                 selected_router_scores,
             )
-            self._accumulate_gate_slope_l2_losses(
-                gate_proj_bias,
-                slope_scales,
-                selected_router_scores,
-            )
+            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
             # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
@@ -1207,13 +1194,13 @@ class GPT(nn.Module):
     def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
-        for name in ('gate_proj_slope_l2_loss_above_1', 'gate_proj_slope_l2_loss_below_1'):
+        for name in ('gate_proj_bias_l2_loss_above_0', 'gate_proj_bias_l2_loss_below_0'):
             value = MANAGER.aggregate(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
             MANAGER.reset(name)
-        losses['gate_proj_slope_l2_loss'] = (
-            losses['gate_proj_slope_l2_loss_above_1']
-            + losses['gate_proj_slope_l2_loss_below_1']
+        losses['gate_proj_bias_l2_loss'] = (
+            losses['gate_proj_bias_l2_loss_above_0']
+            + losses['gate_proj_bias_l2_loss_below_0']
         )
         return losses
 
@@ -1649,9 +1636,9 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
-                   'gate_proj_slope_l2_loss': 0,
-                   'gate_proj_slope_l2_loss_above_1': 0,
-                   'gate_proj_slope_l2_loss_below_1': 0,
+                   'gate_proj_bias_l2_loss': 0,
+                   'gate_proj_bias_l2_loss_above_0': 0,
+                   'gate_proj_bias_l2_loss_below_0': 0,
                    'gate_grad_scale_mean': None,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,

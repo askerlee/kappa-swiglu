@@ -183,13 +183,13 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     refresh_gate_proj_bias_references=refresh_gate_proj_bias_references,
 )
-user_config["gate_proj_bias_l2_loss_weight_above_1"] = args.gate_proj_bias_l2_loss_weight_above_1
-user_config["gate_proj_bias_l2_loss_weight_below_1"] = args.gate_proj_bias_l2_loss_weight_below_1
+user_config["gate_proj_bias_l2_loss_weight_above_0"] = args.gate_proj_bias_l2_loss_weight_above_0
+user_config["gate_proj_bias_l2_loss_weight_below_0"] = args.gate_proj_bias_l2_loss_weight_below_0
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
-            "gate_proj_bias_l2_loss_weight_above_1": args.gate_proj_bias_l2_loss_weight_above_1,
-            "gate_proj_bias_l2_loss_weight_below_1": args.gate_proj_bias_l2_loss_weight_below_1,
+            "gate_proj_bias_l2_loss_weight_above_0": args.gate_proj_bias_l2_loss_weight_above_0,
+            "gate_proj_bias_l2_loss_weight_below_0": args.gate_proj_bias_l2_loss_weight_below_0,
         },
         allow_val_change=True,
     )
@@ -770,14 +770,14 @@ while True:
         with autocast_ctx:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
-        gate_proj_slope_l2_loss_above_1 = losses.get("gate_proj_slope_l2_loss_above_1")
-        if gate_proj_slope_l2_loss_above_1 is None:
-            gate_proj_slope_l2_loss_above_1 = 0.0
-        gate_proj_slope_l2_loss_below_1 = losses.get("gate_proj_slope_l2_loss_below_1")
-        if gate_proj_slope_l2_loss_below_1 is None:
-            gate_proj_slope_l2_loss_below_1 = 0.0
-        loss = loss + args.gate_proj_bias_l2_loss_weight_above_1 * gate_proj_slope_l2_loss_above_1
-        loss = loss + args.gate_proj_bias_l2_loss_weight_below_1 * gate_proj_slope_l2_loss_below_1
+        gate_proj_bias_l2_loss_above_0 = losses.get("gate_proj_bias_l2_loss_above_0")
+        if gate_proj_bias_l2_loss_above_0 is None:
+            gate_proj_bias_l2_loss_above_0 = 0.0
+        gate_proj_bias_l2_loss_below_0 = losses.get("gate_proj_bias_l2_loss_below_0")
+        if gate_proj_bias_l2_loss_below_0 is None:
+            gate_proj_bias_l2_loss_below_0 = 0.0
+        loss = loss + args.gate_proj_bias_l2_loss_weight_above_0 * gate_proj_bias_l2_loss_above_0
+        loss = loss + args.gate_proj_bias_l2_loss_weight_below_0 * gate_proj_bias_l2_loss_below_0
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -835,15 +835,15 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_slope_l2_loss_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss']),
-            "train/gate_proj_slope_l2_loss_above_1_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss_above_1']),
-            "train/gate_proj_slope_l2_loss_below_1_step": scalar_loss_to_item(losses['gate_proj_slope_l2_loss_below_1']),
+            "train/gate_proj_bias_l2_loss_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss']),
+            "train/gate_proj_bias_l2_loss_above_0_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss_above_0']),
+            "train/gate_proj_bias_l2_loss_below_0_step": scalar_loss_to_item(losses['gate_proj_bias_l2_loss_below_0']),
             "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean']),
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized']),
-            "train/gate_proj_bias_l2_loss_weight_above_1": args.gate_proj_bias_l2_loss_weight_above_1,
-            "train/gate_proj_bias_l2_loss_weight_below_1": args.gate_proj_bias_l2_loss_weight_below_1,
+            "train/gate_proj_bias_l2_loss_weight_above_0": args.gate_proj_bias_l2_loss_weight_above_0,
+            "train/gate_proj_bias_l2_loss_weight_below_0": args.gate_proj_bias_l2_loss_weight_below_0,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,

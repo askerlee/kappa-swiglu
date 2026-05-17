@@ -162,6 +162,7 @@ parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, hel
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
+parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=False, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
     "--total-batch-size",
@@ -215,6 +216,11 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
 )
 if args.debug:
     args.compile = False
+if args.compile and not args.rebuild_compile_after_eval and (args.core_metric_every > 0 or args.sample_every > 0):
+    print(
+        "Warning: --compile is enabled while --rebuild-compile-after-eval is disabled. "
+        "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
+    )
 
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
@@ -1318,7 +1324,7 @@ while True:
         }, step=step)
         last_core_eval_step = step
         model.train()
-        refresh_compiled_training_model = args.compile
+        refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1379,7 +1385,7 @@ while True:
                     sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
                 print0(tokenizer.decode(sample[0]))
             model.train()
-            refresh_compiled_training_model = args.compile
+            refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
         if ddp:
             torch.distributed.barrier()
 

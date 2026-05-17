@@ -202,16 +202,16 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight-above-1", type=float, default=4e-3,
-                    help="L2 weight on slope-scale deviations above 1")
-parser.add_argument("--gate-proj-bias-l2-loss-weight-below-1", type=float, default=4e-3,
-                    help="L2 weight on slope-scale deviations below 1")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-above-0", type=float, default=1e-2,
+                    help="L2 weight on gate_proj_bias values above 0")
+parser.add_argument("--gate-proj-bias-l2-loss-weight-below-0", type=float, default=1e-2,
+                    help="L2 weight on gate_proj_bias values below 0")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
 # push the gate_proj_bias values towards 0 so that the slopes 
 # are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=2, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -231,6 +231,7 @@ parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
+parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=False, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
     "--total-batch-size",
@@ -285,6 +286,11 @@ if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed')
     args.model_tag = f"{args.model_tag}-s{args.seed}"
 if args.debug:
     args.compile = False
+if args.compile and not args.rebuild_compile_after_eval and (args.core_metric_every > 0 or args.sample_every > 0):
+    print(
+        "Warning: --compile is enabled while --rebuild-compile-after-eval is disabled. "
+        "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
+    )
 
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
@@ -1141,8 +1147,8 @@ while True:
     # In this case, it's set as half of the total iterations in 
     # get_two_stage_annealed_loss_weight().
     gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
-    gate_proj_bias_l2_loss_weight_above_1 = get_two_stage_annealed_loss_weight(
-        args.gate_proj_bias_l2_loss_weight_above_1,
+    gate_proj_bias_l2_loss_weight_above_0 = get_two_stage_annealed_loss_weight(
+        args.gate_proj_bias_l2_loss_weight_above_0,
         step,
         total_iterations=num_iterations,
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
@@ -1150,8 +1156,8 @@ while True:
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
-    gate_proj_bias_l2_loss_weight_below_1 = get_two_stage_annealed_loss_weight(
-        args.gate_proj_bias_l2_loss_weight_below_1,
+    gate_proj_bias_l2_loss_weight_below_0 = get_two_stage_annealed_loss_weight(
+        args.gate_proj_bias_l2_loss_weight_below_0,
         step,
         total_iterations=num_iterations,
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
@@ -1313,7 +1319,7 @@ while True:
         }), step=step)
         last_core_eval_step = step
         model.train()
-        refresh_compiled_training_model = args.compile
+        refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1378,7 +1384,7 @@ while True:
                 print0(tokenizer.decode(sample[0]))
             model.train()
             trace_rank(f"step {step}: finished master-only sampling")
-            refresh_compiled_training_model = args.compile
+            refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
         if ddp:
             trace_rank(f"step {step}: waiting at post-sample barrier")
             torch.distributed.barrier()
@@ -1408,9 +1414,9 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
-            'gate_proj_slope_l2_loss': 0.0,
-            'gate_proj_slope_l2_loss_above_1': 0.0,
-            'gate_proj_slope_l2_loss_below_1': 0.0,
+            'gate_proj_bias_l2_loss': 0.0,
+            'gate_proj_bias_l2_loss_above_0': 0.0,
+            'gate_proj_bias_l2_loss_below_0': 0.0,
             'gate_proj_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -1436,14 +1442,14 @@ while True:
             with autocast_ctx:
                 loss, micro_losses = model(x, y)
             step_losses = accumulate_step_losses(step_losses, micro_losses)
-            gate_proj_slope_l2_loss_above_1 = micro_losses.get("gate_proj_slope_l2_loss_above_1")
-            if gate_proj_slope_l2_loss_above_1 is None:
-                gate_proj_slope_l2_loss_above_1 = 0.0
-            gate_proj_slope_l2_loss_below_1 = micro_losses.get("gate_proj_slope_l2_loss_below_1")
-            if gate_proj_slope_l2_loss_below_1 is None:
-                gate_proj_slope_l2_loss_below_1 = 0.0
-            loss = loss + gate_proj_bias_l2_loss_weight_above_1 * gate_proj_slope_l2_loss_above_1
-            loss = loss + gate_proj_bias_l2_loss_weight_below_1 * gate_proj_slope_l2_loss_below_1
+            gate_proj_bias_l2_loss_above_0 = micro_losses.get("gate_proj_bias_l2_loss_above_0")
+            if gate_proj_bias_l2_loss_above_0 is None:
+                gate_proj_bias_l2_loss_above_0 = 0.0
+            gate_proj_bias_l2_loss_below_0 = micro_losses.get("gate_proj_bias_l2_loss_below_0")
+            if gate_proj_bias_l2_loss_below_0 is None:
+                gate_proj_bias_l2_loss_below_0 = 0.0
+            loss = loss + gate_proj_bias_l2_loss_weight_above_0 * gate_proj_bias_l2_loss_above_0
+            loss = loss + gate_proj_bias_l2_loss_weight_below_0 * gate_proj_bias_l2_loss_below_0
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
@@ -1527,9 +1533,9 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_slope_l2_loss_step": losses['gate_proj_slope_l2_loss'],
-            "train/gate_proj_slope_l2_loss_above_1_step": losses['gate_proj_slope_l2_loss_above_1'],
-            "train/gate_proj_slope_l2_loss_below_1_step": losses['gate_proj_slope_l2_loss_below_1'],
+            "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
+            "train/gate_proj_bias_l2_loss_above_0_step": losses['gate_proj_bias_l2_loss_above_0'],
+            "train/gate_proj_bias_l2_loss_below_0_step": losses['gate_proj_bias_l2_loss_below_0'],
             "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
@@ -1542,8 +1548,8 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
-        log_data["train/gate_proj_bias_l2_loss_weight_above_1"] = gate_proj_bias_l2_loss_weight_above_1
-        log_data["train/gate_proj_bias_l2_loss_weight_below_1"] = gate_proj_bias_l2_loss_weight_below_1
+        log_data["train/gate_proj_bias_l2_loss_weight_above_0"] = gate_proj_bias_l2_loss_weight_above_0
+        log_data["train/gate_proj_bias_l2_loss_weight_below_0"] = gate_proj_bias_l2_loss_weight_below_0
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

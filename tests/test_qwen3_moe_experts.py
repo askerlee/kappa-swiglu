@@ -323,7 +323,7 @@ def test_gate_proj_bias_slope_scaler_config_is_always_enabled():
     assert explicit_false_config.use_gate_proj_bias_as_slope_scaler is True
 
 
-def test_gate_proj_bias_slope_l2_losses_split_above_and_below_one():
+def test_gate_proj_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -332,8 +332,8 @@ def test_gate_proj_bias_slope_l2_losses_split_above_and_below_one():
     )
     experts = Qwen3MLPExperts(config)
 
-    MANAGER.reset("gate_proj_slope_l2_loss_above_1")
-    MANAGER.reset("gate_proj_slope_l2_loss_below_1")
+    MANAGER.reset("gate_proj_bias_l2_loss_above_0")
+    MANAGER.reset("gate_proj_bias_l2_loss_below_0")
 
     gate_proj_bias = torch.tensor([
         [-0.5, 0.5],
@@ -344,23 +344,23 @@ def test_gate_proj_bias_slope_l2_losses_split_above_and_below_one():
         [[0.5, 1.0], [1.5, 0.75]],
         [[2.0, 1.0], [1.0, 0.25]],
     ])
-    experts._accumulate_gate_slope_l2_losses(
+    experts._accumulate_gate_proj_bias_l2_losses(
         gate_proj_bias,
         slope_scales,
         selected_router_scores,
     )
 
-    above_1 = MANAGER.aggregate("gate_proj_slope_l2_loss_above_1")
-    below_1 = MANAGER.aggregate("gate_proj_slope_l2_loss_below_1")
+    above_0 = MANAGER.aggregate("gate_proj_bias_l2_loss_above_0")
+    below_0 = MANAGER.aggregate("gate_proj_bias_l2_loss_below_0")
 
-    MANAGER.reset("gate_proj_slope_l2_loss_above_1")
-    MANAGER.reset("gate_proj_slope_l2_loss_below_1")
+    MANAGER.reset("gate_proj_bias_l2_loss_above_0")
+    MANAGER.reset("gate_proj_bias_l2_loss_below_0")
 
-    torch.testing.assert_close(above_1, torch.tensor(1.25 / 8.0))
-    torch.testing.assert_close(below_1, torch.tensor(0.875 / 8.0))
+    torch.testing.assert_close(above_0, torch.tensor(0.3125 / 4.0))
+    torch.testing.assert_close(below_0, torch.tensor(0.3125 / 4.0))
 
 
-def test_gate_proj_slope_l2_losses_are_reported_from_slope_scales():
+def test_gate_proj_bias_l2_losses_are_reported_from_gate_proj_biases():
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -391,14 +391,14 @@ def test_gate_proj_slope_l2_losses_are_reported_from_slope_scales():
 
     _, losses = model(idx, targets)
 
-    assert torch.isfinite(losses['gate_proj_slope_l2_loss'])
-    assert torch.isfinite(losses['gate_proj_slope_l2_loss_above_1'])
-    assert torch.isfinite(losses['gate_proj_slope_l2_loss_below_1'])
-    assert losses['gate_proj_slope_l2_loss_above_1'].item() > 0.0
-    assert losses['gate_proj_slope_l2_loss_below_1'].item() > 0.0
+    assert torch.isfinite(losses['gate_proj_bias_l2_loss'])
+    assert torch.isfinite(losses['gate_proj_bias_l2_loss_above_0'])
+    assert torch.isfinite(losses['gate_proj_bias_l2_loss_below_0'])
+    assert losses['gate_proj_bias_l2_loss_above_0'].item() > 0.0
+    assert losses['gate_proj_bias_l2_loss_below_0'].item() > 0.0
     torch.testing.assert_close(
-        losses['gate_proj_slope_l2_loss'],
-        losses['gate_proj_slope_l2_loss_above_1'] + losses['gate_proj_slope_l2_loss_below_1'],
+        losses['gate_proj_bias_l2_loss'],
+        losses['gate_proj_bias_l2_loss_above_0'] + losses['gate_proj_bias_l2_loss_below_0'],
     )
 
 

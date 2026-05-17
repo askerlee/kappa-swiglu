@@ -12,8 +12,8 @@ class MOEManager:
         self._values = {
             "aux_loss": [],
             "router_z_loss": [],
-            "gate_proj_slope_l2_loss_above_1": [],
-            "gate_proj_slope_l2_loss_below_1": [],
+            "gate_proj_bias_l2_loss_above_0": [],
+            "gate_proj_bias_l2_loss_below_0": [],
             "gate_proj_bias_shift_abs_top5p_mean": [],
             "gate_proj_bias_shift_abs_bottom5p_mean": [],
             "gate_grad_scale_mean": [],
