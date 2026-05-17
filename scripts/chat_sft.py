@@ -98,14 +98,14 @@ parser.add_argument(
     "--gate-proj-bias-l2-loss-weight-above-0",
     dest="gate_proj_bias_l2_loss_weight_above_0",
     type=float,
-    default=2e-3,
+    default=1e-2,
     help="L2 weight on gate_proj_bias values above 0",
 )
 parser.add_argument(
     "--gate-proj-bias-l2-loss-weight-below-0",
     dest="gate_proj_bias_l2_loss_weight_below_0",
     type=float,
-    default=1e-3,
+    default=1e-2,
     help="L2 weight on gate_proj_bias values below 0",
 )
 parser.add_argument("--exp-gate-proj-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
@@ -128,7 +128,7 @@ parser.add_argument("--chat-eval-max-problems", type=int, default=None, help="ma
 # Output
 parser.add_argument("--dry-run", action="store_true", help="log to wandb but skip checkpoints/report")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
-parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
+parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, default=True, help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()

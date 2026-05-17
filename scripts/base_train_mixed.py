@@ -205,7 +205,7 @@ parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help=
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
-parser.add_argument("--log-grad-stats", action="store_true", help="log gradient statistics for MoE layers")
+parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, default=True, help="log gradient statistics for MoE layers")
 parser.add_argument("--log-interval", type=int, default=20, help="interval (in steps) for logging grad stats")
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
