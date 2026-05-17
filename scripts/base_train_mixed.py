@@ -35,7 +35,6 @@ import re
 import wandb
 import torch
 
-from nanochat.compile_utils import maybe_compile
 from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
@@ -516,7 +515,7 @@ def build_training_model(orig_model, compile_enabled):
         return orig_model
     if hasattr(torch, "_dynamo"):
         torch._dynamo.reset()
-    return maybe_compile(orig_model, dynamic=False)
+    return torch.compile(orig_model, dynamic=False)
 
 model = build_training_model(orig_model, args.compile)
 

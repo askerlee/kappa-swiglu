@@ -29,7 +29,6 @@ import time, re
 import wandb
 import torch
 from contextlib import nullcontext
-from nanochat.compile_utils import maybe_compile
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
@@ -238,7 +237,7 @@ if not use_dummy_wandb:
     wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
 
 orig_model = model
-model = maybe_compile(model, dynamic=False)
+model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer
 moe_layer_indices = get_moe_layer_indices(model.config)
     
