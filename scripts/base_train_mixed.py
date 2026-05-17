@@ -35,6 +35,7 @@ import re
 import wandb
 import torch
 
+from nanochat.compile_utils import maybe_compile
 from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
@@ -515,7 +516,7 @@ def build_training_model(orig_model, compile_enabled):
         return orig_model
     if hasattr(torch, "_dynamo"):
         torch._dynamo.reset()
-    return torch.compile(orig_model, dynamic=False)
+    return maybe_compile(orig_model, dynamic=False)
 
 model = build_training_model(orig_model, args.compile)
 
@@ -1369,6 +1370,7 @@ while True:
             torch.distributed.barrier()
         if master_process:
             model.eval()
+            sample_block_start = time.perf_counter()
             prompts = [
                 "The capital of France is",
                 "The chemical symbol of gold is",
@@ -1380,18 +1382,26 @@ while True:
             ]
             engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
             for prompt in prompts:
+                prompt_start = time.perf_counter()
                 tokens = tokenizer(prompt, prepend="<|bos|>")
                 with disable_fp8(orig_model), autocast_ctx:
                     sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
+                prompt_elapsed = time.perf_counter() - prompt_start
+                print0(f"sample prompt took {prompt_elapsed:.2f}s: {prompt}")
                 print0(tokenizer.decode(sample[0]))
+            sample_block_elapsed = time.perf_counter() - sample_block_start
+            print0(f"master-only sampling finished in {sample_block_elapsed:.2f}s")
             model.train()
             refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
         if ddp:
             torch.distributed.barrier()
 
     if refresh_compiled_training_model:
+        rebuild_start = time.perf_counter()
         orig_model.train()
         model = build_training_model(orig_model, args.compile)
+        rebuild_elapsed = time.perf_counter() - rebuild_start
+        print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if is_last_step:

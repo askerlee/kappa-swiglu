@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 from nanochat.common import COMPUTE_DTYPE
+from nanochat.compile_utils import maybe_compile
 
 # -----------------------------------------------------------------------------
 """
@@ -18,7 +19,7 @@ Good old AdamW optimizer, fused kernel.
 https://arxiv.org/abs/1711.05101
 """
 
-@torch.compile(dynamic=False, fullgraph=True)
+@maybe_compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(
     p: Tensor,              # parameter tensor (flattened view)
     grad: Tensor,           # gradient, same shape as p
@@ -134,7 +135,7 @@ def aurora_grad_update_fused(
     return update * aspect_scale_t.to(update.dtype)
 
 
-@torch.compile(dynamic=True, fullgraph=True)
+@maybe_compile(dynamic=True, fullgraph=True)
 def aurora_step_fused(
     stacked_grads: Tensor,
     stacked_params: Tensor,
@@ -241,7 +242,7 @@ def get_muon_lr_scale(
         scale = min(scale, max_scale)
     return scale
 
-@torch.compile(dynamic=True, fullgraph=True)
+@maybe_compile(dynamic=True, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters

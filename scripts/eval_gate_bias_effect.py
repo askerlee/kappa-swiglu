@@ -19,6 +19,7 @@ import torch
 import torch.distributed as dist
 
 from nanochat.checkpoint_manager import load_model
+from nanochat.compile_utils import maybe_compile
 from nanochat.common import COMPUTE_DTYPE, autodetect_device_type, compute_cleanup, compute_init, print0
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 from nanochat.gpt import MOELayer
@@ -481,7 +482,7 @@ def main():
     if instrumented_layers == 0:
         raise RuntimeError("No MoE expert layers with gate_proj_bias were found in the loaded model")
     if args.compile:
-        model = torch.compile(model, dynamic=False)
+        model = maybe_compile(model, dynamic=False)
 
     sequence_len = meta["model_config"]["sequence_len"]
     tokens_per_step = args.device_batch_size * sequence_len * ddp_world_size
