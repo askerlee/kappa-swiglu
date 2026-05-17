@@ -593,7 +593,8 @@ def build_training_model(orig_model, compile_enabled):
         return orig_model
     if hasattr(torch, "_dynamo"):
         torch._dynamo.reset()
-    return torch.compile(orig_model, dynamic=False)
+    return torch.compile(orig_model, dynamic=False,
+                         options={"triton.cudagraphs": False})
 
 model = build_training_model(orig_model, args.compile)
 
