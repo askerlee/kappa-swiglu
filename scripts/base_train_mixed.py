@@ -1366,6 +1366,7 @@ while True:
     )
     if should_sample:
         if ddp:
+            post_sample_barrier_start = None
             torch.distributed.barrier()
         if master_process:
             model.eval()
@@ -1393,7 +1394,11 @@ while True:
             model.train()
             refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
         if ddp:
+            post_sample_barrier_start = time.perf_counter()
             torch.distributed.barrier()
+            if master_process:
+                post_sample_barrier_elapsed = time.perf_counter() - post_sample_barrier_start
+                print0(f"post-sample barrier passed in {post_sample_barrier_elapsed:.2f}s")
 
     if refresh_compiled_training_model:
         rebuild_start = time.perf_counter()
@@ -1427,6 +1432,8 @@ while True:
         train_loss_f = 0.0
         dt = 1.0
     else:
+        if should_sample or refresh_compiled_training_model:
+            print0("resuming training after eval/sample")
         synchronize()
         t0 = time.time()
         step_losses = None

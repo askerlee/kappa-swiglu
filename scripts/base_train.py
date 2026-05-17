@@ -1386,7 +1386,11 @@ while True:
             refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
         if ddp:
             trace_rank(f"step {step}: waiting at post-sample barrier")
+            post_sample_barrier_start = time.perf_counter()
             torch.distributed.barrier()
+            if master_process:
+                post_sample_barrier_elapsed = time.perf_counter() - post_sample_barrier_start
+                print0(f"post-sample barrier passed in {post_sample_barrier_elapsed:.2f}s")
             trace_rank(f"step {step}: passed post-sample barrier")
 
     if refresh_compiled_training_model:
@@ -1425,6 +1429,8 @@ while True:
         train_loss_f = 0.0
         dt = 1.0
     else:
+        if should_sample or refresh_compiled_training_model:
+            print0("resuming training after eval/sample")
         trace_rank(f"step {step}: entering training step")
         trace_rank(f"step {step}: synchronizing before timer")
         synchronize()
