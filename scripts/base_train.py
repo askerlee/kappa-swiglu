@@ -189,11 +189,13 @@ parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_prob
                     help="router confidence signal used by expert gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--exp-gate-proj-bias-input-constant", type=float, default=0.5,
                     help="constant confidence value to use when --exp-gate-proj-bias-input=constant")
+parser.add_argument("--constant-gate-proj-bias-all-layers", type=str2bool, nargs='?', const=True, default=False,
+                    help="when --exp-gate-proj-bias-input=constant, apply gate_proj_bias to every transformer MLP layer, including dense layers before MoE starts")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
-                    help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
+                    help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-all-layers)")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 # With slope scaling always enabled, --gate-proj-bias-lr-final-scale
@@ -306,6 +308,11 @@ if args.aux_loss_weight_init_anneal_iterations < 0:
 if args.matrix_optimizer == "aurora" and args.exp_gate_proj_bias_input != "constant":
     args.exp_gate_proj_bias_input = "router_probs"
 
+if args.constant_gate_proj_bias_all_layers and args.exp_gate_proj_bias_input != "constant":
+    raise ValueError(
+        "--constant-gate-proj-bias-all-layers requires --exp-gate-proj-bias-input=constant"
+    )
+
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -337,6 +344,8 @@ if args.gate_proj_bias_start_layer is None:
         args.gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
         args.gate_proj_bias_start_layer = 0
+if args.constant_gate_proj_bias_all_layers:
+    args.gate_proj_bias_start_layer = 0
 if args.gate_proj_bias_start_layer < 0:
     raise ValueError("--gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
@@ -449,6 +458,7 @@ def build_model_meta(depth):
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
         exp_gate_proj_bias_input_constant=args.exp_gate_proj_bias_input_constant,
+        constant_gate_proj_bias_all_layers=args.constant_gate_proj_bias_all_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
@@ -905,15 +915,12 @@ def average_step_losses(step_losses, grad_accum_steps):
     return averaged_losses
 
 def get_dense_gate_proj_bias_stat_layer_indices(model):
-    config = model.config
-    if int(getattr(config, 'num_moe_layers', -1)) != 0:
-        return []
-    stride = max(1, int(getattr(config, 'moe_layer_stride', 1)))
-    start_layer = max(0, int(getattr(config, 'moe_start_layer', 0)))
+    start_layer = max(0, int(getattr(model.config, 'gate_proj_bias_start_layer', 0)))
     return [
         layer_idx
         for layer_idx in range(start_layer, len(model.transformer.h))
-        if (layer_idx + 1) % stride == 0
+        if not hasattr(model.transformer.h[layer_idx].mlp, 'experts')
+        and bool(getattr(model.transformer.h[layer_idx].mlp, 'use_gate_proj_bias', False))
     ][:2]
 
 def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):

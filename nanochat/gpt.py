@@ -698,7 +698,7 @@ class Block(nn.Module):
         if use_moe:
             self.mlp = MOELayer(config, layer_idx)
         elif getattr(config, 'use_qwen3_dense_mlp', True):
-            self.mlp = Qwen3MLP(config)
+            self.mlp = Qwen3MLP(config, layer_idx=layer_idx)
         else:
             self.mlp = MLP(config)
 
@@ -729,7 +729,7 @@ class MLPExperts(nn.Module):
 
 # Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
 class Qwen3MLP(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx=None):
         super().__init__()
         self.config = config
         self.hidden_size = config.n_embd
@@ -740,9 +740,119 @@ class Qwen3MLP(nn.Module):
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
+        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
+        self.exp_gate_proj_bias_input_constant = getattr(config, 'exp_gate_proj_bias_input_constant', None)
+        self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
+        gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
+        self.use_gate_proj_bias = (
+            bool(getattr(config, 'use_exp_gate_proj_bias', False))
+            and bool(getattr(config, 'constant_gate_proj_bias_all_layers', False))
+            and self.exp_gate_proj_bias_input == 'constant'
+            and (layer_idx is None or layer_idx >= gate_proj_bias_start_layer)
+        )
+        self._shared_gate_proj_bias = None
+        if self.use_gate_proj_bias:
+            gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
+            if self.global_gate_proj_bias_granularity == 'global':
+                self.register_parameter('gate_proj_bias', None)
+            else:
+                self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
+        else:
+            self.register_parameter('gate_proj_bias', None)
+            self.register_buffer(
+                'disabled_gate_proj_bias',
+                torch.zeros(self.intermediate_size),
+                persistent=False,
+            )
+
+    def _get_gate_proj_bias_parameter_shape(self):
+        if self.global_gate_proj_bias_granularity == 'per-gate':
+            return (self.intermediate_size,)
+        if self.global_gate_proj_bias_granularity in {'per-expert', 'per-layer', 'global'}:
+            return (1,)
+        raise ValueError(
+            f"Unsupported gate proj bias granularity: {self.global_gate_proj_bias_granularity!r}"
+        )
+
+    def bind_shared_gate_proj_bias(self, gate_proj_bias):
+        if self.global_gate_proj_bias_granularity != 'global':
+            raise ValueError("Shared gate_proj_bias binding is only valid for global granularity")
+        self._shared_gate_proj_bias = gate_proj_bias
+
+    def _get_gate_proj_bias_parameter(self):
+        gate_proj_bias = self.gate_proj_bias
+        if gate_proj_bias is not None:
+            return gate_proj_bias
+        return self._shared_gate_proj_bias
+
+    @torch._dynamo.disable
+    def _materialize_gate_proj_bias(self):
+        if not self.use_gate_proj_bias:
+            return self.disabled_gate_proj_bias.detach().requires_grad_(True)
+        gate_proj_bias = self._get_gate_proj_bias_parameter()
+        if gate_proj_bias is None:
+            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
+        if self.global_gate_proj_bias_granularity == 'per-gate':
+            return gate_proj_bias + 0
+        return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
+
+    def _compute_gate_slope_scales(self, gate_proj_bias, max_scale=4.0, softness=2.0):
+        log_tau = 4 * gate_proj_bias.float() * float(self.exp_gate_proj_bias_input_constant)
+        return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
+
+    def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
+        gate_proj_bias = gate_proj_bias.float()
+        MANAGER.add(
+            "gate_proj_bias_l2_loss_above_0",
+            gate_proj_bias.clamp_min(0).square().mean(),
+        )
+        MANAGER.add(
+            "gate_proj_bias_l2_loss_below_0",
+            gate_proj_bias.clamp_max(0).square().mean(),
+        )
+
+    @torch._dynamo.disable
+    def _update_gate_slope_scale_stats(self, slope_scales):
+        if not MANAGER.collect_load_balancing_stats or not self.use_gate_proj_bias:
+            return
+
+        slope_scales = slope_scales.detach().float()
+        flat_slope_scales = slope_scales.reshape(1, -1)
+        flat_mask = torch.ones_like(flat_slope_scales, dtype=torch.bool)
+        slope_scale_mean = slope_scales.mean()
+        MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean)
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_top5p_mean",
+            _mean_extreme_percentile_per_row(
+                flat_slope_scales,
+                flat_mask,
+                fraction=0.05,
+                largest=True,
+            ).squeeze(0),
+        )
+        MANAGER.add(
+            "gate_proj_bias_shift_abs_bottom5p_mean",
+            _mean_extreme_percentile_per_row(
+                flat_slope_scales,
+                flat_mask,
+                fraction=0.05,
+                largest=False,
+            ).squeeze(0),
+        )
+        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", slope_scale_mean)
 
     def forward(self, x):
-        gate_out = self.act_fn(self.gate_proj(x))
+        gate_out_raw = self.gate_proj(x)
+        if self.use_gate_proj_bias:
+            gate_proj_bias = self._materialize_gate_proj_bias()
+            slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
+            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
+            self._update_gate_slope_scale_stats(slope_scales)
+            gate_out = gate_out_raw * torch.sigmoid(
+                gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
+            )
+        else:
+            gate_out = self.act_fn(gate_out_raw)
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -1196,18 +1306,20 @@ class GPT(nn.Module):
     def _configure_gate_proj_bias_sharing(self):
         if getattr(self.config, 'global_gate_proj_bias_granularity', 'per-gate') != 'global':
             return
-        bias_enabled_experts = []
+        bias_enabled_modules = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
-                    bias_enabled_experts.append(experts)
-        if not bias_enabled_experts:
+                    bias_enabled_modules.append(experts)
+            elif isinstance(mlp, Qwen3MLP) and mlp.use_gate_proj_bias:
+                bias_enabled_modules.append(mlp)
+        if not bias_enabled_modules:
             return
         self.global_gate_proj_bias = nn.Parameter(torch.empty(1))
-        for experts in bias_enabled_experts:
-            experts.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
+        for module in bias_enabled_modules:
+            module.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
 
     def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
@@ -1282,6 +1394,8 @@ class GPT(nn.Module):
                 torch.nn.init.uniform_(block.mlp.gate_proj.weight, -s, s)
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
+                if block.mlp.gate_proj_bias is not None:
+                    torch.nn.init.zeros_(block.mlp.gate_proj_bias)
             elif isinstance(block.mlp, MLP):
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
@@ -1517,7 +1631,7 @@ class GPT(nn.Module):
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
-                if name.startswith('mlp.experts.gate_proj_bias'):
+                if name.startswith('mlp.experts.gate_proj_bias') or name.startswith('mlp.gate_proj_bias'):
                     append_param(gate_proj_bias_params, param)
                 elif param.ndim < 2:
                     append_param(target_nonmatrix_params, param)
@@ -1713,48 +1827,48 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-        gate_proj_bias_layer_indices = [
-            layer_idx
-            for layer_idx in moe_layer_indices
-            if isinstance(getattr(self.transformer.h[layer_idx].mlp, 'experts', None), Qwen3MLPExperts)
-            and self.transformer.h[layer_idx].mlp.experts.use_gate_proj_bias
-        ]
+        gate_proj_bias_layer_indices = []
+        for layer_idx, block in enumerate(self.transformer.h):
+            mlp = getattr(block, 'mlp', None)
+            experts = getattr(mlp, 'experts', None)
+            if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
+                gate_proj_bias_layer_indices.append(layer_idx)
+            elif isinstance(mlp, Qwen3MLP) and mlp.use_gate_proj_bias:
+                gate_proj_bias_layer_indices.append(layer_idx)
         gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)
         }
-        for stats_idx, layer_idx in enumerate(moe_layer_indices):
-            experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
-            if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
-                continue
-            gate_proj_bias_stats_idx = gate_proj_bias_layer_to_stats_idx.get(layer_idx)
-            losses[f'mean_abs_gate_{layer_idx}'] = experts.last_gate_stats['mean_abs_gate'].item()
-            losses[f'active_frac_gate_{layer_idx}'] = experts.last_gate_stats['active_frac'].item()
-            losses[f'topk_share_gate_{layer_idx}'] = experts.last_gate_stats['topk_share'].item()
-            losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
+        for layer_idx, gate_proj_bias_stats_idx in gate_proj_bias_layer_to_stats_idx.items():
             if (
-                gate_proj_bias_stats_idx is not None
-                and gate_proj_bias_shift_abs_mean is not None
+                gate_proj_bias_shift_abs_mean is not None
                 and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean.shape[0]
             ):
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean[gate_proj_bias_stats_idx].item()
                 )
             if (
-                gate_proj_bias_stats_idx is not None
-                and gate_proj_bias_shift_abs_mean_normalized is not None
+                gate_proj_bias_shift_abs_mean_normalized is not None
                 and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_normalized.shape[0]
             ):
                 losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean_normalized[gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_top5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_top5p_mean'].shape[0]:
                 losses[f'gate_proj_bias_shift_abs_top5p_mean_{layer_idx}'] = (
                     losses['gate_proj_bias_shift_abs_top5p_mean'][gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx is not None and gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape[0]:
                 losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
                     losses['gate_proj_bias_shift_abs_bottom5p_mean'][gate_proj_bias_stats_idx].item()
                 )
+        for stats_idx, layer_idx in enumerate(moe_layer_indices):
+            experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
+            if not isinstance(experts, Qwen3MLPExperts) or experts.last_gate_stats is None:
+                continue
+            losses[f'mean_abs_gate_{layer_idx}'] = experts.last_gate_stats['mean_abs_gate'].item()
+            losses[f'active_frac_gate_{layer_idx}'] = experts.last_gate_stats['active_frac'].item()
+            losses[f'topk_share_gate_{layer_idx}'] = experts.last_gate_stats['topk_share'].item()
+            losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
         
         if targets is not None:
             loss = _chunked_cross_entropy(

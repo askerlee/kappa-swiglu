@@ -26,6 +26,7 @@ class GPTConfig:
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "router_probs",
         exp_gate_proj_bias_input_constant: float = 0.5,
+        constant_gate_proj_bias_all_layers: bool = False,
         global_gate_proj_bias_granularity: str = "per-gate",
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
@@ -95,6 +96,11 @@ class GPTConfig:
             raise ValueError(
                 "exp_gate_proj_bias_input_constant must be set when exp_gate_proj_bias_input='constant'"
             )
+        self.constant_gate_proj_bias_all_layers = bool(constant_gate_proj_bias_all_layers)
+        if self.constant_gate_proj_bias_all_layers and exp_gate_proj_bias_input != "constant":
+            raise ValueError(
+                "constant_gate_proj_bias_all_layers requires exp_gate_proj_bias_input='constant'"
+            )
         self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
         self.exp_gate_proj_bias_input_constant = (
             None if exp_gate_proj_bias_input_constant is None else float(exp_gate_proj_bias_input_constant)
@@ -107,6 +113,8 @@ class GPTConfig:
             )
         self.global_gate_proj_bias_granularity = global_gate_proj_bias_granularity
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
+        if self.constant_gate_proj_bias_all_layers:
+            self.gate_proj_bias_start_layer = 0
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
