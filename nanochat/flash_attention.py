@@ -21,11 +21,20 @@ Usage:
     y = flash_attn.flash_attn_with_kvcache(q, k_cache, v_cache, k=k, v=v, ...)
 """
 import os
+import ctypes
+import json
 import logging
+import inspect
+import importlib.util
+import platform
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
+from huggingface_hub import snapshot_download
+from packaging.version import parse
 
 
 # =============================================================================
@@ -78,6 +87,111 @@ def _format_cuda_capability(major, minor):
     return f"sm{major}{minor}"
 
 
+def _kernel_package_name_from_repo_id(repo_id):
+    return repo_id.split("/")[-1].replace("-", "_")
+
+
+def _kernel_build_variants():
+    if torch.version.cuda is not None:
+        cuda_version = parse(torch.version.cuda)
+        compute_framework = f"cu{cuda_version.major}{cuda_version.minor}"
+    elif torch.version.hip is not None:
+        rocm_version = parse(torch.version.hip.split("-")[0])
+        compute_framework = f"rocm{rocm_version.major}{rocm_version.minor}"
+    elif torch.backends.mps.is_available():
+        compute_framework = "metal"
+    else:
+        compute_framework = "cpu"
+
+    torch_version = parse(torch.__version__)
+    cpu = platform.machine()
+    system_name = platform.system().lower()
+
+    if system_name == "darwin":
+        cpu = "aarch64" if cpu == "arm64" else cpu
+        variant = f"torch{torch_version.major}{torch_version.minor}-{compute_framework}-{cpu}-{system_name}"
+    elif system_name == "windows":
+        cpu = "x86_64" if cpu == "AMD64" else cpu
+        variant = f"torch{torch_version.major}{torch_version.minor}-{compute_framework}-{cpu}-{system_name}"
+    else:
+        cxxabi = "cxx11" if torch.compiled_with_cxx11_abi() else "cxx98"
+        variant = f"torch{torch_version.major}{torch_version.minor}-{cxxabi}-{compute_framework}-{cpu}-{system_name}"
+
+    noarch = "torch-cuda" if torch.version.cuda is not None else "torch-cpu"
+    return [variant, noarch, "torch-universal"]
+
+
+def _import_kernel_module_from_variant_path(module_name, variant_path):
+    metadata_path = variant_path / "metadata.json"
+    if metadata_path.exists():
+        with metadata_path.open("r") as handle:
+            metadata = json.load(handle)
+        deps = metadata.get("python-depends", [])
+        if deps:
+            try:
+                from kernels.deps import validate_dependencies
+                from kernels.utils import backend as kernels_backend
+
+                validate_dependencies(deps, kernels_backend())
+            except Exception:
+                pass
+
+    file_path = variant_path / "__init__.py"
+    if not file_path.exists():
+        file_path = variant_path / module_name / "__init__.py"
+    if not file_path.exists():
+        raise FileNotFoundError(f"No kernel module found at: {variant_path}")
+
+    path_hash = "{:x}".format(ctypes.c_size_t(hash(file_path)).value)
+    unique_module_name = f"{module_name}_{path_hash}"
+    spec = importlib.util.spec_from_file_location(unique_module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load spec for {unique_module_name} from {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[unique_module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_hf_fa3_interface_via_snapshot(repo_id):
+    package_name = _kernel_package_name_from_repo_id(repo_id)
+    variants = _kernel_build_variants()
+    repo_path = Path(
+        snapshot_download(
+            repo_id,
+            allow_patterns=[f"build/{variant}/*" for variant in variants],
+        )
+    )
+    for variant in variants:
+        variant_path = repo_path / "build" / variant
+        if variant_path.exists():
+            return _import_kernel_module_from_variant_path(package_name, variant_path).flash_attn_interface
+    raise FileNotFoundError(
+        f"Kernel repo {repo_id} does not contain a compatible build variant: {', '.join(variants)}"
+    )
+
+
+def _load_hf_fa3_interface(get_kernel):
+    kwargs = {}
+    try:
+        signature = inspect.signature(get_kernel)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None and "trust_remote_code" in signature.parameters:
+        kwargs["trust_remote_code"] = True
+
+    repo_id = 'varunneal/flash-attention-3'
+
+    try:
+        return get_kernel(repo_id, **kwargs).flash_attn_interface
+    except Exception as exc:
+        message = str(exc)
+        if "/api/kernels/" not in message and "trust_remote_code" not in message:
+            raise
+        return _load_hf_fa3_interface_via_snapshot(repo_id)
+
+
 def _load_flash_attention_4():
     """Try to load Flash Attention 4 (optimized for Hopper / Blackwell)."""
     try:
@@ -114,7 +228,7 @@ def _load_flash_attention_3():
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         from kernels import get_kernel
         interface = _run_with_quiet_hf_request_logs(
-            lambda: get_kernel('varunneal/flash-attention-3').flash_attn_interface
+            lambda: _load_hf_fa3_interface(get_kernel)
         )
         return _make_backend(
             name='fa3',
