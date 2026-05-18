@@ -187,7 +187,7 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by expert gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--exp-gate-proj-bias-input-constant", type=float, default=None,
+parser.add_argument("--exp-gate-proj-bias-input-constant", type=float, default=0.5,
                     help="constant confidence value to use when --exp-gate-proj-bias-input=constant")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
@@ -414,7 +414,7 @@ else:
     if FLASH_ATTN_UNAVAILABLE_REASON:
         print0(f"WARNING: {FLASH_ATTN_UNAVAILABLE_REASON}")
     print0("WARNING: Training will be less efficient without Flash Attention")
-    if args.window_pattern != "L":
+    if any(char != "L" for char in args.window_pattern.upper()):
         print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
         print0("WARNING: Recommend using --window-pattern L for full context attention without alternating sliding window patterns.")
     print0("!" * 80)
