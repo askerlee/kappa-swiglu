@@ -24,8 +24,8 @@ class GPTConfig:
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        exp_gate_proj_bias_input: str = "router_probs",
-        exp_gate_proj_bias_input_constant: float = 0.5,
+        gate_proj_bias_input: str = "router_probs",
+        gate_proj_bias_input_constant: float = 0.5,
         constant_gate_proj_bias_all_layers: bool = False,
         global_gate_proj_bias_granularity: str = "per-gate",
         gate_proj_bias_start_layer: int = 0,
@@ -83,27 +83,33 @@ class GPTConfig:
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
         kwargs.pop('exp_gate_proj_bias_mode', None)
+        legacy_gate_proj_bias_input = kwargs.pop('exp_gate_proj_bias_input', None)
+        legacy_gate_proj_bias_input_constant = kwargs.pop('exp_gate_proj_bias_input_constant', None)
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
         kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
         self.exp_gate_proj_bias_mode = "full"
-        valid_exp_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
-        if exp_gate_proj_bias_input not in valid_exp_gate_proj_bias_inputs:
+        if legacy_gate_proj_bias_input is not None and gate_proj_bias_input == "router_probs":
+            gate_proj_bias_input = legacy_gate_proj_bias_input
+        if legacy_gate_proj_bias_input_constant is not None and gate_proj_bias_input_constant == 0.5:
+            gate_proj_bias_input_constant = legacy_gate_proj_bias_input_constant
+        valid_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
+        if gate_proj_bias_input not in valid_gate_proj_bias_inputs:
             raise ValueError(
-                "exp_gate_proj_bias_input must be one of "
-                f"{sorted(valid_exp_gate_proj_bias_inputs)}, got {exp_gate_proj_bias_input!r}"
+                "gate_proj_bias_input must be one of "
+                f"{sorted(valid_gate_proj_bias_inputs)}, got {gate_proj_bias_input!r}"
             )
-        if exp_gate_proj_bias_input == "constant" and exp_gate_proj_bias_input_constant is None:
+        if gate_proj_bias_input == "constant" and gate_proj_bias_input_constant is None:
             raise ValueError(
-                "exp_gate_proj_bias_input_constant must be set when exp_gate_proj_bias_input='constant'"
+                "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
             )
         self.constant_gate_proj_bias_all_layers = bool(constant_gate_proj_bias_all_layers)
-        if self.constant_gate_proj_bias_all_layers and exp_gate_proj_bias_input != "constant":
+        if self.constant_gate_proj_bias_all_layers and gate_proj_bias_input != "constant":
             raise ValueError(
-                "constant_gate_proj_bias_all_layers requires exp_gate_proj_bias_input='constant'"
+                "constant_gate_proj_bias_all_layers requires gate_proj_bias_input='constant'"
             )
-        self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
-        self.exp_gate_proj_bias_input_constant = (
-            None if exp_gate_proj_bias_input_constant is None else float(exp_gate_proj_bias_input_constant)
+        self.gate_proj_bias_input = gate_proj_bias_input
+        self.gate_proj_bias_input_constant = (
+            None if gate_proj_bias_input_constant is None else float(gate_proj_bias_input_constant)
         )
         valid_gate_proj_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
         if global_gate_proj_bias_granularity not in valid_gate_proj_bias_granularities:

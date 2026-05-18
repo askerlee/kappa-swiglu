@@ -740,14 +740,14 @@ class Qwen3MLP(nn.Module):
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
-        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
-        self.exp_gate_proj_bias_input_constant = getattr(config, 'exp_gate_proj_bias_input_constant', None)
+        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
+        self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = (
             bool(getattr(config, 'use_exp_gate_proj_bias', False))
             and bool(getattr(config, 'constant_gate_proj_bias_all_layers', False))
-            and self.exp_gate_proj_bias_input == 'constant'
+            and self.gate_proj_bias_input == 'constant'
             and (layer_idx is None or layer_idx >= gate_proj_bias_start_layer)
         )
         self._shared_gate_proj_bias = None
@@ -759,6 +759,7 @@ class Qwen3MLP(nn.Module):
                 self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
         else:
             self.register_parameter('gate_proj_bias', None)
+            # disabled_gate_proj_bias: placeholder to satisfy _materialize_gate_proj_bias().
             self.register_buffer(
                 'disabled_gate_proj_bias',
                 torch.zeros(self.intermediate_size),
@@ -797,7 +798,7 @@ class Qwen3MLP(nn.Module):
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
 
     def _compute_gate_slope_scales(self, gate_proj_bias, max_scale=4.0, softness=2.0):
-        log_tau = 4 * gate_proj_bias.float() * float(self.exp_gate_proj_bias_input_constant)
+        log_tau = 4 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
         return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
@@ -864,7 +865,7 @@ class Qwen3MLPExperts(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
-        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
+        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
@@ -890,6 +891,7 @@ class Qwen3MLPExperts(nn.Module):
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_parameter('gate_proj_bias_residual', None)
+            # disabled_gate_proj_bias: placeholder to satisfy _materialize_gate_proj_bias().
             self.register_buffer(
                 "disabled_gate_proj_bias",
                 torch.zeros(self.n_exp, self.intermediate_size),
@@ -1117,8 +1119,8 @@ class MOELayer(nn.Module):
         self.n_exp = config.n_exp
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
-        self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
-        self.exp_gate_proj_bias_input_constant = getattr(config, 'exp_gate_proj_bias_input_constant', None)
+        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
+        self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1150,18 +1152,18 @@ class MOELayer(nn.Module):
         return output_flat
 
     def _select_gate_confidence(self, top_k_scores, router_probs):
-        if self.exp_gate_proj_bias_input == 'top_logits':
+        if self.gate_proj_bias_input == 'top_logits':
             return top_k_scores
-        if self.exp_gate_proj_bias_input == 'router_probs':
+        if self.gate_proj_bias_input == 'router_probs':
             return router_probs
-        if self.exp_gate_proj_bias_input == 'constant':
-            if self.exp_gate_proj_bias_input_constant is None:
+        if self.gate_proj_bias_input == 'constant':
+            if self.gate_proj_bias_input_constant is None:
                 raise RuntimeError(
-                    "exp_gate_proj_bias_input_constant must be set when exp_gate_proj_bias_input='constant'"
+                    "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
                 )
-            return torch.full_like(router_probs, self.exp_gate_proj_bias_input_constant)
+            return torch.full_like(router_probs, self.gate_proj_bias_input_constant)
         raise ValueError(
-            f"Unsupported exp_gate_proj_bias_input: {self.exp_gate_proj_bias_input!r}"
+            f"Unsupported gate_proj_bias_input: {self.gate_proj_bias_input!r}"
         )
 
     def forward(self, x: torch.Tensor):

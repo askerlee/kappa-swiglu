@@ -185,12 +185,12 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
-                    help="router confidence signal used by expert gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--exp-gate-proj-bias-input-constant", type=float, default=0.5,
-                    help="constant confidence value to use when --exp-gate-proj-bias-input=constant")
+parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
+                    help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
+parser.add_argument("--gate-proj-bias-input-constant", "--exp-gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
+                    help="constant confidence value to use when --gate-proj-bias-input=constant")
 parser.add_argument("--constant-gate-proj-bias-all-layers", type=str2bool, nargs='?', const=True, default=False,
-                    help="when --exp-gate-proj-bias-input=constant, apply gate_proj_bias to every transformer MLP layer, including dense layers before MoE starts")
+                    help="when --gate-proj-bias-input=constant, apply gate_proj_bias to every transformer MLP layer, including dense layers before MoE starts")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
@@ -305,12 +305,12 @@ if args.aux_loss_weight_init_anneal_iterations < 0:
 
 # Aurora and gate-proj-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
-if args.matrix_optimizer == "aurora" and args.exp_gate_proj_bias_input != "constant":
-    args.exp_gate_proj_bias_input = "router_probs"
+if args.matrix_optimizer == "aurora" and args.gate_proj_bias_input != "constant":
+    args.gate_proj_bias_input = "router_probs"
 
-if args.constant_gate_proj_bias_all_layers and args.exp_gate_proj_bias_input != "constant":
+if args.constant_gate_proj_bias_all_layers and args.gate_proj_bias_input != "constant":
     raise ValueError(
-        "--constant-gate-proj-bias-all-layers requires --exp-gate-proj-bias-input=constant"
+        "--constant-gate-proj-bias-all-layers requires --gate-proj-bias-input=constant"
     )
 
 # num_moe_layers: 
@@ -456,8 +456,8 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
-        exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
-        exp_gate_proj_bias_input_constant=args.exp_gate_proj_bias_input_constant,
+        gate_proj_bias_input=args.gate_proj_bias_input,
+        gate_proj_bias_input_constant=args.gate_proj_bias_input_constant,
         constant_gate_proj_bias_all_layers=args.constant_gate_proj_bias_all_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
