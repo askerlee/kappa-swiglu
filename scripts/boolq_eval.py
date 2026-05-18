@@ -200,8 +200,10 @@ def build_parser():
     parser.add_argument('--tau', type=float, default=0.0, help='Predict yes when margin logp_yes - logp_no is greater than tau')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument(
+        '--use-gate-proj-bias',
         '--use-exp-gate-proj-bias',
         action=argparse.BooleanOptionalAction,
+        dest='use_gate_proj_bias',
         default=None,
         help='Override the checkpoint config for expert gate_proj_bias on nanochat checkpoints',
     )
@@ -237,7 +239,7 @@ def main():
             model_tag=args.model_tag,
             step=args.step,
             eval_capacity=args.eval_capacity,
-            use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+            use_gate_proj_bias=args.use_gate_proj_bias,
             exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
         )
         model_name = f"{args.source}_model (step {meta['step']})"

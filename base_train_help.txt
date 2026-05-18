@@ -8,7 +8,7 @@ usage: base_train.py [-h] [--device-type DEVICE_TYPE] [--seed SEED]
                      [--aux-loss-weight AUX_LOSS_WEIGHT]
                      [--aux-loss-weight-init-scale AUX_LOSS_WEIGHT_INIT_SCALE]
                      [--aux-loss-weight-init-anneal-iterations AUX_LOSS_WEIGHT_INIT_ANNEAL_ITERATIONS]
-                     [--use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]]
+                     [--use-gate-proj-bias [USE_GATE_PROJ_BIAS]]
                      [--exp-gate-proj-bias-input {top_logits,router_probs}]
                      [--global-gate-proj-bias-granularity {per-gate,per-expert,per-layer,global}]
                      [--gate-proj-bias-start-layer GATE_PROJ_BIAS_START_LAYER]
@@ -98,7 +98,7 @@ options:
                         number of iterations used to anneal aux loss weight
                         from --aux-loss-weight * --aux-loss-weight-init-scale
                         down to --aux-loss-weight
-  --use-exp-gate-proj-bias [USE_EXP_GATE_PROJ_BIAS]
+  --use-gate-proj-bias [USE_GATE_PROJ_BIAS]
                         add a learnable bias to Qwen3 expert gate activations
                         after gate_proj and SiLU
   --exp-gate-proj-bias-input {top_logits,router_probs}

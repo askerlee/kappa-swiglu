@@ -294,11 +294,11 @@ def test_override_disabled_exp_gate_proj_bias_keeps_loadable_zero_bias_tensors()
         "transformer.h.1.mlp.experts.gate_proj_bias": torch.randn(4, 8),
         "transformer.h.1.mlp.experts.gate_proj": torch.randn(4, 8, 16),
     }
-    model_kwargs = {"use_exp_gate_proj_bias": False, "eval_capacity": 1.5}
+    model_kwargs = {"use_gate_proj_bias": False, "eval_capacity": 1.5}
 
     sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
 
-    assert "use_exp_gate_proj_bias" not in sanitized_kwargs
+    assert "use_gate_proj_bias" not in sanitized_kwargs
     assert sanitized_kwargs["eval_capacity"] == 1.5
     assert torch.count_nonzero(model_data["transformer.h.0.mlp.experts.gate_proj_bias"]) == 0
     assert torch.count_nonzero(model_data["transformer.h.1.mlp.experts.gate_proj_bias"]) == 0
@@ -332,7 +332,7 @@ def test_infer_exp_gate_proj_bias_detects_rank1_residual_checkpoint_layout():
 
     _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
 
-    assert model_config_kwargs["use_exp_gate_proj_bias"] is True
+    assert model_config_kwargs["use_gate_proj_bias"] is True
     assert model_config_kwargs["gate_proj_bias_start_layer"] == 1
 
 
@@ -378,7 +378,7 @@ def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
         moe_layer_stride=1,
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         exp_gate_proj_bias_mode="rank1",
     )
     full_bias = torch.randn(2, 16)
@@ -406,7 +406,7 @@ def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_residual_facto
         moe_layer_stride=1,
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         exp_gate_proj_bias_mode="rank1_residual",
     )
     full_bias = torch.randn(2, 16)

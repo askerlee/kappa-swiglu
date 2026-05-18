@@ -24,6 +24,8 @@ def log0(message):
 
 def _patch_missing_config_keys(model_config_kwargs):
     """Add default values for new config keys missing in old checkpoints."""
+    if "use_gate_proj_bias" not in model_config_kwargs and "use_exp_gate_proj_bias" in model_config_kwargs:
+        model_config_kwargs["use_gate_proj_bias"] = model_config_kwargs.pop("use_exp_gate_proj_bias")
     # Old models were trained with full context (no sliding window)
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
@@ -59,7 +61,10 @@ def _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs):
 
 def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
     """Infer expert gate-projection bias config for checkpoints with sparse metadata."""
+    if "use_gate_proj_bias" in model_config_kwargs:
+        return
     if "use_exp_gate_proj_bias" in model_config_kwargs:
+        model_config_kwargs["use_gate_proj_bias"] = model_config_kwargs.pop("use_exp_gate_proj_bias")
         return
 
     gate_proj_bias_layers = []
@@ -76,9 +81,9 @@ def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
                 gate_proj_bias_layers.append(int(match.group(1)))
                 break
 
-    use_exp_gate_proj_bias = bool(gate_proj_bias_layers)
-    model_config_kwargs["use_exp_gate_proj_bias"] = use_exp_gate_proj_bias
-    if not use_exp_gate_proj_bias:
+    use_gate_proj_bias = bool(gate_proj_bias_layers)
+    model_config_kwargs["use_gate_proj_bias"] = use_gate_proj_bias
+    if not use_gate_proj_bias:
         return
 
     inferred_start_layer = min(gate_proj_bias_layers)
@@ -103,9 +108,12 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
+    legacy_use_gate_proj_bias = model_kwargs.pop("use_exp_gate_proj_bias", None)
+    if legacy_use_gate_proj_bias is not None and "use_gate_proj_bias" not in model_kwargs:
+        model_kwargs["use_gate_proj_bias"] = legacy_use_gate_proj_bias
     gate_proj_bias_fill_value = model_kwargs.pop("exp_gate_proj_bias_fill_value", None)
     if gate_proj_bias_fill_value is not None:
-        model_kwargs.pop("use_exp_gate_proj_bias", None)
+        model_kwargs.pop("use_gate_proj_bias", None)
         gate_proj_bias_fill_value = float(gate_proj_bias_fill_value)
         for key in gate_proj_bias_keys:
             model_data[key] = torch.full_like(model_data[key], gate_proj_bias_fill_value)
@@ -121,10 +129,10 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
         )
         return model_kwargs
 
-    if model_kwargs.get("use_exp_gate_proj_bias") is not False:
+    if model_kwargs.get("use_gate_proj_bias") is not False:
         return model_kwargs
 
-    model_kwargs.pop("use_exp_gate_proj_bias", None)
+    model_kwargs.pop("use_gate_proj_bias", None)
     for key in gate_proj_bias_keys:
         model_data[key] = torch.zeros_like(model_data[key])
     for key in gate_proj_bias_expert_keys:
@@ -135,13 +143,13 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
         model_data[key] = torch.zeros_like(model_data[key])
     log0(
         "Preserving checkpoint expert gate_proj_bias parameters for loading and zeroing them "
-        "because use_exp_gate_proj_bias was overridden to False"
+        "because use_gate_proj_bias was overridden to False"
     )
     return model_kwargs
 
 
 def _gate_proj_bias_enabled_for_layer(model_config, layer_idx):
-    return bool(getattr(model_config, "use_exp_gate_proj_bias", False)) and (
+    return bool(getattr(model_config, "use_gate_proj_bias", False)) and (
         layer_idx >= int(getattr(model_config, "gate_proj_bias_start_layer", 0))
     )
 

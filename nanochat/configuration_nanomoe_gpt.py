@@ -23,7 +23,7 @@ class GPTConfig:
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
-        use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
+        use_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         gate_proj_bias_input: str = "router_probs",
         gate_proj_bias_input_constant: float = 0.5,
         constant_gate_proj_bias_all_layers: bool = False,
@@ -82,10 +82,13 @@ class GPTConfig:
         kwargs.pop('use_dense_gate_proj_bias', None)
         kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
         legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
+        legacy_use_gate_proj_bias = kwargs.pop('use_exp_gate_proj_bias', None)
         kwargs.pop('exp_gate_proj_bias_mode', None)
         legacy_gate_proj_bias_input = kwargs.pop('exp_gate_proj_bias_input', None)
         legacy_gate_proj_bias_input_constant = kwargs.pop('exp_gate_proj_bias_input_constant', None)
-        self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
+        if legacy_use_gate_proj_bias is not None and not use_gate_proj_bias:
+            use_gate_proj_bias = legacy_use_gate_proj_bias
+        self.use_gate_proj_bias = bool(use_gate_proj_bias)
         kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
         self.exp_gate_proj_bias_mode = "full"
         if legacy_gate_proj_bias_input is not None and gate_proj_bias_input == "router_probs":

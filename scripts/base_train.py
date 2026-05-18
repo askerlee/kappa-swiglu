@@ -183,7 +183,7 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=1e-3, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
 parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
-parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--use-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
@@ -455,7 +455,7 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        use_gate_proj_bias=args.use_gate_proj_bias,
         gate_proj_bias_input=args.gate_proj_bias_input,
         gate_proj_bias_input_constant=args.gate_proj_bias_input_constant,
         constant_gate_proj_bias_all_layers=args.constant_gate_proj_bias_all_layers,

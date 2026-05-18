@@ -122,7 +122,7 @@ parser.add_argument("--n-exp", type=int, default=64, help="number of experts per
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
 parser.add_argument("--aux-loss-weight", type=float, default=0.001, help="weight for the Switch-style router auxiliary load-balancing loss")
-parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--use-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
                     help="first transformer layer index where MoE gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
@@ -368,7 +368,7 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
+        use_gate_proj_bias=args.use_gate_proj_bias,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         gate_proj_bias_l2_loss_weight=args.gate_proj_bias_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,

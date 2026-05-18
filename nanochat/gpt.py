@@ -745,7 +745,7 @@ class Qwen3MLP(nn.Module):
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = (
-            bool(getattr(config, 'use_exp_gate_proj_bias', False))
+            bool(getattr(config, 'use_gate_proj_bias', False))
             and bool(getattr(config, 'constant_gate_proj_bias_all_layers', False))
             and self.gate_proj_bias_input == 'constant'
             and (layer_idx is None or layer_idx >= gate_proj_bias_start_layer)
@@ -870,7 +870,7 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
-        self.use_gate_proj_bias = bool(getattr(config, 'use_exp_gate_proj_bias', False)) and (
+        self.use_gate_proj_bias = bool(getattr(config, 'use_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
         self._shared_gate_proj_bias = None

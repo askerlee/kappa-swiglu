@@ -112,7 +112,7 @@ def test_gate_projection_bias_can_rescale_gate_slope_from_router_probs():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -187,7 +187,7 @@ def test_dynamic_gate_projection_bias_backprops_into_selected_router_scores():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -205,7 +205,7 @@ def test_dynamic_gate_projection_bias_scales_selected_router_score_gradients():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -260,7 +260,7 @@ def test_dense_qwen3_gate_projection_has_no_bias_parameter():
     config = GPTConfig(
         n_exp=1,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
 
@@ -273,13 +273,13 @@ def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     override_config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
 
@@ -300,7 +300,7 @@ def test_gpt_sets_router_confidence_gate_bias_grad_scale_for_all_qwen3_moe_exper
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         use_qwen3_moe_mlp=True,
         debug=False,
     )
@@ -322,13 +322,13 @@ def test_gate_proj_bias_input_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     override_config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         gate_proj_bias_input="router_probs",
         debug=False,
     )
@@ -340,7 +340,7 @@ def test_gate_proj_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -384,7 +384,7 @@ def test_gate_proj_bias_l2_losses_are_reported_from_gate_proj_biases():
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
 
@@ -416,7 +416,7 @@ def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -460,7 +460,7 @@ def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled()
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -505,7 +505,7 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric():
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     model = GPT(config)
@@ -556,7 +556,7 @@ def test_gpt_forward_reports_gate_proj_bias_shift_abs_mean_metric_in_slope_scale
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     model = GPT(config)
@@ -613,7 +613,7 @@ def test_gate_proj_bias_references_are_not_auto_refreshed_without_config_opt_in(
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
     model = GPT(config)
@@ -640,7 +640,7 @@ def test_gate_proj_bias_shift_stats_default_to_zero_when_bias_disabled():
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=False,
+        use_gate_proj_bias=False,
         debug=False,
     )
     model = GPT(config)
@@ -678,7 +678,7 @@ def test_gate_proj_bias_references_can_auto_refresh_when_config_enabled():
         n_head=4,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         refresh_gate_proj_bias_references=True,
         debug=False,
     )
@@ -707,7 +707,7 @@ def test_gate_projection_bias_has_expected_shape_when_enabled():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         debug=False,
     )
 
@@ -734,7 +734,7 @@ def test_gate_projection_bias_materializes_expected_shape_for_local_granularitie
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         global_gate_proj_bias_granularity=granularity,
         debug=False,
     )
@@ -750,7 +750,7 @@ def test_gate_projection_bias_materialization_broadcasts_per_expert_values():
     config = GPTConfig(
         n_exp=3,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         global_gate_proj_bias_granularity="per-expert",
         debug=False,
     )
@@ -779,7 +779,7 @@ def test_gate_projection_bias_global_granularity_shares_one_parameter_across_lay
         n_head=2,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         global_gate_proj_bias_granularity="global",
         debug=False,
     )
@@ -802,7 +802,7 @@ def test_gate_projection_bias_respects_start_layer_cutoff():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        use_exp_gate_proj_bias=True,
+        use_gate_proj_bias=True,
         gate_proj_bias_start_layer=3,
         debug=False,
     )
