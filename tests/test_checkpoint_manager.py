@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_exp_gate_proj_bias, _infer_use_qwen3_dense_mlp, _override_exp_gate_proj_bias_values, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_exp_gate_proj_bias, _infer_use_qwen3_dense_mlp, _override_exp_gate_proj_bias_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -302,6 +302,15 @@ def test_override_disabled_exp_gate_proj_bias_keeps_loadable_zero_bias_tensors()
     assert sanitized_kwargs["eval_capacity"] == 1.5
     assert torch.count_nonzero(model_data["transformer.h.0.mlp.experts.gate_proj_bias"]) == 0
     assert torch.count_nonzero(model_data["transformer.h.1.mlp.experts.gate_proj_bias"]) == 0
+
+
+def test_patch_missing_config_keys_renames_legacy_use_exp_gate_proj_bias():
+    model_config_kwargs = {"use_exp_gate_proj_bias": True}
+
+    _patch_missing_config_keys(model_config_kwargs)
+
+    assert model_config_kwargs["use_gate_proj_bias"] is True
+    assert "use_exp_gate_proj_bias" not in model_config_kwargs
 
 
 def test_override_exp_gate_proj_bias_fill_value_sets_constant_bias_tensors():

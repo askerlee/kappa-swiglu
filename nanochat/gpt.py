@@ -14,7 +14,6 @@ Notable features:
 
 import math
 from contextlib import nullcontext
-import weakref
 
 import torch
 import torch._dynamo

@@ -163,6 +163,7 @@ parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conve
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=False, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
+parser.add_argument("--rebuild-compile-after-first-eval-only", type=str2bool, nargs='?', const=True, default=False, help="experimentally rebuild the compiled training wrapper only after the first uncompiled CORE/sample pass, then reuse it afterward")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
     "--total-batch-size",
@@ -216,7 +217,9 @@ gate_proj_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
 )
 if args.debug:
     args.compile = False
-if args.compile and not args.rebuild_compile_after_eval and (args.core_metric_every > 0 or args.sample_every > 0):
+if args.rebuild_compile_after_eval and args.rebuild_compile_after_first_eval_only:
+    raise ValueError("Use only one of --rebuild-compile-after-eval or --rebuild-compile-after-first-eval-only")
+if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_compile_after_first_eval_only and (args.core_metric_every > 0 or args.sample_every > 0):
     print(
         "Warning: --compile is enabled while --rebuild-compile-after-eval is disabled. "
         "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
@@ -1151,6 +1154,7 @@ if args.mockup_mode:
     print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
 
 core_results = {}
+has_rebuilt_compile_after_eval = False
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 
@@ -1326,7 +1330,10 @@ while True:
         }, step=step)
         last_core_eval_step = step
         model.train()
-        refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
+        refresh_compiled_training_model = args.compile and (
+            args.rebuild_compile_after_eval
+            or (args.rebuild_compile_after_first_eval_only and not has_rebuilt_compile_after_eval)
+        )
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1394,7 +1401,10 @@ while True:
             sample_block_elapsed = time.perf_counter() - sample_block_start
             print0(f"master-only sampling finished in {sample_block_elapsed:.2f}s")
             model.train()
-            refresh_compiled_training_model = args.compile and args.rebuild_compile_after_eval
+            refresh_compiled_training_model = args.compile and (
+                args.rebuild_compile_after_eval
+                or (args.rebuild_compile_after_first_eval_only and not has_rebuilt_compile_after_eval)
+            )
         if ddp:
             post_sample_barrier_start = time.perf_counter()
             torch.distributed.barrier()
@@ -1406,6 +1416,7 @@ while True:
         rebuild_start = time.perf_counter()
         orig_model.train()
         model = build_training_model(orig_model, args.compile)
+        has_rebuilt_compile_after_eval = True
         rebuild_elapsed = time.perf_counter() - rebuild_start
         print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
 
