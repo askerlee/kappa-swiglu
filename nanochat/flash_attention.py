@@ -172,24 +172,20 @@ def _load_hf_fa3_interface_via_snapshot(repo_id):
 
 
 def _load_hf_fa3_interface(get_kernel):
-    kwargs = {}
-    try:
-        signature = inspect.signature(get_kernel)
-    except (TypeError, ValueError):
-        signature = None
-
-    if signature is not None and "trust_remote_code" in signature.parameters:
-        kwargs["trust_remote_code"] = True
-
     repo_id = 'varunneal/flash-attention-3'
-
     try:
-        return get_kernel(repo_id, **kwargs).flash_attn_interface
-    except Exception as exc:
-        message = str(exc)
-        if "/api/kernels/" not in message and "trust_remote_code" not in message:
-            raise
         return _load_hf_fa3_interface_via_snapshot(repo_id)
+    except Exception:
+        kwargs = {}
+        try:
+            signature = inspect.signature(get_kernel)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature is not None and "trust_remote_code" in signature.parameters:
+            kwargs["trust_remote_code"] = True
+
+        return get_kernel(repo_id, **kwargs).flash_attn_interface
 
 
 def _load_flash_attention_4():
