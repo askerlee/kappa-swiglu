@@ -614,6 +614,21 @@ def build_training_model(orig_model, compile_enabled):
     return torch.compile(orig_model, dynamic=False,
                          options={"triton.cudagraphs": False})
 
+
+def get_compile_rebuild_plan(
+    compile_enabled,
+    rebuild_after_eval,
+    rebuild_after_first_eval_only,
+    has_rebuilt_compile_after_eval,
+):
+    if not compile_enabled:
+        return False, False
+    if rebuild_after_eval:
+        return True, False
+    if rebuild_after_first_eval_only and not has_rebuilt_compile_after_eval:
+        return False, True
+    return False, False
+
 model = build_training_model(orig_model, args.compile)
 
 # -----------------------------------------------------------------------------
@@ -1332,11 +1347,12 @@ while True:
         }), step=step)
         last_core_eval_step = step
         model.train()
-        refresh_compiled_training_model = args.compile and (
-            args.rebuild_compile_after_eval
-            or (args.rebuild_compile_after_first_eval_only and not has_rebuilt_compile_after_eval)
+        refresh_compiled_training_model, run_eager_training_step_after_core_eval = get_compile_rebuild_plan(
+            args.compile,
+            args.rebuild_compile_after_eval,
+            args.rebuild_compile_after_first_eval_only,
+            has_rebuilt_compile_after_eval,
         )
-        run_eager_training_step_after_core_eval = refresh_compiled_training_model
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1407,9 +1423,11 @@ while True:
             print0(f"master-only sampling finished in {sample_block_elapsed:.2f}s")
             model.train()
             trace_rank(f"step {step}: finished master-only sampling")
-            refresh_compiled_training_model = args.compile and (
-                args.rebuild_compile_after_eval
-                or (args.rebuild_compile_after_first_eval_only and not has_rebuilt_compile_after_eval)
+            refresh_compiled_training_model, run_eager_training_step_after_core_eval = get_compile_rebuild_plan(
+                args.compile,
+                args.rebuild_compile_after_eval,
+                args.rebuild_compile_after_first_eval_only,
+                has_rebuilt_compile_after_eval,
             )
         if ddp:
             trace_rank(f"step {step}: waiting at post-sample barrier")
@@ -1457,13 +1475,13 @@ while True:
         train_loss_f = 0.0
         dt = 1.0
     else:
-        if should_sample or refresh_compiled_training_model:
+        if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
             print0("resuming training after eval/sample")
             print0("about to synchronize before resumed training step")
         trace_rank(f"step {step}: entering training step")
         trace_rank(f"step {step}: synchronizing before timer")
         synchronize()
-        if should_sample or refresh_compiled_training_model:
+        if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
             print0("finished synchronize before resumed training step")
         trace_rank(f"step {step}: synchronize before timer complete")
         t0 = time.time()
@@ -1544,6 +1562,15 @@ while True:
         trace_rank(f"step {step}: synchronize after optimizer complete")
         t1 = time.time()
         dt = t1 - t0
+        if run_eager_training_step_after_core_eval:
+            trace_rank(f"step {step}: rebuilding compiled training wrapper after eager recovery step")
+            rebuild_start = time.perf_counter()
+            orig_model.train()
+            model = build_training_model(orig_model, args.compile)
+            has_rebuilt_compile_after_eval = True
+            rebuild_elapsed = time.perf_counter() - rebuild_start
+            print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
+            trace_rank(f"step {step}: rebuilt compiled training wrapper after eager recovery step")
 
     # -------------------------------------------------------------------------
 

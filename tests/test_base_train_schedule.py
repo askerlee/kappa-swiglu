@@ -98,6 +98,15 @@ def test_pick_free_tcp_port_returns_valid_port_number():
     assert 0 < port < 65536
 
 
+def test_get_compile_rebuild_plan_defers_one_time_rebuild_until_after_eager_step():
+    get_compile_rebuild_plan = load_function_from_script("get_compile_rebuild_plan")
+
+    assert get_compile_rebuild_plan(False, False, False, False) == (False, False)
+    assert get_compile_rebuild_plan(True, True, False, False) == (True, False)
+    assert get_compile_rebuild_plan(True, False, True, False) == (False, True)
+    assert get_compile_rebuild_plan(True, False, True, True) == (False, False)
+
+
 def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     source = BASE_TRAIN.read_text()
 
