@@ -1468,6 +1468,10 @@ while True:
             if (should_sample or refresh_compiled_training_model) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
+            aux_loss = micro_losses.get("aux_loss")
+            if aux_loss is None:
+                aux_loss = 0.0
+            loss = loss + args.aux_loss_weight * aux_loss
             gate_proj_slope_l2_loss = micro_losses.get("gate_proj_slope_l2_loss")
             if gate_proj_slope_l2_loss is None:
                 gate_proj_slope_l2_loss = 0.0
@@ -1566,6 +1570,7 @@ while True:
             log_data["train/chat_sft_seen_conversations"] = chat_sft_dataloader_state_dict["seen_conversations"]
         else:
             log_data["train/loss_step"] = debiased_smooth_loss
+        log_data["train/aux_loss_weight"] = args.aux_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:

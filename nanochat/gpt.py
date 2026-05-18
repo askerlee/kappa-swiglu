@@ -1901,8 +1901,7 @@ class GPT(nn.Module):
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = MANAGER.aggregate("aux_loss")
-                loss += self.config.aux_loss_weight * aux_loss
-                losses['aux_loss'] = aux_loss.detach() if isinstance(aux_loss, torch.Tensor) else aux_loss
+                losses['aux_loss'] = aux_loss
                 MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")

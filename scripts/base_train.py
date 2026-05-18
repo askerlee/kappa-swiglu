@@ -235,7 +235,7 @@ parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
-parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=True, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
+parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=False, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
 parser.add_argument("--rebuild-compile-after-first-eval-only", type=str2bool, nargs='?', const=True, default=True, help="experimentally rebuild the compiled training wrapper only after the first uncompiled CORE/sample pass, then reuse it afterward")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
@@ -1467,9 +1467,6 @@ while True:
         t0 = time.time()
         step_losses = None
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
-        orig_model.config.aux_loss_weight = aux_loss_weight
-        if model is not orig_model and hasattr(model, "config"):
-            model.config.aux_loss_weight = aux_loss_weight
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
                 MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
@@ -1483,6 +1480,10 @@ while True:
             if (should_sample or refresh_compiled_training_model) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
+            aux_loss = micro_losses.get("aux_loss")
+            if aux_loss is None:
+                aux_loss = 0.0
+            loss = loss + aux_loss_weight * aux_loss
             gate_proj_bias_l2_loss_above_0 = micro_losses.get("gate_proj_bias_l2_loss_above_0")
             if gate_proj_bias_l2_loss_above_0 is None:
                 gate_proj_bias_l2_loss_above_0 = 0.0

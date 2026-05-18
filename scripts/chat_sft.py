@@ -9,13 +9,8 @@ Or torchrun for training:
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16
 
 chat_sft.py inherits a lot of configs from the base model, for example
-aux_loss_weight. The subtle part is which value gets saved into the base checkpoint. 
-In pretraining, aux_loss_weight is annealed from
---aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight over
---aux-loss-weight--init-anneal-iterations and written back into
-orig_model.config.aux_loss_weight before checkpoint metadata saves model_config.
-So chat_sft.py inherits the latest saved scheduled aux_loss_weight from the base
-checkpoint config.
+aux_loss_weight from the checkpoint config. The model returns raw aux_loss,
+and this script applies the inherited aux_loss_weight in its training loop.
 """
 
 import argparse
@@ -245,6 +240,11 @@ else:
 user_config["router_z_loss_weight"] = args.router_z_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"router_z_loss_weight": args.router_z_loss_weight}, allow_val_change=True)
+aux_loss_weight = float(getattr(model.config, "aux_loss_weight", 0.0))
+print0(f"Inherited aux_loss_weight: {aux_loss_weight}")
+user_config["aux_loss_weight"] = aux_loss_weight
+if not use_dummy_wandb:
+    wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 
 orig_model = model
 model = torch.compile(model, dynamic=False)
@@ -780,6 +780,10 @@ while True:
         with autocast_ctx:
             loss, losses = model(x, y)
         train_loss = losses['ntp_loss'] # for logging
+        aux_loss = losses.get("aux_loss")
+        if aux_loss is None:
+            aux_loss = 0.0
+        loss = loss + aux_loss_weight * aux_loss
         gate_proj_bias_l2_loss_above_0 = losses.get("gate_proj_bias_l2_loss_above_0")
         if gate_proj_bias_l2_loss_above_0 is None:
             gate_proj_bias_l2_loss_above_0 = 0.0
@@ -852,6 +856,7 @@ while True:
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized'].mean()),
+            "train/aux_loss_weight": aux_loss_weight,
             "train/gate_proj_bias_l2_loss_weight_above_0": args.gate_proj_bias_l2_loss_weight_above_0,
             "train/gate_proj_bias_l2_loss_weight_below_0": args.gate_proj_bias_l2_loss_weight_below_0,
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
