@@ -144,13 +144,27 @@ def _import_kernel_module_from_variant_path(module_name, variant_path):
 
     path_hash = "{:x}".format(ctypes.c_size_t(hash(file_path)).value)
     unique_module_name = f"{module_name}_{path_hash}"
-    spec = importlib.util.spec_from_file_location(unique_module_name, file_path)
+    spec_kwargs = {}
+    if file_path.name == "__init__.py":
+        spec_kwargs["submodule_search_locations"] = [str(file_path.parent)]
+    spec = importlib.util.spec_from_file_location(unique_module_name, file_path, **spec_kwargs)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load spec for {unique_module_name} from {file_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[unique_module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _resolve_hf_fa3_interface(module):
+    interface = getattr(module, "flash_attn_interface", None)
+    if interface is not None:
+        return interface
+    if hasattr(module, "flash_attn_func") and hasattr(module, "flash_attn_with_kvcache"):
+        return module
+    raise AttributeError(
+        f"Loaded FA3 module {module.__name__!r} does not expose flash_attn_interface or flash attention callables"
+    )
 
 
 def _load_hf_fa3_interface_via_snapshot(repo_id):
@@ -165,7 +179,8 @@ def _load_hf_fa3_interface_via_snapshot(repo_id):
     for variant in variants:
         variant_path = repo_path / "build" / variant
         if variant_path.exists():
-            return _import_kernel_module_from_variant_path(package_name, variant_path).flash_attn_interface
+            module = _import_kernel_module_from_variant_path(package_name, variant_path)
+            return _resolve_hf_fa3_interface(module)
     raise FileNotFoundError(
         f"Kernel repo {repo_id} does not contain a compatible build variant: {', '.join(variants)}"
     )
