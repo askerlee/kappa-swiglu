@@ -271,7 +271,7 @@ parser.add_argument("--eval-every", type=int, default=250, help="evaluate val bp
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
 parser.add_argument("--core-metric-every", type=int, default=1000, help="evaluate CORE metric every N steps (-1 = disable)")
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
-parser.add_argument("--sample-every", type=int, default=1000, help="sample from model every N steps (-1 = disable)")
+parser.add_argument("--sample-every", type=int, default=-1, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=5000, help="save checkpoints every N steps (-1 = only at end)")
 parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=False, help="save optimizer shards alongside model checkpoints")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
@@ -1147,6 +1147,7 @@ while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     refresh_compiled_training_model = False
+    run_eager_training_step_after_core_eval = False
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
     aux_loss_weight = get_annealed_loss_weight(
@@ -1335,6 +1336,7 @@ while True:
             args.rebuild_compile_after_eval
             or (args.rebuild_compile_after_first_eval_only and not has_rebuilt_compile_after_eval)
         )
+        run_eager_training_step_after_core_eval = refresh_compiled_training_model
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
@@ -1466,6 +1468,7 @@ while True:
         trace_rank(f"step {step}: synchronize before timer complete")
         t0 = time.time()
         step_losses = None
+        training_model = orig_model if run_eager_training_step_after_core_eval else model
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
@@ -1475,8 +1478,10 @@ while True:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
             if (should_sample or refresh_compiled_training_model) and micro_step == 0:
                 print0("starting first resumed forward")
+                if run_eager_training_step_after_core_eval:
+                    print0("running first post-CORE training step eagerly before returning to compiled training")
             with autocast_ctx:
-                loss, micro_losses = model(x, y)
+                loss, micro_losses = training_model(x, y)
             if (should_sample or refresh_compiled_training_model) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
