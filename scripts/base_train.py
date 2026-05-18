@@ -235,8 +235,8 @@ parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
-parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=False, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
-parser.add_argument("--rebuild-compile-after-first-eval-only", type=str2bool, nargs='?', const=True, default=True, help="experimentally rebuild the compiled training wrapper only after the first uncompiled CORE/sample pass, then reuse it afterward")
+parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=True, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
+parser.add_argument("--rebuild-compile-after-first-eval-only", type=str2bool, nargs='?', const=True, default=False, help="experimentally rebuild the compiled training wrapper only after the first uncompiled CORE/sample pass, then reuse it afterward")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
     "--total-batch-size",
