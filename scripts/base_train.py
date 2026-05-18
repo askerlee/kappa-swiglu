@@ -187,7 +187,7 @@ parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--gate-proj-bias-input-constant", "--exp-gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
+parser.add_argument("--gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
                     help="constant confidence value to use when --gate-proj-bias-input=constant")
 parser.add_argument("--constant-gate-proj-bias-all-layers", type=str2bool, nargs='?', const=True, default=False,
                     help="when --gate-proj-bias-input=constant, apply gate_proj_bias to every transformer MLP layer, including dense layers before MoE starts")
@@ -1570,10 +1570,10 @@ while True:
             "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
             "train/gate_proj_bias_l2_loss_above_0_step": losses['gate_proj_bias_l2_loss_above_0'],
             "train/gate_proj_bias_l2_loss_below_0_step": losses['gate_proj_bias_l2_loss_below_0'],
-            "train/gate_proj_bias_shift_abs_mean_step": losses['gate_proj_bias_shift_abs_mean'],
+            "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean'].mean()),
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
-            "train/gate_proj_bias_shift_abs_mean_normalized_step": losses['gate_proj_bias_shift_abs_mean_normalized'],
+            "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized'].mean()),
             "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
             "lrm": lrm,
             "dt": dt,

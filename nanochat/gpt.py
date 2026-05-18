@@ -1817,14 +1817,14 @@ class GPT(nn.Module):
         MANAGER.reset("gate_proj_bias_shift_abs_bottom5p_mean")
         gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
         losses['gate_proj_bias_shift_abs_mean'] = (
-            gate_proj_bias_shift_abs_mean.mean().detach()
+            gate_proj_bias_shift_abs_mean.detach()
             if gate_proj_bias_shift_abs_mean is not None
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_mean")
         gate_proj_bias_shift_abs_mean_normalized = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
         losses['gate_proj_bias_shift_abs_mean_normalized'] = (
-            gate_proj_bias_shift_abs_mean_normalized.mean().detach()
+            gate_proj_bias_shift_abs_mean_normalized.detach()
             if gate_proj_bias_shift_abs_mean_normalized is not None
             else torch.zeros((), device=x.device)
         )
@@ -1840,28 +1840,44 @@ class GPT(nn.Module):
         gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)
         }
+        gate_proj_bias_shift_abs_top5p_mean = losses['gate_proj_bias_shift_abs_top5p_mean']
+        gate_proj_bias_shift_abs_bottom5p_mean = losses['gate_proj_bias_shift_abs_bottom5p_mean']
+        gate_proj_bias_shift_abs_top5p_count = (
+            gate_proj_bias_shift_abs_top5p_mean.shape[0]
+            if gate_proj_bias_shift_abs_top5p_mean.ndim > 0
+            else 0
+        )
+        gate_proj_bias_shift_abs_bottom5p_count = (
+            gate_proj_bias_shift_abs_bottom5p_mean.shape[0]
+            if gate_proj_bias_shift_abs_bottom5p_mean.ndim > 0
+            else 0
+        )
+        gate_proj_bias_shift_abs_mean_count = (
+            gate_proj_bias_shift_abs_mean.shape[0]
+            if gate_proj_bias_shift_abs_mean is not None and gate_proj_bias_shift_abs_mean.ndim > 0
+            else 0
+        )
+        gate_proj_bias_shift_abs_mean_normalized_count = (
+            gate_proj_bias_shift_abs_mean_normalized.shape[0]
+            if gate_proj_bias_shift_abs_mean_normalized is not None and gate_proj_bias_shift_abs_mean_normalized.ndim > 0
+            else 0
+        )
         for layer_idx, gate_proj_bias_stats_idx in gate_proj_bias_layer_to_stats_idx.items():
-            if (
-                gate_proj_bias_shift_abs_mean is not None
-                and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean.shape[0]
-            ):
+            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_count:
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean[gate_proj_bias_stats_idx].item()
                 )
-            if (
-                gate_proj_bias_shift_abs_mean_normalized is not None
-                and gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_normalized.shape[0]
-            ):
+            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_normalized_count:
                 losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_mean_normalized[gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_top5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_top5p_count:
                 losses[f'gate_proj_bias_shift_abs_top5p_mean_{layer_idx}'] = (
-                    losses['gate_proj_bias_shift_abs_top5p_mean'][gate_proj_bias_stats_idx].item()
+                    gate_proj_bias_shift_abs_top5p_mean[gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < losses['gate_proj_bias_shift_abs_bottom5p_mean'].shape[0]:
+            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_bottom5p_count:
                 losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
-                    losses['gate_proj_bias_shift_abs_bottom5p_mean'][gate_proj_bias_stats_idx].item()
+                    gate_proj_bias_shift_abs_bottom5p_mean[gate_proj_bias_stats_idx].item()
                 )
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
