@@ -25,8 +25,8 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_exp_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         exp_gate_proj_bias_input: str = "router_probs",
+        exp_gate_proj_bias_input_constant: float | None = None,
         global_gate_proj_bias_granularity: str = "per-gate",
-        use_gate_proj_bias_as_slope_scaler: bool = True,
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
@@ -85,13 +85,22 @@ class GPTConfig:
         self.use_exp_gate_proj_bias = bool(use_exp_gate_proj_bias)
         kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
         self.exp_gate_proj_bias_mode = "full"
-        valid_exp_gate_proj_bias_inputs = {"top_logits", "router_probs"}
+        if exp_gate_proj_bias_input_constant is not None:
+            exp_gate_proj_bias_input = "constant"
+        valid_exp_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
         if exp_gate_proj_bias_input not in valid_exp_gate_proj_bias_inputs:
             raise ValueError(
                 "exp_gate_proj_bias_input must be one of "
                 f"{sorted(valid_exp_gate_proj_bias_inputs)}, got {exp_gate_proj_bias_input!r}"
             )
+        if exp_gate_proj_bias_input == "constant" and exp_gate_proj_bias_input_constant is None:
+            raise ValueError(
+                "exp_gate_proj_bias_input_constant must be set when exp_gate_proj_bias_input='constant'"
+            )
         self.exp_gate_proj_bias_input = exp_gate_proj_bias_input
+        self.exp_gate_proj_bias_input_constant = (
+            None if exp_gate_proj_bias_input_constant is None else float(exp_gate_proj_bias_input_constant)
+        )
         valid_gate_proj_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
         if global_gate_proj_bias_granularity not in valid_gate_proj_bias_granularities:
             raise ValueError(
@@ -99,9 +108,6 @@ class GPTConfig:
                 f"{sorted(valid_gate_proj_bias_granularities)}, got {global_gate_proj_bias_granularity!r}"
             )
         self.global_gate_proj_bias_granularity = global_gate_proj_bias_granularity
-        kwargs.pop('use_gate_proj_bias_as_lr_scaler', None)
-        kwargs.pop('use_gate_proj_bias_as_slope_scaler', None)
-        self.use_gate_proj_bias_as_slope_scaler = True
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(

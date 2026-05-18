@@ -185,8 +185,10 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-exp-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs"],
-                    help="router confidence signal used by expert gate_proj_bias: raw selected logits or top-k router probabilities")
+parser.add_argument("--exp-gate-proj-bias-input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
+                    help="router confidence signal used by expert gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
+parser.add_argument("--exp-gate-proj-bias-input-constant", type=float, default=None,
+                    help="constant confidence value to use when --exp-gate-proj-bias-input=constant")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
@@ -301,7 +303,7 @@ if args.aux_loss_weight_init_anneal_iterations < 0:
 
 # Aurora and gate-proj-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
-if args.matrix_optimizer == "aurora":
+if args.matrix_optimizer == "aurora" and args.exp_gate_proj_bias_input != "constant":
     args.exp_gate_proj_bias_input = "router_probs"
 
 # num_moe_layers: 
@@ -444,6 +446,7 @@ def build_model_meta(depth):
         aux_loss_weight=args.aux_loss_weight,
         use_exp_gate_proj_bias=args.use_exp_gate_proj_bias,
         exp_gate_proj_bias_input=args.exp_gate_proj_bias_input,
+        exp_gate_proj_bias_input_constant=args.exp_gate_proj_bias_input_constant,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         bilinear_mlp_moe=args.bilinear_mlp_moe,

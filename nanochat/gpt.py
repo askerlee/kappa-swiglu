@@ -1008,6 +1008,7 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
         self.exp_gate_proj_bias_input = getattr(config, 'exp_gate_proj_bias_input', 'top_logits')
+        self.exp_gate_proj_bias_input_constant = getattr(config, 'exp_gate_proj_bias_input_constant', None)
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1038,6 +1039,21 @@ class MOELayer(nn.Module):
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
+    def _select_gate_confidence(self, top_k_scores, router_probs):
+        if self.exp_gate_proj_bias_input == 'top_logits':
+            return top_k_scores
+        if self.exp_gate_proj_bias_input == 'router_probs':
+            return router_probs
+        if self.exp_gate_proj_bias_input == 'constant':
+            if self.exp_gate_proj_bias_input_constant is None:
+                raise RuntimeError(
+                    "exp_gate_proj_bias_input_constant must be set when exp_gate_proj_bias_input='constant'"
+                )
+            return torch.full_like(router_probs, self.exp_gate_proj_bias_input_constant)
+        raise ValueError(
+            f"Unsupported exp_gate_proj_bias_input: {self.exp_gate_proj_bias_input!r}"
+        )
+
     def forward(self, x: torch.Tensor):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
@@ -1064,10 +1080,9 @@ class MOELayer(nn.Module):
         expert_inputs = torch.zeros(
             self.n_exp, exp_capacity, x_flat.size(1), dtype=x_flat.dtype, device=x_flat.device
         )
-        selected_gate_confidence = top_k_scores
+        selected_gate_confidence = self._select_gate_confidence(top_k_scores, router_probs)
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
-            selected_gate_confidence = router_probs
             expert_router_scores = torch.zeros(
                 self.n_exp, exp_capacity, dtype=selected_gate_confidence.dtype, device=selected_gate_confidence.device
             )

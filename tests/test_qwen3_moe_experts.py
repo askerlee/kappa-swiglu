@@ -336,26 +336,6 @@ def test_gate_proj_bias_input_defaults_and_overrides_from_config():
     assert default_config.exp_gate_proj_bias_input == "router_probs"
     assert override_config.exp_gate_proj_bias_input == "router_probs"
 
-
-def test_gate_proj_bias_slope_scaler_config_is_always_enabled():
-    default_config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        debug=False,
-    )
-    explicit_false_config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_exp_gate_proj_bias=True,
-        use_gate_proj_bias_as_slope_scaler=False,
-        debug=False,
-    )
-
-    assert default_config.use_gate_proj_bias_as_slope_scaler is True
-    assert explicit_false_config.use_gate_proj_bias_as_slope_scaler is True
-
-
 def test_gate_proj_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(
         n_exp=2,
