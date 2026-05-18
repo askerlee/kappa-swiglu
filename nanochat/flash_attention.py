@@ -21,6 +21,7 @@ Usage:
     y = flash_attn.flash_attn_with_kvcache(q, k_cache, v_cache, k=k, v=v, ...)
 """
 import os
+import logging
 from types import SimpleNamespace
 
 import torch
@@ -57,12 +58,32 @@ def _is_fa4_window_size_type_error(exc):
     )
 
 
+def _run_with_quiet_hf_request_logs(func):
+    """Suppress request-level HF/httpx info logs during kernel resolution."""
+    logger_names = ("httpx", "huggingface_hub")
+    previous_levels = {}
+    for logger_name in logger_names:
+        logger = logging.getLogger(logger_name)
+        previous_levels[logger_name] = logger.level
+        if logger.isEnabledFor(logging.INFO):
+            logger.setLevel(logging.WARNING)
+    try:
+        return func()
+    finally:
+        for logger_name, level in previous_levels.items():
+            logging.getLogger(logger_name).setLevel(level)
+
+
+def _format_cuda_capability(major, minor):
+    return f"sm{major}{minor}"
+
+
 def _load_flash_attention_4():
     """Try to load Flash Attention 4 (optimized for Hopper / Blackwell)."""
     try:
         from flash_attn.cute import flash_attn_func as flash_attn_func_fa4  # type: ignore[import-not-found]
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, f"Flash Attention 4 import failed: {exc}"
 
     flash_attn_with_kvcache = None
     try:
@@ -75,54 +96,67 @@ def _load_flash_attention_4():
         name='fa4',
         flash_attn_func=flash_attn_func_fa4,
         flash_attn_with_kvcache=flash_attn_with_kvcache,
-    )
+    ), None
 
 
 def _load_flash_attention_3():
     """Try to load Flash Attention 3 (requires Hopper GPU, sm90)."""
     if not torch.cuda.is_available():
-        return None
+        return None, "torch.cuda.is_available() is False"
     try:
-        major, _ = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability()
         # FA3 kernels are compiled for Hopper (sm90) only
         # Ada (sm89), Blackwell (sm100) need SDPA fallback until FA3 is recompiled
         if major != 9:
-            return None
+            return None, (
+                f"Flash Attention 3 requires Hopper (sm90), got {_format_cuda_capability(major, minor)}"
+            )
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         from kernels import get_kernel
-        interface = get_kernel('varunneal/flash-attention-3').flash_attn_interface
+        interface = _run_with_quiet_hf_request_logs(
+            lambda: get_kernel('varunneal/flash-attention-3').flash_attn_interface
+        )
         return _make_backend(
             name='fa3',
             flash_attn_func=interface.flash_attn_func,
             flash_attn_with_kvcache=interface.flash_attn_with_kvcache,
-        )
-    except Exception:
-        return None
+        ), None
+    except Exception as exc:
+        return None, f"Flash Attention 3 kernel load failed: {exc}"
 
 
 def _load_flash_attention_backend():
     """Load the best Flash Attention backend for the current GPU."""
     if not torch.cuda.is_available():
-        return None
+        return None, "torch.cuda.is_available() is False"
 
     try:
-        major, _ = torch.cuda.get_device_capability()
-    except Exception:
-        return None
+        major, minor = torch.cuda.get_device_capability()
+    except Exception as exc:
+        return None, f"Could not query CUDA device capability: {exc}"
 
     if major >= 10:
-        return _load_flash_attention_4()
+        backend, reason = _load_flash_attention_4()
+        if backend is not None:
+            return backend, None
+        return None, reason
 
     if major == 9:
+        reasons = []
         for loader in (_load_flash_attention_3, _load_flash_attention_4):
-            backend = loader()
+            backend, reason = loader()
             if backend is not None:
-                return backend
+                return backend, None
+            if reason:
+                reasons.append(reason)
+        return None, "; ".join(reasons)
 
-    return None
+    return None, (
+        f"No supported Flash Attention backend for GPU {_format_cuda_capability(major, minor)}"
+    )
 
 
-_backend = _load_flash_attention_backend()
+_backend, FLASH_ATTN_UNAVAILABLE_REASON = _load_flash_attention_backend()
 HAS_FLASH_ATTN = _backend is not None
 FLASH_ATTN_BACKEND = _backend.name if _backend is not None else None
 HAS_FLASH_ATTN_KVCACHE = HAS_FLASH_ATTN and _backend.flash_attn_with_kvcache is not None

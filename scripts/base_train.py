@@ -34,7 +34,7 @@ from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import delete_checkpoint_step, delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
-from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND, ALLOW_FA4_TRAINING
+from nanochat.flash_attention import HAS_FLASH_ATTN, FLASH_ATTN_BACKEND, FLASH_ATTN_UNAVAILABLE_REASON, ALLOW_FA4_TRAINING
 from scripts.base_eval import evaluate_core
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.manager import MANAGER
@@ -411,6 +411,8 @@ if HAS_FLASH_ATTN:
 else:
     print0("!" * 80)
     print0("WARNING: No Flash Attention backend available, using PyTorch SDPA fallback")
+    if FLASH_ATTN_UNAVAILABLE_REASON:
+        print0(f"WARNING: {FLASH_ATTN_UNAVAILABLE_REASON}")
     print0("WARNING: Training will be less efficient without Flash Attention")
     if args.window_pattern != "L":
         print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
