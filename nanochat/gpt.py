@@ -745,8 +745,7 @@ class Qwen3MLP(nn.Module):
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = (
             bool(getattr(config, 'use_gate_proj_bias', False))
-            and bool(getattr(config, 'constant_gate_proj_bias_all_layers', False))
-            and self.gate_proj_bias_input == 'constant'
+            and bool(getattr(config, 'constant_gate_proj_bias_dense_layers', False))
             and (layer_idx is None or layer_idx >= gate_proj_bias_start_layer)
         )
         self._shared_gate_proj_bias = None
@@ -873,20 +872,31 @@ class Qwen3MLPExperts(nn.Module):
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
         self._shared_gate_proj_bias = None
+        self._shared_gate_proj_bias_scale = None
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
+        )
+        self.use_gate_proj_bias_scale = (
+            self.use_gate_proj_bias
+            and self.gate_proj_bias_input in {'top_logits', 'router_probs'}
         )
         if self.use_gate_proj_bias:
             gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
             if self.global_gate_proj_bias_granularity == 'global':
                 self.register_parameter('gate_proj_bias', None)
+                self.register_parameter('gate_proj_bias_scale', None)
             else:
                 self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
+                if self.use_gate_proj_bias_scale:
+                    self.gate_proj_bias_scale = nn.Parameter(torch.empty(*gate_proj_bias_shape))
+                else:
+                    self.register_parameter('gate_proj_bias_scale', None)
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_parameter('gate_proj_bias_residual', None)
         else:
             self.register_parameter('gate_proj_bias', None)
+            self.register_parameter('gate_proj_bias_scale', None)
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_parameter('gate_proj_bias_residual', None)
@@ -896,6 +906,11 @@ class Qwen3MLPExperts(nn.Module):
                 torch.zeros(self.n_exp, self.intermediate_size),
                 persistent=False,
             )
+        self.register_buffer(
+            "disabled_gate_proj_bias_scale",
+            torch.ones(self.n_exp, self.intermediate_size),
+            persistent=False,
+        )
         self.register_buffer("initial_gate_proj_bias", None, persistent=False)
         self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
@@ -941,11 +956,22 @@ class Qwen3MLPExperts(nn.Module):
             raise ValueError("Shared gate_proj_bias binding is only valid for global granularity")
         self._shared_gate_proj_bias = gate_proj_bias
 
+    def bind_shared_gate_proj_bias_scale(self, gate_proj_bias_scale):
+        if self.global_gate_proj_bias_granularity != 'global':
+            raise ValueError("Shared gate_proj_bias_scale binding is only valid for global granularity")
+        self._shared_gate_proj_bias_scale = gate_proj_bias_scale
+
     def _get_gate_proj_bias_parameter(self):
         gate_proj_bias = self.gate_proj_bias
         if gate_proj_bias is not None:
             return gate_proj_bias
         return self._shared_gate_proj_bias
+
+    def _get_gate_proj_bias_scale_parameter(self):
+        gate_proj_bias_scale = self.gate_proj_bias_scale
+        if gate_proj_bias_scale is not None:
+            return gate_proj_bias_scale
+        return self._shared_gate_proj_bias_scale
 
     @torch.no_grad()
     def snapshot_gate_proj_bias_reference(self):
@@ -974,8 +1000,28 @@ class Qwen3MLPExperts(nn.Module):
             return gate_proj_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return gate_proj_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
+    @torch._dynamo.disable
+    def _materialize_gate_proj_bias_scale(self):
+        if not self.use_gate_proj_bias_scale:
+            return self.disabled_gate_proj_bias_scale.detach().requires_grad_(True)
+        gate_proj_bias_scale = self._get_gate_proj_bias_scale_parameter()
+        if gate_proj_bias_scale is None:
+            raise RuntimeError("gate_proj_bias_scale was enabled but no parameter was bound")
+        if self.global_gate_proj_bias_granularity == 'per-gate':
+            return gate_proj_bias_scale + 0
+        if self.global_gate_proj_bias_granularity == 'per-expert':
+            return gate_proj_bias_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
+        return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
+
     def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, max_scale=4.0, softness=2.0):
-        log_tau = 4 * gate_proj_bias.float().unsqueeze(1) * selected_router_scores.float().unsqueeze(-1)
+        gate_proj_bias = gate_proj_bias.float().unsqueeze(1)
+        selected_router_scores = selected_router_scores.float().unsqueeze(-1)
+        if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
+            gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().float().unsqueeze(1)
+            transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
+            log_tau = 4 * transformed_scores
+        else:
+            log_tau = 4 * gate_proj_bias * selected_router_scores
         return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
@@ -1281,6 +1327,7 @@ class GPT(nn.Module):
             "h": blocks,
         })
         self.register_parameter("global_gate_proj_bias", None)
+        self.register_parameter("global_gate_proj_bias_scale", None)
         self._configure_gate_proj_bias_sharing()
 
         self.lm_head = nn.Linear(config.n_embd, padded_vocab_size, bias=False)
@@ -1308,12 +1355,15 @@ class GPT(nn.Module):
         if getattr(self.config, 'global_gate_proj_bias_granularity', 'per-gate') != 'global':
             return
         bias_enabled_modules = []
+        bias_scale_enabled_modules = []
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
                     bias_enabled_modules.append(experts)
+                    if experts.use_gate_proj_bias_scale:
+                        bias_scale_enabled_modules.append(experts)
             elif isinstance(mlp, Qwen3MLP) and mlp.use_gate_proj_bias:
                 bias_enabled_modules.append(mlp)
         if not bias_enabled_modules:
@@ -1321,6 +1371,10 @@ class GPT(nn.Module):
         self.global_gate_proj_bias = nn.Parameter(torch.empty(1))
         for module in bias_enabled_modules:
             module.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
+        if bias_scale_enabled_modules:
+            self.global_gate_proj_bias_scale = nn.Parameter(torch.empty(1))
+            for module in bias_scale_enabled_modules:
+                module.bind_shared_gate_proj_bias_scale(self.global_gate_proj_bias_scale)
 
     def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
@@ -1357,6 +1411,11 @@ class GPT(nn.Module):
         return bool(getattr(self.config, 'refresh_gate_proj_bias_references', False))
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
+        if strict:
+            state_dict = state_dict.copy()
+            for name, param in self.state_dict().items():
+                if 'gate_proj_bias_scale' in name and name not in state_dict:
+                    state_dict[name] = torch.ones_like(param)
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         if self._should_refresh_gate_proj_bias_references():
             self.refresh_gate_proj_bias_references()
@@ -1412,12 +1471,16 @@ class GPT(nn.Module):
                     torch.nn.init.zeros_(experts.c_proj)
         if self.global_gate_proj_bias is not None:
             torch.nn.init.zeros_(self.global_gate_proj_bias)
+        if self.global_gate_proj_bias_scale is not None:
+            torch.nn.init.ones_(self.global_gate_proj_bias_scale)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias is not None:
                     torch.nn.init.zeros_(experts.gate_proj_bias)
+                if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias_scale is not None:
+                    torch.nn.init.ones_(experts.gate_proj_bias_scale)
             
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
@@ -1639,6 +1702,7 @@ class GPT(nn.Module):
                 else:
                     append_param(target_matrix_params, param)
         append_param(gate_proj_bias_params, self.global_gate_proj_bias)
+        append_param(gate_proj_bias_params, self.global_gate_proj_bias_scale)
         value_embeds_params = []
         for param in self.value_embeds.parameters():
             append_param(value_embeds_params, param)

@@ -189,13 +189,13 @@ parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=
                     help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
                     help="constant confidence value to use when --gate-proj-bias-input=constant")
-parser.add_argument("--constant-gate-proj-bias-all-layers", type=str2bool, nargs='?', const=True, default=False,
-                    help="when --gate-proj-bias-input=constant, apply gate_proj_bias to every transformer MLP layer, including dense layers before MoE starts")
+parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gate_proj_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
+                    help="apply the constant gate_proj_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
-                    help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-all-layers)")
+                    help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-dense-layers)")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 # With slope scaling always enabled, --gate-proj-bias-lr-final-scale
@@ -311,11 +311,6 @@ if args.aux_loss_weight_init_anneal_iterations < 0:
 if args.matrix_optimizer == "aurora" and args.gate_proj_bias_input != "constant":
     args.gate_proj_bias_input = "router_probs"
 
-if args.constant_gate_proj_bias_all_layers and args.gate_proj_bias_input != "constant":
-    raise ValueError(
-        "--constant-gate-proj-bias-all-layers requires --gate-proj-bias-input=constant"
-    )
-
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -347,7 +342,7 @@ if args.gate_proj_bias_start_layer is None:
         args.gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
         args.gate_proj_bias_start_layer = 0
-if args.constant_gate_proj_bias_all_layers:
+if args.constant_gate_proj_bias_dense_layers:
     args.gate_proj_bias_start_layer = 0
 if args.gate_proj_bias_start_layer < 0:
     raise ValueError("--gate-proj-bias-start-layer must be >= 0")
@@ -461,7 +456,7 @@ def build_model_meta(depth):
         use_gate_proj_bias=args.use_gate_proj_bias,
         gate_proj_bias_input=args.gate_proj_bias_input,
         gate_proj_bias_input_constant=args.gate_proj_bias_input_constant,
-        constant_gate_proj_bias_all_layers=args.constant_gate_proj_bias_all_layers,
+        constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
