@@ -1014,6 +1014,10 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     exp_gate_proj_bias = experts._materialize_gate_proj_bias()
                     losses[f'gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
                     losses[f'gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
+                if experts.use_gate_proj_bias_scale:
+                    exp_gate_proj_bias_scale = experts._materialize_gate_proj_bias_scale()
+                    losses[f'gate_proj_bias_scale_mean_{i}'] = exp_gate_proj_bias_scale.mean().float().item()
+                    losses[f'gate_proj_bias_scale_abs_mean_{i}'] = exp_gate_proj_bias_scale.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -1048,6 +1052,14 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         losses[f'gate_proj_bias_mean_bottom_{i}'] = exp_gate_proj_bias_mean[bottom_indices].mean().item()
                         losses[f'gate_proj_bias_abs_mean_top_{i}'] = exp_gate_proj_bias_abs_mean[top_indices].mean().item()
                         losses[f'gate_proj_bias_abs_mean_bottom_{i}'] = exp_gate_proj_bias_abs_mean[bottom_indices].mean().item()
+                    if experts.use_gate_proj_bias_scale:
+                        reduce_dims = tuple(range(1, exp_gate_proj_bias_scale.ndim))
+                        exp_gate_proj_bias_scale_mean = exp_gate_proj_bias_scale.float().mean(dim=reduce_dims)
+                        exp_gate_proj_bias_scale_abs_mean = exp_gate_proj_bias_scale.abs().float().mean(dim=reduce_dims)
+                        losses[f'gate_proj_bias_scale_mean_top_{i}'] = exp_gate_proj_bias_scale_mean[top_indices].mean().item()
+                        losses[f'gate_proj_bias_scale_mean_bottom_{i}'] = exp_gate_proj_bias_scale_mean[bottom_indices].mean().item()
+                        losses[f'gate_proj_bias_scale_abs_mean_top_{i}'] = exp_gate_proj_bias_scale_abs_mean[top_indices].mean().item()
+                        losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}'] = exp_gate_proj_bias_scale_abs_mean[bottom_indices].mean().item()
 
                     top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
                     bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
@@ -1633,6 +1645,10 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_mean_{i}": losses[f'gate_proj_bias_mean_{i}']})
             if f'gate_proj_bias_abs_mean_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_{i}": losses[f'gate_proj_bias_abs_mean_{i}']})
+            if f'gate_proj_bias_scale_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_mean_{i}": losses[f'gate_proj_bias_scale_mean_{i}']})
+            if f'gate_proj_bias_scale_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_{i}": losses[f'gate_proj_bias_scale_abs_mean_{i}']})
             if f'gate_proj_bias_mean_top_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_mean_top_{i}": losses[f'gate_proj_bias_mean_top_{i}']})
             if f'gate_proj_bias_mean_bottom_{i}' in losses:
@@ -1641,6 +1657,14 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_top_{i}": losses[f'gate_proj_bias_abs_mean_top_{i}']})
             if f'gate_proj_bias_abs_mean_bottom_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_bottom_{i}": losses[f'gate_proj_bias_abs_mean_bottom_{i}']})
+            if f'gate_proj_bias_scale_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_mean_top_{i}": losses[f'gate_proj_bias_scale_mean_top_{i}']})
+            if f'gate_proj_bias_scale_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_mean_bottom_{i}": losses[f'gate_proj_bias_scale_mean_bottom_{i}']})
+            if f'gate_proj_bias_scale_abs_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_top_{i}": losses[f'gate_proj_bias_scale_abs_mean_top_{i}']})
+            if f'gate_proj_bias_scale_abs_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_bottom_{i}": losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}']})
             if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
             if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
