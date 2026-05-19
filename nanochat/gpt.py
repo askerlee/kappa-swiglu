@@ -801,14 +801,11 @@ class Qwen3MLP(nn.Module):
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
-        MANAGER.add(
-            "gate_proj_bias_l2_loss_above_0",
-            gate_proj_bias.clamp_min(0).square().mean(),
-        )
-        MANAGER.add(
-            "gate_proj_bias_l2_loss_below_0",
-            gate_proj_bias.clamp_max(0).square().mean(),
-        )
+        MANAGER.add("gate_proj_bias_l2_loss", gate_proj_bias.square().mean())
+
+    def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
+        gate_proj_bias_scale = gate_proj_bias_scale.float()
+        MANAGER.add("gate_proj_bias_scale_l2_loss", gate_proj_bias_scale.square().mean())
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales):
@@ -1130,6 +1127,10 @@ class Qwen3MLPExperts(nn.Module):
                 scaled_selected_router_scores,
             )
             self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
+            if self.use_gate_proj_bias_scale:
+                self._accumulate_gate_proj_bias_scale_l2_losses(
+                    self._materialize_gate_proj_bias_scale()
+                )
             # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
@@ -1379,14 +1380,10 @@ class GPT(nn.Module):
     def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
-        for name in ('gate_proj_bias_l2_loss_above_0', 'gate_proj_bias_l2_loss_below_0'):
+        for name in ('gate_proj_bias_l2_loss', 'gate_proj_bias_scale_l2_loss'):
             value = MANAGER.aggregate(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
             MANAGER.reset(name)
-        losses['gate_proj_bias_l2_loss'] = (
-            losses['gate_proj_bias_l2_loss_above_0']
-            + losses['gate_proj_bias_l2_loss_below_0']
-        )
         return losses
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
@@ -1834,8 +1831,7 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'router_z_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
-                   'gate_proj_bias_l2_loss_above_0': 0,
-                   'gate_proj_bias_l2_loss_below_0': 0,
+                   'gate_proj_bias_scale_l2_loss': 0,
                    'gate_grad_scale_mean': None,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,
