@@ -26,7 +26,7 @@ class GPTConfig:
         use_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         gate_proj_bias_input: str = "router_probs",
         gate_proj_bias_input_constant: float = 0.5,
-        constant_gate_proj_bias_all_layers: bool = False,
+        constant_gate_proj_bias_dense_layers: bool = False,
         global_gate_proj_bias_granularity: str = "per-gate",
         gate_proj_bias_start_layer: int = 0,
         gate_stats_threshold: float = 0.1,
@@ -56,8 +56,6 @@ class GPTConfig:
         debug: bool = False,
         **kwargs,
     ):        
-        kwargs.pop('use_experts_gate_output_loss', None)
-        kwargs.pop('experts_gate_output_loss_weight', None)
         self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
@@ -75,26 +73,9 @@ class GPTConfig:
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
-        kwargs.pop('use_router_ortho_loss', None)
-        kwargs.pop('router_ortho_loss_target', None)
-        kwargs.pop('router_ortho_loss_weight', None)
-        kwargs.pop('router_ortho_neg_corr_weight', None)
-        kwargs.pop('use_dense_gate_proj_bias', None)
-        kwargs.pop('dense_gate_proj_bias_l2_loss_weight', None)
-        legacy_bilinear_mlp = kwargs.pop('bilinear_mlp', None)
-        legacy_use_gate_proj_bias = kwargs.pop('use_exp_gate_proj_bias', None)
-        kwargs.pop('exp_gate_proj_bias_mode', None)
-        legacy_gate_proj_bias_input = kwargs.pop('exp_gate_proj_bias_input', None)
-        legacy_gate_proj_bias_input_constant = kwargs.pop('exp_gate_proj_bias_input_constant', None)
-        if legacy_use_gate_proj_bias is not None and not use_gate_proj_bias:
-            use_gate_proj_bias = legacy_use_gate_proj_bias
         self.use_gate_proj_bias = bool(use_gate_proj_bias)
         kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
         self.exp_gate_proj_bias_mode = "full"
-        if legacy_gate_proj_bias_input is not None and gate_proj_bias_input == "router_probs":
-            gate_proj_bias_input = legacy_gate_proj_bias_input
-        if legacy_gate_proj_bias_input_constant is not None and gate_proj_bias_input_constant == 0.5:
-            gate_proj_bias_input_constant = legacy_gate_proj_bias_input_constant
         valid_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
         if gate_proj_bias_input not in valid_gate_proj_bias_inputs:
             raise ValueError(
@@ -105,10 +86,10 @@ class GPTConfig:
             raise ValueError(
                 "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
             )
-        self.constant_gate_proj_bias_all_layers = bool(constant_gate_proj_bias_all_layers)
-        if self.constant_gate_proj_bias_all_layers and gate_proj_bias_input != "constant":
+        self.constant_gate_proj_bias_dense_layers = bool(constant_gate_proj_bias_dense_layers)
+        if self.constant_gate_proj_bias_dense_layers and gate_proj_bias_input != "constant":
             raise ValueError(
-                "constant_gate_proj_bias_all_layers requires gate_proj_bias_input='constant'"
+                "constant_gate_proj_bias_dense_layers requires gate_proj_bias_input='constant'"
             )
         self.gate_proj_bias_input = gate_proj_bias_input
         self.gate_proj_bias_input_constant = (
@@ -122,7 +103,7 @@ class GPTConfig:
             )
         self.global_gate_proj_bias_granularity = global_gate_proj_bias_granularity
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
-        if self.constant_gate_proj_bias_all_layers:
+        if self.constant_gate_proj_bias_dense_layers:
             self.gate_proj_bias_start_layer = 0
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(
@@ -150,8 +131,6 @@ class GPTConfig:
         self.router_use_full_prec = router_use_full_prec
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
-        if legacy_bilinear_mlp is not None and not bilinear_mlp_moe:
-            bilinear_mlp_moe = legacy_bilinear_mlp
         self.bilinear_mlp_moe = bool(bilinear_mlp_moe)
         self.window_pattern = window_pattern
         self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
