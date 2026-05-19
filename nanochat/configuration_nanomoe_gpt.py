@@ -26,6 +26,8 @@ class GPTConfig:
         use_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         gate_proj_bias_input: str = "router_probs",
         gate_proj_bias_input_constant: float = 0.5,
+        moe_gate_slope_max_scale: float = 3.0,
+        dense_gate_slope_max_scale: float = 2.0,
         constant_gate_proj_bias_dense_layers: bool = False,
         global_gate_proj_bias_granularity: str = "per-gate",
         gate_proj_bias_start_layer: int = 0,
@@ -89,6 +91,8 @@ class GPTConfig:
         self.gate_proj_bias_input_constant = (
             None if gate_proj_bias_input_constant is None else float(gate_proj_bias_input_constant)
         )
+        self.moe_gate_slope_max_scale = float(moe_gate_slope_max_scale)
+        self.dense_gate_slope_max_scale = float(dense_gate_slope_max_scale)
         valid_gate_proj_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
         if global_gate_proj_bias_granularity not in valid_gate_proj_bias_granularities:
             raise ValueError(

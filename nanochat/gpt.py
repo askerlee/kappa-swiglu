@@ -741,6 +741,7 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiLUActivation()
         self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
         self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
+        self.gate_slope_max_scale = float(getattr(config, 'dense_gate_slope_max_scale', 2.0))
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = (
@@ -795,9 +796,9 @@ class Qwen3MLP(nn.Module):
             return gate_proj_bias + 0
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, max_scale=4.0, softness=2.0):
+    def _compute_gate_slope_scales(self, gate_proj_bias, softness=2.0):
         log_tau = 4 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
-        return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_tau / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
@@ -861,6 +862,7 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
+        self.gate_slope_max_scale = float(getattr(config, 'moe_gate_slope_max_scale', 3.0))
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
@@ -1010,7 +1012,7 @@ class Qwen3MLPExperts(nn.Module):
             return gate_proj_bias_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, max_scale=4.0, softness=2.0):
+    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=2.0):
         gate_proj_bias = gate_proj_bias.float().unsqueeze(1)
         selected_router_scores = selected_router_scores.float().unsqueeze(-1)
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
@@ -1019,7 +1021,7 @@ class Qwen3MLPExperts(nn.Module):
             log_tau = 4 * transformed_scores
         else:
             log_tau = 4 * gate_proj_bias * selected_router_scores
-        return torch.exp(math.log(max_scale) * torch.tanh(-log_tau / softness))
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_tau / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()

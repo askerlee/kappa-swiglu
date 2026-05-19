@@ -189,6 +189,10 @@ parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=
                     help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
                     help="constant confidence value to use when --gate-proj-bias-input=constant")
+parser.add_argument("--moe-gate-slope-max-scale", type=float, default=3.0,
+                    help="maximum slope scale used by MoE gate_proj_bias modulation")
+parser.add_argument("--dense-gate-slope-max-scale", type=float, default=2.0,
+                    help="maximum slope scale used by dense gate_proj_bias modulation")
 parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gate_proj_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
                     help="apply the constant gate_proj_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
@@ -452,6 +456,8 @@ def build_model_meta(depth):
         use_gate_proj_bias=args.use_gate_proj_bias,
         gate_proj_bias_input=args.gate_proj_bias_input,
         gate_proj_bias_input_constant=args.gate_proj_bias_input_constant,
+        moe_gate_slope_max_scale=args.moe_gate_slope_max_scale,
+        dense_gate_slope_max_scale=args.dense_gate_slope_max_scale,
         constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
