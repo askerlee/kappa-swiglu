@@ -617,7 +617,7 @@ def get_compile_rebuild_plan(
     if not compile_enabled:
         return False, False
     if rebuild_after_eval:
-        return True, False
+        return False, True
     if rebuild_after_first_eval_only and not has_rebuilt_compile_after_eval:
         return False, True
     return False, False
@@ -1477,13 +1477,13 @@ while True:
             )
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
-            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("starting first resumed forward")
                 if run_eager_training_step_after_core_eval:
                     print0("running first post-CORE training step eagerly before returning to compiled training")
             with autocast_ctx:
                 loss, micro_losses = training_model(x, y)
-            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
             aux_loss = micro_losses.get("aux_loss")
@@ -1502,10 +1502,10 @@ while True:
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
-            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("starting first resumed backward")
             loss.backward()
-            if (should_sample or refresh_compiled_training_model) and micro_step == 0:
+            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed backward")
             MANAGER.collect_backward_stats = False
             if micro_step == 0 or micro_step == grad_accum_steps - 1:

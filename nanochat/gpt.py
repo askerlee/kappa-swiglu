@@ -1972,6 +1972,7 @@ class GPT(nn.Module):
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
 
+            # Updates losses['gate_proj_bias_l2_loss'] and losses['gate_proj_bias_scale_l2_loss'].
             losses.update(self.compute_gate_proj_slope_magnitude_losses())
         else:
             return logits
