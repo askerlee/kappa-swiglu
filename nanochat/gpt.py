@@ -1472,7 +1472,7 @@ class GPT(nn.Module):
         if self.global_gate_proj_bias is not None:
             torch.nn.init.zeros_(self.global_gate_proj_bias)
         if self.global_gate_proj_bias_scale is not None:
-            torch.nn.init.ones_(self.global_gate_proj_bias_scale)
+            torch.nn.init.zeros_(self.global_gate_proj_bias_scale)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
@@ -1480,7 +1480,7 @@ class GPT(nn.Module):
                 if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias is not None:
                     torch.nn.init.zeros_(experts.gate_proj_bias)
                 if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias_scale is not None:
-                    torch.nn.init.ones_(experts.gate_proj_bias_scale)
+                    torch.nn.init.zeros_(experts.gate_proj_bias_scale)
             
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
