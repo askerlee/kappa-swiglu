@@ -1131,9 +1131,8 @@ class Qwen3MLPExperts(nn.Module):
             )
             self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
             if self.use_gate_proj_bias_scale:
-                self._accumulate_gate_proj_bias_scale_l2_losses(
-                    self._materialize_gate_proj_bias_scale()
-                )
+                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale()
+                self._accumulate_gate_proj_bias_scale_l2_losses(gate_proj_bias_scale)
             # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
