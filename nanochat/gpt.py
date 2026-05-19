@@ -1024,12 +1024,15 @@ class Qwen3MLPExperts(nn.Module):
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
         MANAGER.add(
-            "gate_proj_bias_l2_loss_above_0",
-            gate_proj_bias.clamp_min(0).square().mean(),
+            "gate_proj_bias_l2_loss",
+            gate_proj_bias.square().mean(),
         )
+
+    def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
+        gate_proj_bias_scale = gate_proj_bias_scale.float()
         MANAGER.add(
-            "gate_proj_bias_l2_loss_below_0",
-            gate_proj_bias.clamp_max(0).square().mean(),
+            "gate_proj_bias_scale_l2_loss",
+            gate_proj_bias_scale.square().mean(),
         )
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
