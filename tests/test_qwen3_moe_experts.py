@@ -269,6 +269,42 @@ def test_dense_qwen3_gate_projection_has_no_bias_parameter():
     assert not hasattr(mlp, 'gate_proj_bias')
 
 
+def test_config_allows_constant_dense_gate_proj_bias_with_router_probs_for_moe_layers():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_input="router_probs",
+        gate_proj_bias_input_constant=0.5,
+        constant_gate_proj_bias_dense_layers=True,
+        debug=False,
+    )
+
+    assert config.gate_proj_bias_input == "router_probs"
+    assert config.gate_proj_bias_input_constant == pytest.approx(0.5)
+    assert config.constant_gate_proj_bias_dense_layers is True
+
+
+def test_dense_qwen3_mlp_enables_constant_gate_proj_bias_when_requested():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_input="router_probs",
+        gate_proj_bias_input_constant=0.5,
+        constant_gate_proj_bias_dense_layers=True,
+        debug=False,
+    )
+
+    mlp = Qwen3MLP(config, layer_idx=0)
+    experts = Qwen3MLPExperts(config, layer_idx=0)
+
+    assert mlp.use_gate_proj_bias is True
+    assert mlp.gate_proj_bias is not None
+    assert experts.use_gate_proj_bias is True
+    assert experts.use_gate_proj_bias_scale is True
+
+
 def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,

@@ -206,7 +206,7 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
+parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=2e-2,
                     help="L2 weight on gate_proj_bias and gate_proj_bias_scale values")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
