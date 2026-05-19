@@ -1199,6 +1199,7 @@ while True:
             "val/loss": ntp_loss,
         }), step=step)
         model.train()
+        MANAGER.reset_all()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if should_terminate_after_checkpoint and master_process:
@@ -1331,6 +1332,7 @@ while True:
         }), step=step)
         last_core_eval_step = step
         model.train()
+        MANAGER.reset_all()
         refresh_compiled_training_model, run_eager_training_step_after_core_eval = get_compile_rebuild_plan(
             args.compile,
             args.rebuild_compile_after_eval,
@@ -1406,6 +1408,7 @@ while True:
             sample_block_elapsed = time.perf_counter() - sample_block_start
             print0(f"master-only sampling finished in {sample_block_elapsed:.2f}s")
             model.train()
+            MANAGER.reset_all()
             trace_rank(f"step {step}: finished master-only sampling")
             refresh_compiled_training_model, run_eager_training_step_after_core_eval = get_compile_rebuild_plan(
                 args.compile,

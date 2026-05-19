@@ -76,6 +76,10 @@ class MOEManager:
             return
         self._values[name] = []
 
+    def reset_all(self):
+        for name in self._values:
+            self.reset(name)
+
     @torch._dynamo.disable
     def add(self, name, value):
         if name == "drop_rate_per_ks":
