@@ -313,16 +313,16 @@ def test_patch_missing_config_keys_renames_legacy_use_exp_gate_proj_bias():
     assert "use_exp_gate_proj_bias" not in model_config_kwargs
 
 
-def test_override_exp_gate_proj_bias_fill_value_sets_constant_bias_tensors():
+def test_override_gate_proj_bias_fill_value_sets_constant_bias_tensors():
     model_data = {
         "transformer.h.0.mlp.experts.gate_proj_bias": torch.randn(4, 8),
         "transformer.h.1.mlp.experts.gate_proj_bias": torch.randn(4, 8),
     }
-    model_kwargs = {"exp_gate_proj_bias_fill_value": 0.4, "eval_capacity": 1.5}
+    model_kwargs = {"gate_proj_bias_fill_value": 0.4, "eval_capacity": 1.5}
 
     sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
 
-    assert "exp_gate_proj_bias_fill_value" not in sanitized_kwargs
+    assert "gate_proj_bias_fill_value" not in sanitized_kwargs
     assert sanitized_kwargs["eval_capacity"] == 1.5
     assert torch.all(model_data["transformer.h.0.mlp.experts.gate_proj_bias"] == 0.4)
     assert torch.all(model_data["transformer.h.1.mlp.experts.gate_proj_bias"] == 0.4)
@@ -345,7 +345,7 @@ def test_infer_exp_gate_proj_bias_detects_rank1_residual_checkpoint_layout():
     assert model_config_kwargs["gate_proj_bias_start_layer"] == 1
 
 
-def test_override_exp_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
+def test_override_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
     fill_value = 0.4
     model_data = {
         "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
@@ -354,8 +354,7 @@ def test_override_exp_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_
         "transformer.h.0.mlp.experts.gate_proj_bias_residual": torch.randn(2, 16),
     }
     model_kwargs = {
-        "exp_gate_proj_bias_fill_value": fill_value,
-        "exp_gate_proj_bias_mode": "rank1_residual",
+        "gate_proj_bias_fill_value": fill_value,
     }
 
     sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
@@ -372,12 +371,10 @@ def test_override_exp_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_
 
     _patch_missing_keys(model_data, config)
 
-    reconstructed = (
-        model_data["transformer.h.0.mlp.experts.gate_proj_bias_expert"].unsqueeze(1)
-        * model_data["transformer.h.0.mlp.experts.gate_proj_bias_intermediate"].unsqueeze(0)
-        + model_data["transformer.h.0.mlp.experts.gate_proj_bias_residual"]
+    torch.testing.assert_close(
+        model_data["transformer.h.0.mlp.experts.gate_proj_bias"],
+        torch.full((2, 16), fill_value),
     )
-    torch.testing.assert_close(reconstructed, torch.full((2, 16), fill_value))
 
 
 def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
@@ -388,7 +385,6 @@ def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1",
     )
     full_bias = torch.randn(2, 16)
     model_data = {
@@ -416,7 +412,6 @@ def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_residual_facto
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        exp_gate_proj_bias_mode="rank1_residual",
     )
     full_bias = torch.randn(2, 16)
     model_data = {

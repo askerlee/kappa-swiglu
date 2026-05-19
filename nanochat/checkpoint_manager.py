@@ -111,7 +111,7 @@ def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
     legacy_use_gate_proj_bias = model_kwargs.pop("use_exp_gate_proj_bias", None)
     if legacy_use_gate_proj_bias is not None and "use_gate_proj_bias" not in model_kwargs:
         model_kwargs["use_gate_proj_bias"] = legacy_use_gate_proj_bias
-    gate_proj_bias_fill_value = model_kwargs.pop("exp_gate_proj_bias_fill_value", None)
+    gate_proj_bias_fill_value = model_kwargs.pop("gate_proj_bias_fill_value", None)
     if gate_proj_bias_fill_value is not None:
         model_kwargs.pop("use_gate_proj_bias", None)
         gate_proj_bias_fill_value = float(gate_proj_bias_fill_value)
@@ -730,12 +730,6 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     _patch_missing_config_keys(model_config_kwargs)
     _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
     _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
-    if model_config_kwargs.get("exp_gate_proj_bias_mode") != "full":
-        log0(
-            "Converting legacy exp_gate_proj_bias_mode "
-            f"{model_config_kwargs['exp_gate_proj_bias_mode']!r} to 'full'"
-        )
-        model_config_kwargs["exp_gate_proj_bias_mode"] = "full"
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)

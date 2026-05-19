@@ -200,7 +200,7 @@ def main():
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
-    parser.add_argument('--exp-gate-proj-bias-fill-value', type=float, default=None,
+    parser.add_argument('--gate-proj-bias-fill-value', type=float, default=None,
                         help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     args = parser.parse_args()
@@ -235,7 +235,7 @@ def main():
             model_tag=args.model_tag,
             step=args.step,
             eval_capacity=args.eval_capacity,
-            exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
+            gate_proj_bias_fill_value=args.gate_proj_bias_fill_value,
         )
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
@@ -245,10 +245,10 @@ def main():
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
             model_slug = f"{model_slug}_ecap{args.eval_capacity:g}"
             print0(f"Overriding eval_capacity to {args.eval_capacity:g}")
-        if args.exp_gate_proj_bias_fill_value is not None:
-            model_name = f"{model_name}, exp_gate_proj_bias_fill_value={args.exp_gate_proj_bias_fill_value:g}"
-            model_slug = f"{model_slug}_gpbias{args.exp_gate_proj_bias_fill_value:g}"
-            print0(f"Overriding expert gate_proj_bias to {args.exp_gate_proj_bias_fill_value:g}")
+        if args.gate_proj_bias_fill_value is not None:
+            model_name = f"{model_name}, gate_proj_bias_fill_value={args.gate_proj_bias_fill_value:g}"
+            model_slug = f"{model_slug}_gpbias{args.gate_proj_bias_fill_value:g}"
+            print0(f"Overriding expert gate_proj_bias to {args.gate_proj_bias_fill_value:g}")
 
     print0(f"Evaluating model: {model_name}")
     print0(f"Eval modes: {', '.join(sorted(eval_modes))}")

@@ -195,7 +195,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
     parser.add_argument('-x', '--max-problems', type=int, default=None, help='Max problems to evaluate')
     parser.add_argument(
-        '--exp-gate-proj-bias-fill-value',
+        '--gate-proj-bias-fill-value',
         type=float,
         default=None,
         help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value',
@@ -214,7 +214,7 @@ if __name__ == "__main__":
         phase="eval",
         model_tag=args.model_tag,
         step=args.step,
-        exp_gate_proj_bias_fill_value=args.exp_gate_proj_bias_fill_value,
+        gate_proj_bias_fill_value=args.gate_proj_bias_fill_value,
     )
     engine = Engine(model, tokenizer)
 

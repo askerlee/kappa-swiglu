@@ -74,8 +74,6 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_gate_proj_bias = bool(use_gate_proj_bias)
-        kwargs.pop('gate_proj_bias_residual_l2_loss_weight', None)
-        self.exp_gate_proj_bias_mode = "full"
         valid_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
         if gate_proj_bias_input not in valid_gate_proj_bias_inputs:
             raise ValueError(
