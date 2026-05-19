@@ -194,7 +194,7 @@ parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gat
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
-parser.add_argument("--gate-proj-bias-start-layer", type=int, default=None,
+parser.add_argument("--gate-proj-bias-start-layer", type=int, default=0,
                     help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-dense-layers)")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")

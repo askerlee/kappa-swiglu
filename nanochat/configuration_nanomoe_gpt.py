@@ -85,10 +85,6 @@ class GPTConfig:
                 "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
             )
         self.constant_gate_proj_bias_dense_layers = bool(constant_gate_proj_bias_dense_layers)
-        if self.constant_gate_proj_bias_dense_layers and gate_proj_bias_input != "constant":
-            raise ValueError(
-                "constant_gate_proj_bias_dense_layers requires gate_proj_bias_input='constant'"
-            )
         self.gate_proj_bias_input = gate_proj_bias_input
         self.gate_proj_bias_input_constant = (
             None if gate_proj_bias_input_constant is None else float(gate_proj_bias_input_constant)
