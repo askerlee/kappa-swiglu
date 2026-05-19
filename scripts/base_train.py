@@ -340,8 +340,6 @@ if args.gate_proj_bias_start_layer is None:
         args.gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
         args.gate_proj_bias_start_layer = 0
-if args.constant_gate_proj_bias_dense_layers:
-    args.gate_proj_bias_start_layer = 0
 if args.gate_proj_bias_start_layer < 0:
     raise ValueError("--gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:

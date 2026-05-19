@@ -97,8 +97,6 @@ class GPTConfig:
             )
         self.global_gate_proj_bias_granularity = global_gate_proj_bias_granularity
         self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
-        if self.constant_gate_proj_bias_dense_layers:
-            self.gate_proj_bias_start_layer = 0
         if self.gate_proj_bias_start_layer < 0:
             raise ValueError(
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
