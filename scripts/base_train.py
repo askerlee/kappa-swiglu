@@ -185,7 +185,7 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="router_probs", choices=["top_logits", "router_probs", "constant"],
+parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
                     help="constant confidence value to use when --gate-proj-bias-input=constant")
@@ -210,14 +210,16 @@ parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=2e-2,
+parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
                     help="L2 weight on gate_proj_bias and gate_proj_bias_scale values")
+parser.add_argument("--gate-proj-bias-scale-l2-loss-weight-scale", type=float, default=2.0,
+                    help="multiplier applied to --gate-proj-bias-l2-loss-weight when weighting gate_proj_bias_scale L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
 # push the gate_proj_bias values towards 0 so that the slopes 
 # are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=2, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -1193,6 +1195,9 @@ while True:
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
         nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
     )
+    gate_proj_bias_scale_l2_loss_weight = (
+        gate_proj_bias_l2_loss_weight * args.gate_proj_bias_scale_l2_loss_weight_scale
+    )
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
@@ -1516,7 +1521,7 @@ while True:
             if gate_proj_bias_scale_l2_loss is None:
                 gate_proj_bias_scale_l2_loss = 0.0
             loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
-            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_scale_l2_loss
+            loss = loss + gate_proj_bias_scale_l2_loss_weight * gate_proj_bias_scale_l2_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
@@ -1628,6 +1633,7 @@ while True:
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
+        log_data["train/gate_proj_bias_scale_l2_loss_weight"] = gate_proj_bias_scale_l2_loss_weight
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if len(drop_rates) >= 1:

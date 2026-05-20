@@ -1203,7 +1203,9 @@ class MOELayer(nn.Module):
 
     def _select_gate_confidence(self, top_k_scores, router_probs):
         if self.gate_proj_bias_input == 'top_logits':
-            return top_k_scores
+            # top_logits are usually 3~4. * 0.15 -> 0.45~0.6. 
+            # Similar as the default "constant" setting of 0.5.
+            return top_k_scores * 0.15
         if self.gate_proj_bias_input == 'router_probs':
             return router_probs
         if self.gate_proj_bias_input == 'constant':
