@@ -1719,6 +1719,18 @@ while True:
         for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
+            if f'gate_proj_bias_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_mean_{i}": losses[f'gate_proj_bias_mean_{i}']})
+            if f'gate_proj_bias_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_abs_mean_{i}": losses[f'gate_proj_bias_abs_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_top5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_top5p_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_bottom5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{i}']})
+            if f'gate_proj_bias_shift_abs_mean_normalized_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
                         
         wandb_run.log(drop_none_log_values(log_data), step=step)
 
