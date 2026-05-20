@@ -938,7 +938,7 @@ def get_dense_gate_proj_bias_stat_layer_indices(model):
         for layer_idx in range(start_layer, len(model.transformer.h))
         if not hasattr(model.transformer.h[layer_idx].mlp, 'experts')
         and bool(getattr(model.transformer.h[layer_idx].mlp, 'use_gate_proj_bias', False))
-    ][:2]
+    ]
 
 def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):
     sign_snapshots = {}

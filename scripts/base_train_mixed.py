@@ -980,7 +980,7 @@ def get_dense_gate_proj_bias_stat_layer_indices(model):
         layer_idx
         for layer_idx in range(start_layer, len(model.transformer.h))
         if (layer_idx + 1) % stride == 0
-    ][:2]
+    ]
 
 def collect_weight_grad_stats(model, losses, moe_layer_indices):
     # weight: [n_exp, n_rows, row_dim]
