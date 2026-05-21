@@ -1456,8 +1456,9 @@ class GPT(nn.Module):
                 torch.nn.init.uniform_(block.mlp.gate_proj.weight, -s, s)
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
-                if block.mlp.gate_proj_bias is not None:
-                    torch.nn.init.zeros_(block.mlp.gate_proj_bias)
+                gate_proj_bias = getattr(block.mlp, 'gate_proj_bias', None)
+                if gate_proj_bias is not None:
+                    torch.nn.init.zeros_(gate_proj_bias)
             elif isinstance(block.mlp, MLP):
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
