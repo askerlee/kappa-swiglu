@@ -798,8 +798,8 @@ class Qwen3MLP(nn.Module):
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
 
     def _compute_gate_slope_scales(self, gate_proj_bias, softness=2.0):
-        log_tau = 4 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_tau / softness))
+        log_kappa = 4 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_kappa / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
@@ -1016,10 +1016,12 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
             gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().float().unsqueeze(1)
             transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
-            log_tau = 4 * transformed_scores
+            log_kappa = 4 * transformed_scores
         else:
-            log_tau = 4 * gate_proj_bias * selected_router_scores
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_tau / softness))
+            # Otherwise, gate_proj_bias_input == 'constant', and 
+            # selected_router_scores is MOELayer.gate_proj_bias_input_constant.
+            log_kappa = 4 * gate_proj_bias * selected_router_scores
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_kappa / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
