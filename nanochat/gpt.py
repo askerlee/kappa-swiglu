@@ -747,17 +747,18 @@ class Qwen3MLP(nn.Module):
         self.use_gate_proj_bias = (
             bool(getattr(config, 'use_gate_proj_bias', False))
             and bool(getattr(config, 'constant_gate_proj_bias_dense_layers', False))
-            and (layer_idx is None or layer_idx >= gate_proj_bias_start_layer)
+        )
+        self.has_active_gate_proj_bias = self.use_gate_proj_bias and (
+            layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
         self._shared_gate_proj_bias = None
-        if self.use_gate_proj_bias:
+        if self.has_active_gate_proj_bias:
             gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
             if self.global_gate_proj_bias_granularity == 'global':
                 self.register_parameter('gate_proj_bias', None)
             else:
                 self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
         else:
-            self.register_parameter('gate_proj_bias', None)
             # disabled_gate_proj_bias: placeholder to satisfy _materialize_gate_proj_bias().
             self.register_buffer(
                 'disabled_gate_proj_bias',
@@ -780,14 +781,14 @@ class Qwen3MLP(nn.Module):
         self._shared_gate_proj_bias = gate_proj_bias
 
     def _get_gate_proj_bias_parameter(self):
-        gate_proj_bias = self.gate_proj_bias
+        gate_proj_bias = getattr(self, 'gate_proj_bias', None)
         if gate_proj_bias is not None:
             return gate_proj_bias
         return self._shared_gate_proj_bias
 
     @torch._dynamo.disable
     def _materialize_gate_proj_bias(self):
-        if not self.use_gate_proj_bias:
+        if not self.has_active_gate_proj_bias:
             return self.disabled_gate_proj_bias.detach().requires_grad_(True)
         gate_proj_bias = self._get_gate_proj_bias_parameter()
         if gate_proj_bias is None:
@@ -810,7 +811,7 @@ class Qwen3MLP(nn.Module):
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales):
-        if not MANAGER.collect_load_balancing_stats or not self.use_gate_proj_bias:
+        if not MANAGER.collect_load_balancing_stats or not self.has_active_gate_proj_bias:
             return
 
         slope_scales = slope_scales.detach().float()
@@ -840,16 +841,13 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x):
         gate_out_raw = self.gate_proj(x)
-        if self.use_gate_proj_bias:
-            gate_proj_bias = self._materialize_gate_proj_bias()
-            slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
-            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
-            self._update_gate_slope_scale_stats(slope_scales)
-            gate_out = gate_out_raw * torch.sigmoid(
-                gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
-            )
-        else:
-            gate_out = self.act_fn(gate_out_raw)
+        gate_proj_bias = self._materialize_gate_proj_bias()
+        slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
+        self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
+        self._update_gate_slope_scale_stats(slope_scales)
+        gate_out = gate_out_raw * torch.sigmoid(
+            gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
+        )
         down_proj = self.c_proj(gate_out * self.c_fc(x))
         return down_proj
 
@@ -1372,7 +1370,7 @@ class GPT(nn.Module):
                     bias_enabled_modules.append(experts)
                     if experts.use_gate_proj_bias_scale:
                         bias_scale_enabled_modules.append(experts)
-            elif isinstance(mlp, Qwen3MLP) and mlp.use_gate_proj_bias:
+            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_gate_proj_bias', mlp.use_gate_proj_bias):
                 bias_enabled_modules.append(mlp)
         if not bias_enabled_modules:
             return
@@ -1907,7 +1905,7 @@ class GPT(nn.Module):
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
                 gate_proj_bias_layer_indices.append(layer_idx)
-            elif isinstance(mlp, Qwen3MLP) and mlp.use_gate_proj_bias:
+            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_gate_proj_bias', mlp.use_gate_proj_bias):
                 gate_proj_bias_layer_indices.append(layer_idx)
         gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)

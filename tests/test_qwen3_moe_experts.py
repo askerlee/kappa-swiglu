@@ -305,6 +305,37 @@ def test_dense_qwen3_mlp_enables_constant_gate_proj_bias_when_requested():
     assert experts.use_gate_proj_bias_scale is True
 
 
+def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_input="router_probs",
+        gate_proj_bias_input_constant=0.5,
+        constant_gate_proj_bias_dense_layers=True,
+        gate_proj_bias_start_layer=2,
+        debug=False,
+    )
+
+    mlp = Qwen3MLP(config, layer_idx=0)
+    x = torch.randn(3, 5, config.n_embd)
+
+    assert mlp.use_gate_proj_bias is True
+    assert mlp.has_active_gate_proj_bias is False
+    assert not hasattr(mlp, 'gate_proj_bias')
+
+    with torch.no_grad():
+        mlp.gate_proj.weight.copy_(torch.randn_like(mlp.gate_proj.weight))
+        mlp.c_fc.weight.copy_(torch.randn_like(mlp.c_fc.weight))
+        mlp.c_proj.weight.copy_(torch.randn_like(mlp.c_proj.weight))
+        raw_gate_out = mlp.gate_proj(x)
+        expected = mlp.c_proj(mlp.act_fn(raw_gate_out) * mlp.c_fc(x))
+
+    actual = mlp(x)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_gate_proj_bias_lr_scale_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,
