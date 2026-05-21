@@ -797,9 +797,9 @@ class Qwen3MLP(nn.Module):
             return gate_proj_bias + 0
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, softness=2.0):
-        log_kappa = 4 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_kappa / softness))
+    def _compute_gate_slope_scales(self, gate_proj_bias, softness=1.0):
+        log_kappa = 2 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
@@ -1010,18 +1010,18 @@ class Qwen3MLPExperts(nn.Module):
             return gate_proj_bias_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=2.0):
+    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=1.0):
         gate_proj_bias = gate_proj_bias.float().unsqueeze(1)
         selected_router_scores = selected_router_scores.float().unsqueeze(-1)
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
             gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().float().unsqueeze(1)
             transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
-            log_kappa = 4 * transformed_scores
+            log_kappa = 2 * transformed_scores
         else:
             # Otherwise, gate_proj_bias_input == 'constant', and 
             # selected_router_scores is MOELayer.gate_proj_bias_input_constant.
-            log_kappa = 4 * gate_proj_bias * selected_router_scores
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(-log_kappa / softness))
+            log_kappa = 2 * gate_proj_bias * selected_router_scores
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
 
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
