@@ -27,7 +27,7 @@ import re
 import wandb
 import torch
 
-from nanochat.gpt import GPT, get_moe_layer_indices
+from nanochat.gpt import GPT, get_moe_layer_indices, _mean_extreme_percentile_per_row
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -1046,6 +1046,19 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_weight_unit = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
                 exp_gate_magnitude = torch.linalg.vector_norm(exp_gate_weight, dim=1)
                 losses[f'exp_gate_magnitude_{i}'] = exp_gate_magnitude.mean().item()
+                exp_gate_magnitude_mask = torch.ones_like(exp_gate_magnitude, dtype=torch.bool)
+                losses[f'exp_gate_magnitude_top5p_mean_{i}'] = _mean_extreme_percentile_per_row(
+                    exp_gate_magnitude,
+                    exp_gate_magnitude_mask,
+                    fraction=0.05,
+                    largest=True,
+                ).item()
+                losses[f'exp_gate_magnitude_bottom5p_mean_{i}'] = _mean_extreme_percentile_per_row(
+                    exp_gate_magnitude,
+                    exp_gate_magnitude_mask,
+                    fraction=0.05,
+                    largest=False,
+                ).item()
                 exp_gate_parallel = (exp_gate_weight * router_weight_unit.unsqueeze(2)).sum(dim=1, keepdim=True)
                 exp_gate_orthogonal = exp_gate_weight - router_weight_unit.unsqueeze(2) * exp_gate_parallel
                 exp_gate_orthogonal_magnitude = torch.linalg.vector_norm(exp_gate_orthogonal, dim=1)
@@ -1705,6 +1718,10 @@ while True:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
             if f'exp_gate_magnitude_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_magnitude_{i}": losses[f'exp_gate_magnitude_{i}']})
+            if f'exp_gate_magnitude_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_magnitude_top5p_mean_{i}": losses[f'exp_gate_magnitude_top5p_mean_{i}']})
+            if f'exp_gate_magnitude_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_magnitude_bottom5p_mean_{i}": losses[f'exp_gate_magnitude_bottom5p_mean_{i}']})
             if f'exp_gate_orthogonal_magnitude_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_orthogonal_magnitude_{i}": losses[f'exp_gate_orthogonal_magnitude_{i}']})
             if f'router_grad_norm_top_{i}' in losses:
