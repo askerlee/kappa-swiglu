@@ -1044,6 +1044,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 losses[f'router_weight_exp_gate_alignment_{i}'] = mean_rw_ew_alignment
 
                 router_weight_unit = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
+                exp_gate_magnitude = torch.linalg.vector_norm(exp_gate_weight, dim=1)
+                losses[f'exp_gate_magnitude_{i}'] = exp_gate_magnitude.mean().item()
                 exp_gate_parallel = (exp_gate_weight * router_weight_unit.unsqueeze(2)).sum(dim=1, keepdim=True)
                 exp_gate_orthogonal = exp_gate_weight - router_weight_unit.unsqueeze(2) * exp_gate_parallel
                 exp_gate_orthogonal_magnitude = torch.linalg.vector_norm(exp_gate_orthogonal, dim=1)
@@ -1701,6 +1703,8 @@ while True:
                 log_data.update({f"inspect/entropy_gate_{i}": losses[f'entropy_gate_{i}']})
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
+            if f'exp_gate_magnitude_{i}' in losses:
+                log_data.update({f"inspect/exp_gate_magnitude_{i}": losses[f'exp_gate_magnitude_{i}']})
             if f'exp_gate_orthogonal_magnitude_{i}' in losses:
                 log_data.update({f"inspect/exp_gate_orthogonal_magnitude_{i}": losses[f'exp_gate_orthogonal_magnitude_{i}']})
             if f'router_grad_norm_top_{i}' in losses:
