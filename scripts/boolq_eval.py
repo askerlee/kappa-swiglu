@@ -22,6 +22,7 @@ from nanochat.core_eval import evaluate_task_detailed
 
 
 EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"
+BOOLQ_RANDOM_BASELINE = 0.62
 
 
 class ModelWrapper:
@@ -153,6 +154,11 @@ def compute_calibrated_boolq_accuracy(details, data, tau=0.0):
     return num_correct / len(margins)
 
 
+def compute_centered_boolq_score(accuracy, baseline=BOOLQ_RANDOM_BASELINE):
+    """Convert BoolQ accuracy to the repo's centered score convention."""
+    return (accuracy - baseline) / (1.0 - baseline)
+
+
 def load_boolq_data(max_examples):
     """Load BoolQ task metadata and examples from the eval bundle."""
     base_dir = get_base_dir()
@@ -257,12 +263,14 @@ def main():
 
     confusion = compute_boolq_confusion_counts(results['details'], data, tau=args.tau)
     calibrated_accuracy = compute_calibrated_boolq_accuracy(results['details'], data, tau=args.tau)
+    centered_score = compute_centered_boolq_score(results['accuracy'])
     average_margin = compute_average_boolq_margin(results['details'], data)
     class_conditional_margins = compute_class_conditional_boolq_margin_means(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
         print(f"Original accuracy: {results['accuracy']:.4f}")
         print(f"Calibrated accuracy: {calibrated_accuracy:.4f}")
+        print(f"Centered score: {centered_score:.4f}")
         print(f"tau: {args.tau:.4f}")
         print(f"Average margin (logp_yes - logp_no): {average_margin:.4f}")
         print(f"mean_margin_yes_examples: {class_conditional_margins['mean_margin_yes_examples']:.4f}")

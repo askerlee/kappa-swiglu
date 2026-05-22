@@ -11,6 +11,7 @@ SPEC.loader.exec_module(BOOLQ_EVAL)
 compute_boolq_confusion_counts = BOOLQ_EVAL.compute_boolq_confusion_counts
 compute_average_boolq_margin = BOOLQ_EVAL.compute_average_boolq_margin
 compute_calibrated_boolq_accuracy = BOOLQ_EVAL.compute_calibrated_boolq_accuracy
+compute_centered_boolq_score = BOOLQ_EVAL.compute_centered_boolq_score
 compute_class_conditional_boolq_margin_means = BOOLQ_EVAL.compute_class_conditional_boolq_margin_means
 normalize_boolq_answer = BOOLQ_EVAL.normalize_boolq_answer
 
@@ -85,6 +86,12 @@ def test_compute_calibrated_boolq_accuracy_uses_tau_threshold():
     calibrated_accuracy = compute_calibrated_boolq_accuracy(details, data, tau=0.3)
 
     assert calibrated_accuracy == 2 / 3
+
+
+def test_compute_centered_boolq_score_uses_boolq_baseline():
+    centered_score = compute_centered_boolq_score(2 / 3)
+
+    assert centered_score == (2 / 3 - 0.62) / (1.0 - 0.62)
 
 
 def test_compute_class_conditional_boolq_margin_means_splits_by_gold_label():
