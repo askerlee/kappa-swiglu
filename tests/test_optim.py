@@ -44,6 +44,36 @@ def test_adamw_step_updates_parameter_and_state():
     assert optimizer.state[param]['step'] == 1
 
 
+def test_adamw_nonfinite_error_reports_named_parameter_and_source(monkeypatch):
+    param = torch.nn.Parameter(torch.ones(3, dtype=torch.float32))
+    param.grad = torch.ones_like(param)
+
+    optimizer = AuroraAdamW([
+        dict(
+            kind='adamw',
+            params=[param],
+            debug_param_names=['transformer.h.2.mlp.experts.gate_proj_bias'],
+            lr=0.1,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.0,
+        ),
+    ])
+
+    def fake_adamw_step_fused(p_flat, _grad_flat, exp_avg_flat, exp_avg_sq_flat, *_args):
+        exp_avg_flat.zero_()
+        exp_avg_sq_flat.zero_()
+        p_flat[0] = float('nan')
+
+    monkeypatch.setattr(optim_module, 'adamw_step_fused', fake_adamw_step_fused)
+
+    with pytest.raises(RuntimeError, match='transformer\.h\.2\.mlp\.experts\.gate_proj_bias') as exc_info:
+        optimizer.step()
+
+    message = str(exc_info.value)
+    assert 'updated index=(0,) value=nan' in message
+
+
 def test_muon_group_update_changes_all_params():
     param_a = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10)
     param_b = torch.nn.Parameter(-param_a.detach().clone())

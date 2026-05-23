@@ -221,6 +221,31 @@ def _build_aurora_nonfinite_error(shape: torch.Size, param_names: list[str], par
         f"(params: {joined_names}). {'; '.join(details)}"
     )
 
+
+def _build_adamw_nonfinite_error(param_name: str | None, param: Tensor, grad: Tensor,
+                                 exp_avg: Tensor, exp_avg_sq: Tensor, updated: Tensor) -> RuntimeError:
+    details = []
+
+    def append_first(label: str, tensor: Tensor) -> None:
+        result = _first_nonfinite_entry(tensor)
+        if result is None:
+            return
+        index, value = result
+        details.append(f'{label} index={index} value={value}')
+
+    append_first('grad', grad)
+    append_first('param', param)
+    append_first('exp_avg', exp_avg)
+    append_first('exp_avg_sq', exp_avg_sq)
+    append_first('updated', updated)
+    if not details:
+        details.append('no non-finite source identified in grad/param/exp_avg/exp_avg_sq/update snapshots')
+
+    name = param_name or '<unknown>'
+    return RuntimeError(
+        f"AdamW produced non-finite parameters for {name} with shape {tuple(param.shape)}. {'; '.join(details)}"
+    )
+
 # -----------------------------------------------------------------------------
 """
 Muon optimizer adapted and simplified from modded-nanogpt.
@@ -446,10 +471,12 @@ class MuonAdamW(torch.optim.Optimizer):
         AdamW update for each param in the group individually.
         Lazy init the state, fill in all 0-D tensors, call the fused kernel.
         """
-        for p in group['params']:
+        group_param_names = group.get('debug_param_names', [])
+        for idx, p in enumerate(group['params']):
             if p.grad is None:
                 continue
             grad = p.grad
+            param_name = group_param_names[idx] if idx < len(group_param_names) else None
             state = self.state[p]
 
             # State init
@@ -480,6 +507,15 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
                 self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
             )
+            if not p.isfinite().all():
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p.detach(),
+                    grad.detach(),
+                    exp_avg.detach(),
+                    exp_avg_sq.detach(),
+                    p.detach(),
+                )
 
     def _step_muon(self, group: dict) -> None:
         """
@@ -627,21 +663,32 @@ class DistMuonAdamW(torch.optim.Optimizer):
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         """Launch async reduce ops for AdamW group. Returns info dict with per-param infos."""
         param_infos = {}
-        for p in group['params']:
+        group_param_names = group.get('debug_param_names', [])
+        for idx, p in enumerate(group['params']):
             grad = p.grad
             if grad is None:
                 grad = torch.zeros_like(p)
             if p.numel() < 1024:
                 # Small params: all_reduce (no scatter/gather needed)
                 future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                param_infos[p] = dict(future=future, grad_slice=grad, is_small=True)
+                param_infos[p] = dict(
+                    future=future,
+                    grad_slice=grad,
+                    is_small=True,
+                    debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
+                )
             else:
                 # Large params: reduce_scatter
                 assert grad.shape[0] % world_size == 0, f"AdamW reduce_scatter requires shape[0] ({grad.shape[0]}) divisible by world_size ({world_size})"
                 rank_size = grad.shape[0] // world_size
                 grad_slice = torch.empty_like(grad[:rank_size])
                 future = dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                param_infos[p] = dict(future=future, grad_slice=grad_slice, is_small=False)
+                param_infos[p] = dict(
+                    future=future,
+                    grad_slice=grad_slice,
+                    is_small=False,
+                    debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
+                )
         return dict(param_infos=param_infos)
 
     def _reduce_muon(self, group: dict, world_size: int) -> dict:
@@ -694,6 +741,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
             pinfo = param_infos[p]
             pinfo['future'].wait()
             grad_slice = pinfo['grad_slice']
+            param_name = pinfo.get('debug_param_name')
             state = self.state[p]
 
             # For small params, operate on full param; for large, operate on slice
@@ -722,6 +770,15 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
                 self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
             )
+            if not p_slice.isfinite().all():
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p_slice.detach(),
+                    grad_slice.detach(),
+                    state['exp_avg'].detach(),
+                    state['exp_avg_sq'].detach(),
+                    p_slice.detach(),
+                )
 
             # Large params need all_gather
             if not pinfo['is_small']:
@@ -833,10 +890,12 @@ class AuroraAdamW(torch.optim.Optimizer):
         self._aurora_aspect_scale_t = torch.tensor(1.0, dtype=torch.float32, device="cpu")
 
     def _step_adamw(self, group: dict) -> None:
-        for p in group['params']:
+        group_param_names = group.get('debug_param_names', [])
+        for idx, p in enumerate(group['params']):
             if p.grad is None:
                 continue
             grad = p.grad
+            param_name = group_param_names[idx] if idx < len(group_param_names) else None
             state = self.state[p]
 
             if not state:
@@ -859,6 +918,15 @@ class AuroraAdamW(torch.optim.Optimizer):
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
                 self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
             )
+            if not p.isfinite().all():
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p.detach(),
+                    grad.detach(),
+                    exp_avg.detach(),
+                    exp_avg_sq.detach(),
+                    p.detach(),
+                )
 
     def _step_aurora(self, group: dict) -> None:
         group_param_names = group.get('debug_param_names', [])
@@ -943,19 +1011,30 @@ class DistAuroraAdamW(torch.optim.Optimizer):
 
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         param_infos = {}
-        for p in group['params']:
+        group_param_names = group.get('debug_param_names', [])
+        for idx, p in enumerate(group['params']):
             grad = p.grad
             if grad is None:
                 grad = torch.zeros_like(p)
             if p.numel() < 1024:
                 future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                param_infos[p] = dict(future=future, grad_slice=grad, is_small=True)
+                param_infos[p] = dict(
+                    future=future,
+                    grad_slice=grad,
+                    is_small=True,
+                    debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
+                )
             else:
                 assert grad.shape[0] % world_size == 0, f"AdamW reduce_scatter requires shape[0] ({grad.shape[0]}) divisible by world_size ({world_size})"
                 rank_size = grad.shape[0] // world_size
                 grad_slice = torch.empty_like(grad[:rank_size])
                 future = dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
-                param_infos[p] = dict(future=future, grad_slice=grad_slice, is_small=False)
+                param_infos[p] = dict(
+                    future=future,
+                    grad_slice=grad_slice,
+                    is_small=False,
+                    debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
+                )
         return dict(param_infos=param_infos)
 
     def _reduce_aurora(self, group: dict, world_size: int) -> dict:
@@ -1008,6 +1087,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             pinfo = param_infos[p]
             pinfo['future'].wait()
             grad_slice = pinfo['grad_slice']
+            param_name = pinfo.get('debug_param_name')
             state = self.state[p]
 
             if pinfo['is_small']:
@@ -1033,6 +1113,15 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
                 self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t,
             )
+            if not p_slice.isfinite().all():
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p_slice.detach(),
+                    grad_slice.detach(),
+                    state['exp_avg'].detach(),
+                    state['exp_avg_sq'].detach(),
+                    p_slice.detach(),
+                )
 
             if not pinfo['is_small']:
                 future = dist.all_gather_into_tensor(p, p_slice, async_op=True).get_future()

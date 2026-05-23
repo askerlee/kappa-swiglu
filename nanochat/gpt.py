@@ -1969,6 +1969,7 @@ class GPT(nn.Module):
                 kind='adamw',
                 name='gate_proj_bias',
                 params=gate_proj_bias_params,
+                debug_param_names=[param_names[id(p)] for p in gate_proj_bias_params],
                 lr=0.0,
                 base_lr=embedding_lr * dmodel_lr_scale,
                 lr_scale_end=gate_proj_bias_lr_final_scale,
