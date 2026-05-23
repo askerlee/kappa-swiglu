@@ -740,6 +740,7 @@ class Qwen3MLP(nn.Module):
             self.register_buffer("ema_rms", torch.zeros(()))
             self.register_buffer("target_rms", torch.zeros(()))
             self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
+            self.register_buffer("target_ready", torch.zeros((), dtype=torch.bool))
             self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
 
         def _raise_if_nonfinite(self, tensor, label, source=None):
@@ -781,10 +782,15 @@ class Qwen3MLP(nn.Module):
             anchor_start, anchor_end = self._resolve_anchor_steps()
             if anchor_start <= step <= anchor_end:
                 self.target_rms.copy_(self.ema_rms)
+                self.target_ready.fill_(True)
             self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
 
         def loss(self, value, source=None):
             self._raise_if_nonfinite(value, "value", source=source)
+            if not bool(self.target_ready.item()):
+                loss = value.float().square().mean()
+                self._raise_if_nonfinite(loss, "loss", source=source)
+                return loss
             current_rms = self._compute_rms(value)
             self._raise_if_nonfinite(current_rms, "current_rms", source=source)
             floor = self.target_rms.detach() * self.floor_frac

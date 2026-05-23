@@ -684,6 +684,32 @@ def test_gate_proj_bias_ema_anchor_fractions_resolve_against_total_iterations():
     assert anchor_end == 8
 
 
+def test_gate_proj_bias_ema_target_uses_zero_target_penalty_before_anchor():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_l2_ema_beta=0.99,
+        gate_proj_bias_l2_ema_anchor_start=0.4,
+        gate_proj_bias_l2_ema_anchor_end=0.8,
+        gate_proj_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    experts.set_gate_proj_bias_l2_target_total_iterations(10)
+
+    value = torch.full((2, 16), 2.0)
+    MANAGER.reset("gate_proj_bias_l2_loss")
+    experts.set_gate_proj_bias_l2_target_step(0)
+    experts._accumulate_gate_proj_bias_l2_losses(value)
+    loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_l2_loss")
+
+    torch.testing.assert_close(loss, value.square().mean())
+    assert not bool(experts.gate_proj_bias_l2_target_keeper.target_ready.item())
+
+
 def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     config = GPTConfig(
         n_exp=2,
