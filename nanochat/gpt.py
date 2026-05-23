@@ -1840,14 +1840,17 @@ class GPT(nn.Module):
         moe_nonmatrix_params = []
         gate_proj_bias_params = []
         seen_param_ids = set()
+        param_names = {}
 
-        def append_param(target, param):
+        def append_param(target, param, name=None):
             if param is None:
                 return
             param_id = id(param)
             if param_id in seen_param_ids:
                 return
             seen_param_ids.add(param_id)
+            if name is not None:
+                param_names[param_id] = name
             target.append(param)
 
         def use_matrix_optimizer(param):
@@ -1857,19 +1860,20 @@ class GPT(nn.Module):
             # such as VE gate weights (e.g. 6x32 in the default d8 config).
             return min(param.shape[-2:]) >= 8
 
-        for block in self.transformer.h:
+        for block_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
+                full_name = f'transformer.h.{block_idx}.{name}'
                 if name.startswith('mlp.experts.gate_proj_bias') or name.startswith('mlp.gate_proj_bias'):
-                    append_param(gate_proj_bias_params, param)
+                    append_param(gate_proj_bias_params, param, full_name)
                 elif not use_matrix_optimizer(param):
-                    append_param(target_nonmatrix_params, param)
+                    append_param(target_nonmatrix_params, param, full_name)
                 else:
-                    append_param(target_matrix_params, param)
-        append_param(gate_proj_bias_params, self.global_gate_proj_bias)
-        append_param(gate_proj_bias_params, self.global_gate_proj_bias_scale)
+                    append_param(target_matrix_params, param, full_name)
+        append_param(gate_proj_bias_params, self.global_gate_proj_bias, 'global_gate_proj_bias')
+        append_param(gate_proj_bias_params, self.global_gate_proj_bias_scale, 'global_gate_proj_bias_scale')
         value_embeds_params = []
         for param in self.value_embeds.parameters():
             append_param(value_embeds_params, param)
@@ -1939,16 +1943,18 @@ class GPT(nn.Module):
         print0(f"{matrix_optimizer.capitalize()} LR scaling: {matrix_lr_scaling}")
         for shape in sorted({p.shape for p in dense_matrix_params}):
             group_params = [p for p in dense_matrix_params if p.shape == shape]
+            group_param_names = [param_names[id(p)] for p in group_params]
             param_groups.append(dict(
-                kind=matrix_kind, params=group_params, lr=matrix_lr,
+                kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         for shape in sorted({p.shape for p in moe_matrix_params}):
             group_params = [p for p in moe_matrix_params if p.shape == shape]
+            group_param_names = [param_names[id(p)] for p in group_params]
             param_groups.append(dict(
-                kind=matrix_kind, params=group_params, lr=matrix_lr,
+                kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,

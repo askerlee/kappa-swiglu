@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+import pytest
 import torch
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
@@ -159,6 +160,40 @@ def test_aurora_group_update_changes_all_params():
 
     assert not torch.allclose(param_a, before_a)
     assert not torch.allclose(param_b, before_b)
+
+
+def test_aurora_nonfinite_error_reports_param_name_and_source(monkeypatch):
+    param_a = torch.nn.Parameter(torch.ones(3, 4, dtype=torch.float32))
+    param_b = torch.nn.Parameter(torch.full((3, 4), 2.0, dtype=torch.float32))
+    param_a.grad = torch.ones_like(param_a)
+    param_b.grad = torch.ones_like(param_b)
+
+    optimizer = AuroraAdamW([
+        dict(
+            kind='aurora',
+            params=[param_a, param_b],
+            debug_param_names=['transformer.h.0.attn.c_q.weight', 'transformer.h.0.attn.c_k.weight'],
+            lr=0.05,
+            momentum=0.95,
+            pp_iterations=2,
+            pp_beta=0.5,
+            weight_decay=0.0,
+        ),
+    ])
+
+    def fake_aurora_step_fused(_grads, updated, momentum_buffer, *_args):
+        momentum_buffer.zero_()
+        updated[0, 0, 0] = float('inf')
+
+    monkeypatch.setattr(optim_module, 'aurora_step_fused', fake_aurora_step_fused)
+
+    with pytest.raises(RuntimeError, match='transformer\\.h\\.0\\.attn\\.c_q\\.weight') as exc_info:
+        optimizer.step()
+
+    message = str(exc_info.value)
+    assert 'updated name=transformer.h.0.attn.c_q.weight' in message
+    assert 'grad name=' not in message
+    assert 'param name=' not in message
 
 
 def test_aurora_chunk_size_preserves_full_group_update():

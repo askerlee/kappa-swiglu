@@ -181,6 +181,46 @@ def _resolve_matrix_adjust_lr(group: dict) -> tuple[str | None, float | None]:
         matrix_lr_scale_max = 1.0
     return adjust_lr_fn, matrix_lr_scale_max
 
+
+def _first_nonfinite_entry(tensor: Tensor) -> tuple[tuple[int, ...], float | str] | None:
+    bad = (~tensor.isfinite()).nonzero(as_tuple=False)
+    if bad.numel() == 0:
+        return None
+    index = tuple(int(i) for i in bad[0].tolist())
+    value = tensor[index]
+    if value.numel() == 1:
+        return index, float(value.item())
+    return index, str(value)
+
+
+def _build_aurora_nonfinite_error(shape: torch.Size, param_names: list[str], params: list[Tensor],
+                                  grads: list[Tensor], momentum: list[Tensor],
+                                  updated: list[Tensor]) -> RuntimeError:
+    details = []
+
+    def append_first(label: str, tensors: list[Tensor]) -> None:
+        for idx, tensor in enumerate(tensors):
+            result = _first_nonfinite_entry(tensor)
+            if result is None:
+                continue
+            index, value = result
+            name = param_names[idx] if idx < len(param_names) else f'<param {idx}>'
+            details.append(f'{label} name={name} index={index} value={value}')
+            return
+
+    append_first('grad', grads)
+    append_first('param', params)
+    append_first('momentum', momentum)
+    append_first('updated', updated)
+    if not details:
+        details.append('no non-finite source identified in grad/param/momentum/update snapshots')
+
+    joined_names = ', '.join(param_names) if param_names else '<unknown>'
+    return RuntimeError(
+        f"Aurora produced non-finite parameters for matrix group with shape {tuple(shape)} "
+        f"(params: {joined_names}). {'; '.join(details)}"
+    )
+
 # -----------------------------------------------------------------------------
 """
 Muon optimizer adapted and simplified from modded-nanogpt.
@@ -821,7 +861,9 @@ class AuroraAdamW(torch.optim.Optimizer):
             )
 
     def _step_aurora(self, group: dict) -> None:
+        group_param_names = group.get('debug_param_names', [])
         params: list[Tensor] = [p for p in group['params'] if p.grad is not None]
+        param_names = [name for p, name in zip(group['params'], group_param_names) if p.grad is not None]
         if not params:
             return
 
@@ -833,6 +875,7 @@ class AuroraAdamW(torch.optim.Optimizer):
 
         for chunk_start in range(0, num_params, chunk_size):
             chunk_params = params[chunk_start:chunk_start + chunk_size]
+            chunk_param_names = param_names[chunk_start:chunk_start + chunk_size]
             p = chunk_params[0]
             state = self.state[p]
             shape, device, dtype = p.shape, p.device, p.dtype
@@ -860,8 +903,13 @@ class AuroraAdamW(torch.optim.Optimizer):
                 group.get('nesterov', True),
             )
             if not stacked_params.isfinite().all():
-                raise RuntimeError(
-                    f"Aurora produced non-finite parameters for matrix group with shape {tuple(shape)}"
+                raise _build_aurora_nonfinite_error(
+                    shape,
+                    chunk_param_names,
+                    [param.detach() for param in chunk_params],
+                    [param.grad.detach() for param in chunk_params],
+                    list(state['momentum_buffer'][:len(chunk_params)].unbind(0)),
+                    list(stacked_params.unbind(0)),
                 )
             torch._foreach_copy_(chunk_params, list(stacked_params.unbind(0)))
 
@@ -912,6 +960,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
 
     def _reduce_aurora(self, group: dict, world_size: int) -> dict:
         params = group['params']
+        group_param_names = group.get('debug_param_names', [])
         num_params = len(params)
         if num_params == 0:
             return dict(chunk_infos=[])
@@ -920,6 +969,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
         chunk_infos = []
         for chunk_start in range(0, num_params, reduce_chunk_size):
             chunk_params = params[chunk_start:chunk_start + reduce_chunk_size]
+            chunk_param_names = group_param_names[chunk_start:chunk_start + reduce_chunk_size]
             shard_chunk_size = (len(chunk_params) + world_size - 1) // world_size
             padded_num_params = shard_chunk_size * world_size
             p = chunk_params[0]
@@ -944,6 +994,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
 
             chunk_infos.append(dict(
                 params=chunk_params,
+                debug_param_names=chunk_param_names,
                 future=future,
                 grad_chunk=grad_chunk,
                 stacked_grads=stacked_grads,
@@ -991,6 +1042,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
         for chunk_info in info['chunk_infos']:
             chunk_info['future'].wait()
             params = chunk_info['params']
+            param_names = chunk_info.get('debug_param_names', [])
             chunk_size = chunk_info['chunk_size']
             grad_chunk = chunk_info['grad_chunk']
             p = params[0]
@@ -1007,6 +1059,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
 
             if num_owned > 0:
                 owned_params = [params[start_idx + idx] for idx in range(num_owned)]
+                owned_param_names = param_names[start_idx:start_idx + num_owned]
                 for idx, owned_param in enumerate(owned_params):
                     updated_params[idx].copy_(owned_param)
 
@@ -1031,8 +1084,13 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                     group.get('nesterov', True),
                 )
                 if not updated_params[:num_owned].isfinite().all():
-                    raise RuntimeError(
-                        f"Aurora produced non-finite parameters for matrix group with shape {tuple(shape)}"
+                    raise _build_aurora_nonfinite_error(
+                        shape,
+                        owned_param_names,
+                        [param.detach() for param in owned_params],
+                        list(grad_chunk[:num_owned].unbind(0)),
+                        list(state['momentum_buffer'][:num_owned].unbind(0)),
+                        list(updated_params[:num_owned].unbind(0)),
                     )
 
             if num_owned < chunk_size:
