@@ -14,6 +14,8 @@ class MOEManager:
             "router_z_loss": [],
             "gate_proj_bias_l2_loss": [],
             "gate_proj_bias_scale_l2_loss": [],
+            "gate_proj_bias_ema_rms_reg_loss": [],
+            "gate_proj_bias_scale_ema_rms_reg_loss": [],
             "gate_proj_bias_shift_abs_top5p_mean": [],
             "gate_proj_bias_shift_abs_bottom5p_mean": [],
             "gate_grad_scale_mean": [],

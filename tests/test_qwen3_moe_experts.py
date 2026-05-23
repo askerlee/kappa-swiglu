@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
+from nanochat.manager import MOEManager
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -514,6 +515,22 @@ def test_gate_proj_bias_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
     torch.testing.assert_close(second_l2_loss, torch.tensor(0.25))
     torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.5) ** 2))
+
+
+def test_moe_manager_registers_gate_proj_bias_ema_rms_reg_losses_by_default():
+    manager = MOEManager()
+
+    manager.add("gate_proj_bias_ema_rms_reg_loss", torch.tensor(1.25))
+    manager.add("gate_proj_bias_scale_ema_rms_reg_loss", torch.tensor(0.75))
+
+    torch.testing.assert_close(
+        manager.aggregate("gate_proj_bias_ema_rms_reg_loss"),
+        torch.tensor(1.25),
+    )
+    torch.testing.assert_close(
+        manager.aggregate("gate_proj_bias_scale_ema_rms_reg_loss"),
+        torch.tensor(0.75),
+    )
 
 
 def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_input():
