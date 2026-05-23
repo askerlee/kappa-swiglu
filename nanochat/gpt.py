@@ -788,10 +788,11 @@ class Qwen3MLP(nn.Module):
         def loss(self, value, source=None):
             self._raise_if_nonfinite(value, "value", source=source)
             if not bool(self.target_ready.item()):
-                loss = value.float().square().mean()
+                loss = value.new_zeros((), dtype=torch.float32)
                 self._raise_if_nonfinite(loss, "loss", source=source)
                 return loss
-            current_rms = self._compute_rms(value)
+            value_f = value.float()
+            current_rms = self._compute_rms(value_f)
             self._raise_if_nonfinite(current_rms, "current_rms", source=source)
             floor = self.target_rms.detach() * self.floor_frac
             self._raise_if_nonfinite(floor, "floor", source=source)
@@ -815,34 +816,34 @@ class Qwen3MLP(nn.Module):
         self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
         self.gate_slope_max_scale = float(getattr(config, 'dense_gate_slope_max_scale', 2.0))
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
-        self.gate_proj_bias_l2_target = getattr(config, 'gate_proj_bias_l2_target', 'zero')
+        self.gate_proj_bias_ema_rms_reg = bool(getattr(config, 'gate_proj_bias_ema_rms_reg', False))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = (
             bool(getattr(config, 'use_gate_proj_bias', False))
             and bool(getattr(config, 'constant_gate_proj_bias_dense_layers', False))
         )
-        self.register_buffer('gate_proj_bias_l2_target_step', torch.zeros((), dtype=torch.int64), persistent=False)
+        self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self.has_active_gate_proj_bias = self.use_gate_proj_bias and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
         self._shared_gate_proj_bias = None
-        self.gate_proj_bias_l2_target_keeper = None
-        self.gate_proj_bias_scale_l2_target_keeper = None
+        self.gate_proj_bias_ema_rms_reg_keeper = None
+        self.gate_proj_bias_scale_ema_rms_reg_keeper = None
         if self.has_active_gate_proj_bias:
             gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
             if self.global_gate_proj_bias_granularity == 'global':
                 self.register_parameter('gate_proj_bias', None)
             else:
                 self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
-            if self.gate_proj_bias_l2_target == 'ema':
+            if self.gate_proj_bias_ema_rms_reg:
                 keeper = self.GateProjBiasEmaTargetKeeper(
                     beta=getattr(config, 'gate_proj_bias_l2_ema_beta', 0.99),
                     anchor_start=getattr(config, 'gate_proj_bias_l2_ema_anchor_start', 0.4),
                     anchor_end=getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
                     floor_frac=getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
                 )
-                self.gate_proj_bias_l2_target_keeper = keeper
-                self.gate_proj_bias_scale_l2_target_keeper = self.GateProjBiasEmaTargetKeeper(
+                self.gate_proj_bias_ema_rms_reg_keeper = keeper
+                self.gate_proj_bias_scale_ema_rms_reg_keeper = self.GateProjBiasEmaTargetKeeper(
                     beta=keeper.beta,
                     anchor_start=keeper.anchor_start,
                     anchor_end=keeper.anchor_end,
@@ -891,14 +892,14 @@ class Qwen3MLP(nn.Module):
         log_kappa = 2 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
         return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
 
-    def set_gate_proj_bias_l2_target_step(self, step):
-        self.gate_proj_bias_l2_target_step.fill_(int(step))
+    def set_gate_proj_bias_ema_rms_reg_step(self, step):
+        self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
 
-    def set_gate_proj_bias_l2_target_total_iterations(self, total_iterations):
-        if self.gate_proj_bias_l2_target_keeper is not None:
-            self.gate_proj_bias_l2_target_keeper.set_total_iterations(total_iterations)
-        if self.gate_proj_bias_scale_l2_target_keeper is not None:
-            self.gate_proj_bias_scale_l2_target_keeper.set_total_iterations(total_iterations)
+    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
+        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
 
     def _gate_proj_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
@@ -909,39 +910,37 @@ class Qwen3MLP(nn.Module):
     @torch._dynamo.disable
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
-        if self.gate_proj_bias_l2_target_keeper is not None:
-            self.gate_proj_bias_l2_target_keeper.update(
+        MANAGER.add("gate_proj_bias_l2_loss", gate_proj_bias.square().mean())
+        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_ema_rms_reg_keeper.update(
                 gate_proj_bias,
-                int(self.gate_proj_bias_l2_target_step.item()),
+                int(self.gate_proj_bias_ema_rms_reg_step.item()),
                 source=self._gate_proj_bias_debug_source("gate_proj_bias"),
             )
             MANAGER.add(
-                "gate_proj_bias_l2_loss",
-                self.gate_proj_bias_l2_target_keeper.loss(
+                "gate_proj_bias_ema_rms_reg_loss",
+                self.gate_proj_bias_ema_rms_reg_keeper.loss(
                     gate_proj_bias,
                     source=self._gate_proj_bias_debug_source("gate_proj_bias"),
                 ),
             )
-            return
-        MANAGER.add("gate_proj_bias_l2_loss", gate_proj_bias.square().mean())
 
     def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
         gate_proj_bias_scale = gate_proj_bias_scale.float()
-        if self.gate_proj_bias_scale_l2_target_keeper is not None:
-            self.gate_proj_bias_scale_l2_target_keeper.update(
+        MANAGER.add("gate_proj_bias_scale_l2_loss", gate_proj_bias_scale.square().mean())
+        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_scale_ema_rms_reg_keeper.update(
                 gate_proj_bias_scale,
-                int(self.gate_proj_bias_l2_target_step.item()),
+                int(self.gate_proj_bias_ema_rms_reg_step.item()),
                 source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
             )
             MANAGER.add(
-                "gate_proj_bias_scale_l2_loss",
-                self.gate_proj_bias_scale_l2_target_keeper.loss(
+                "gate_proj_bias_scale_ema_rms_reg_loss",
+                self.gate_proj_bias_scale_ema_rms_reg_keeper.loss(
                     gate_proj_bias_scale,
                     source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
                 ),
             )
-            return
-        MANAGER.add("gate_proj_bias_scale_l2_loss", gate_proj_bias_scale.square().mean())
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales):
@@ -999,16 +998,16 @@ class Qwen3MLPExperts(nn.Module):
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
-        self.gate_proj_bias_l2_target = getattr(config, 'gate_proj_bias_l2_target', 'zero')
+        self.gate_proj_bias_ema_rms_reg = bool(getattr(config, 'gate_proj_bias_ema_rms_reg', False))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
         self.use_gate_proj_bias = bool(getattr(config, 'use_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
-        self.register_buffer('gate_proj_bias_l2_target_step', torch.zeros((), dtype=torch.int64), persistent=False)
+        self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_gate_proj_bias = None
         self._shared_gate_proj_bias_scale = None
-        self.gate_proj_bias_l2_target_keeper = None
-        self.gate_proj_bias_scale_l2_target_keeper = None
+        self.gate_proj_bias_ema_rms_reg_keeper = None
+        self.gate_proj_bias_scale_ema_rms_reg_keeper = None
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
@@ -1030,16 +1029,16 @@ class Qwen3MLPExperts(nn.Module):
             self.register_parameter('gate_proj_bias_expert', None)
             self.register_parameter('gate_proj_bias_intermediate', None)
             self.register_parameter('gate_proj_bias_residual', None)
-            if self.gate_proj_bias_l2_target == 'ema':
+            if self.gate_proj_bias_ema_rms_reg:
                 keeper_kwargs = {
                     'beta': getattr(config, 'gate_proj_bias_l2_ema_beta', 0.99),
                     'anchor_start': getattr(config, 'gate_proj_bias_l2_ema_anchor_start', 0.4),
                     'anchor_end': getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
                     'floor_frac': getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
                 }
-                self.gate_proj_bias_l2_target_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                self.gate_proj_bias_ema_rms_reg_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
                 if self.use_gate_proj_bias_scale:
-                    self.gate_proj_bias_scale_l2_target_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                    self.gate_proj_bias_scale_ema_rms_reg_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
         else:
             self.register_parameter('gate_proj_bias', None)
             self.register_parameter('gate_proj_bias_scale', None)
@@ -1172,14 +1171,14 @@ class Qwen3MLPExperts(nn.Module):
             log_kappa = 2 * gate_proj_bias * selected_router_scores
         return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
 
-    def set_gate_proj_bias_l2_target_step(self, step):
-        self.gate_proj_bias_l2_target_step.fill_(int(step))
+    def set_gate_proj_bias_ema_rms_reg_step(self, step):
+        self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
 
-    def set_gate_proj_bias_l2_target_total_iterations(self, total_iterations):
-        if self.gate_proj_bias_l2_target_keeper is not None:
-            self.gate_proj_bias_l2_target_keeper.set_total_iterations(total_iterations)
-        if self.gate_proj_bias_scale_l2_target_keeper is not None:
-            self.gate_proj_bias_scale_l2_target_keeper.set_total_iterations(total_iterations)
+    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
+        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
 
     def _gate_proj_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
@@ -1190,46 +1189,44 @@ class Qwen3MLPExperts(nn.Module):
     @torch._dynamo.disable
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
-        if self.gate_proj_bias_l2_target_keeper is not None:
-            self.gate_proj_bias_l2_target_keeper.update(
-                gate_proj_bias,
-                int(self.gate_proj_bias_l2_target_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
-            )
-            MANAGER.add(
-                "gate_proj_bias_l2_loss",
-                self.gate_proj_bias_l2_target_keeper.loss(
-                    gate_proj_bias,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
-                ),
-            )
-            return
         MANAGER.add(
             "gate_proj_bias_l2_loss",
             gate_proj_bias.square().mean(),
         )
+        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_ema_rms_reg_keeper.update(
+                gate_proj_bias,
+                int(self.gate_proj_bias_ema_rms_reg_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+            )
+            MANAGER.add(
+                "gate_proj_bias_ema_rms_reg_loss",
+                self.gate_proj_bias_ema_rms_reg_keeper.loss(
+                    gate_proj_bias,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+                ),
+            )
 
     @torch._dynamo.disable
     def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
         gate_proj_bias_scale = gate_proj_bias_scale.float()
-        if self.gate_proj_bias_scale_l2_target_keeper is not None:
-            self.gate_proj_bias_scale_l2_target_keeper.update(
-                gate_proj_bias_scale,
-                int(self.gate_proj_bias_l2_target_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
-            )
-            MANAGER.add(
-                "gate_proj_bias_scale_l2_loss",
-                self.gate_proj_bias_scale_l2_target_keeper.loss(
-                    gate_proj_bias_scale,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
-                ),
-            )
-            return
         MANAGER.add(
             "gate_proj_bias_scale_l2_loss",
             gate_proj_bias_scale.square().mean(),
         )
+        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
+            self.gate_proj_bias_scale_ema_rms_reg_keeper.update(
+                gate_proj_bias_scale,
+                int(self.gate_proj_bias_ema_rms_reg_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+            )
+            MANAGER.add(
+                "gate_proj_bias_scale_ema_rms_reg_loss",
+                self.gate_proj_bias_scale_ema_rms_reg_keeper.loss(
+                    gate_proj_bias_scale,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+                ),
+            )
 
     def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
         slope_scales = slope_scales.to(dtype=gate_out_raw.dtype)
@@ -1581,33 +1578,38 @@ class GPT(nn.Module):
     def compute_gate_proj_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
-        for name in ('gate_proj_bias_l2_loss', 'gate_proj_bias_scale_l2_loss'):
+        for name in (
+            'gate_proj_bias_l2_loss',
+            'gate_proj_bias_scale_l2_loss',
+            'gate_proj_bias_ema_rms_reg_loss',
+            'gate_proj_bias_scale_ema_rms_reg_loss',
+        ):
             value = MANAGER.aggregate(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
             MANAGER.reset(name)
         return losses
 
-    def set_gate_proj_bias_l2_target_step(self, step):
+    def set_gate_proj_bias_ema_rms_reg_step(self, step):
         step = int(step)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                mlp.set_gate_proj_bias_l2_target_step(step)
+                mlp.set_gate_proj_bias_ema_rms_reg_step(step)
                 continue
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts):
-                experts.set_gate_proj_bias_l2_target_step(step)
+                experts.set_gate_proj_bias_ema_rms_reg_step(step)
 
-    def set_gate_proj_bias_l2_target_total_iterations(self, total_iterations):
+    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
         total_iterations = int(total_iterations)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                mlp.set_gate_proj_bias_l2_target_total_iterations(total_iterations)
+                mlp.set_gate_proj_bias_ema_rms_reg_total_iterations(total_iterations)
                 continue
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts):
-                experts.set_gate_proj_bias_l2_target_total_iterations(total_iterations)
+                experts.set_gate_proj_bias_ema_rms_reg_total_iterations(total_iterations)
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1634,7 +1636,7 @@ class GPT(nn.Module):
         if strict:
             state_dict = state_dict.copy()
             for name, param in self.state_dict().items():
-                if 'l2_target_keeper' in name and name not in state_dict:
+                if ('ema_rms_reg_keeper' in name or 'l2_target_keeper' in name) and name not in state_dict:
                     state_dict[name] = param.clone()
                 elif 'gate_proj_bias_scale' in name and name not in state_dict:
                     state_dict[name] = torch.ones_like(param)
@@ -2074,6 +2076,8 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'gate_proj_bias_l2_loss': 0,
                    'gate_proj_bias_scale_l2_loss': 0,
+                   'gate_proj_bias_ema_rms_reg_loss': 0,
+                   'gate_proj_bias_scale_ema_rms_reg_loss': 0,
                    'gate_grad_scale_mean': None,
                    'gate_proj_bias_shift_abs_top5p_mean': 0,
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,

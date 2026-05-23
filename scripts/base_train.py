@@ -247,16 +247,16 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
                     help="L2 weight on gate_proj_bias and gate_proj_bias_scale values")
-parser.add_argument("--gate-proj-bias-l2-target", type=str, default="zero", choices=["zero", "ema"],
-                    help="target used by gate_proj_bias and gate_proj_bias_scale magnitude losses: zero, or an anchored EMA RMS floor target")
+parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs='?', const=True, default=False,
+                    help="enable an extra anchored EMA RMS floor regularizer for gate_proj_bias and gate_proj_bias_scale on top of the ordinary L2 loss")
 parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99,
-                    help="EMA beta for --gate-proj-bias-l2-target=ema")
+                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --gate-proj-bias-ema-rms-reg")
 parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4,
-                    help="fraction of total iterations where EMA RMS starts updating the anchored gate_proj_bias L2 target")
+                    help="fraction of total iterations where the anchored EMA RMS floor regularizer starts updating its target")
 parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.8,
-                    help="fraction of total iterations where EMA RMS stops updating the anchored gate_proj_bias L2 target")
+                    help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
 parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.8,
-                    help="floor fraction applied to the anchored EMA RMS target when --gate-proj-bias-l2-target=ema")
+                    help="floor fraction applied to the anchored EMA RMS target when --gate-proj-bias-ema-rms-reg is enabled")
 parser.add_argument("--gate-proj-bias-scale-l2-loss-weight-scale", type=float, default=2.0,
                     help="multiplier applied to --gate-proj-bias-l2-loss-weight when weighting gate_proj_bias_scale L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
@@ -523,7 +523,7 @@ def build_model_meta(depth):
         constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
-        gate_proj_bias_l2_target=args.gate_proj_bias_l2_target,
+        gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg,
         gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta,
         gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start,
         gate_proj_bias_l2_ema_anchor_end=args.gate_proj_bias_l2_ema_anchor_end,
@@ -765,7 +765,7 @@ total_tokens = total_batch_size * num_iterations
 print0(f"Total number of training tokens: {total_tokens:,}")
 print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_iterations / target_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
-orig_model.set_gate_proj_bias_l2_target_total_iterations(num_iterations)
+orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)
 
 gate_proj_bias_delay_start_iterations = max(
     args.gate_proj_bias_delay_start_iterations,
@@ -1558,6 +1558,8 @@ while True:
             'router_z_loss': 0.0,
             'gate_proj_bias_l2_loss': 0.0,
             'gate_proj_bias_scale_l2_loss': 0.0,
+            'gate_proj_bias_ema_rms_reg_loss': 0.0,
+            'gate_proj_bias_scale_ema_rms_reg_loss': 0.0,
             'gate_proj_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
         }
@@ -1576,7 +1578,7 @@ while True:
         t0 = time.time()
         step_losses = None
         training_model = orig_model if run_eager_training_step_after_core_eval else model
-        orig_model.set_gate_proj_bias_l2_target_step(step)
+        orig_model.set_gate_proj_bias_ema_rms_reg_step(step)
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
@@ -1603,8 +1605,16 @@ while True:
             gate_proj_bias_scale_l2_loss = micro_losses.get("gate_proj_bias_scale_l2_loss")
             if gate_proj_bias_scale_l2_loss is None:
                 gate_proj_bias_scale_l2_loss = 0.0
+            gate_proj_bias_ema_rms_reg_loss = micro_losses.get("gate_proj_bias_ema_rms_reg_loss")
+            if gate_proj_bias_ema_rms_reg_loss is None:
+                gate_proj_bias_ema_rms_reg_loss = 0.0
+            gate_proj_bias_scale_ema_rms_reg_loss = micro_losses.get("gate_proj_bias_scale_ema_rms_reg_loss")
+            if gate_proj_bias_scale_ema_rms_reg_loss is None:
+                gate_proj_bias_scale_ema_rms_reg_loss = 0.0
             loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
             loss = loss + gate_proj_bias_scale_l2_loss_weight * gate_proj_bias_scale_l2_loss
+            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_ema_rms_reg_loss
+            loss = loss + gate_proj_bias_scale_l2_loss_weight * gate_proj_bias_scale_ema_rms_reg_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
@@ -1713,6 +1723,8 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
             "train/gate_proj_bias_scale_l2_loss_step": losses['gate_proj_bias_scale_l2_loss'],
+            "train/gate_proj_bias_ema_rms_reg_loss_step": losses['gate_proj_bias_ema_rms_reg_loss'],
+            "train/gate_proj_bias_scale_ema_rms_reg_loss_step": losses['gate_proj_bias_scale_ema_rms_reg_loss'],
             "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean'].mean()),
             "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
             "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),

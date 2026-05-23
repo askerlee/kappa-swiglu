@@ -479,12 +479,12 @@ def test_gate_proj_bias_l2_losses_are_reported_from_gate_proj_biases():
     )
 
 
-def test_gate_proj_bias_l2_loss_can_use_anchored_ema_floor_target():
+def test_gate_proj_bias_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         gate_proj_bias_l2_ema_beta=0.99,
         gate_proj_bias_l2_ema_anchor_start=0.0,
         gate_proj_bias_l2_ema_anchor_end=0.0,
@@ -494,19 +494,26 @@ def test_gate_proj_bias_l2_loss_can_use_anchored_ema_floor_target():
     experts = Qwen3MLPExperts(config)
 
     MANAGER.reset("gate_proj_bias_l2_loss")
-    experts.set_gate_proj_bias_l2_target_total_iterations(1)
-    experts.set_gate_proj_bias_l2_target_step(0)
+    MANAGER.reset("gate_proj_bias_ema_rms_reg_loss")
+    experts.set_gate_proj_bias_ema_rms_reg_total_iterations(1)
+    experts.set_gate_proj_bias_ema_rms_reg_step(0)
     experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), 2.0))
-    first_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    first_l2_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    first_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_ema_rms_reg_loss")
 
-    experts.set_gate_proj_bias_l2_target_step(1)
+    experts.set_gate_proj_bias_ema_rms_reg_step(1)
     experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), 0.5))
-    second_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    second_l2_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    second_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_ema_rms_reg_loss")
 
-    torch.testing.assert_close(first_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.5) ** 2))
+    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
+    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_l2_loss, torch.tensor(0.25))
+    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.5) ** 2))
 
 
 def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_input():
@@ -529,6 +536,7 @@ def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss
         floor_frac=0.8,
     )
     keeper.target_rms.fill_(float('nan'))
+    keeper.target_ready.fill_(True)
 
     with pytest.raises(RuntimeError, match="non-finite floor"):
         keeper.loss(torch.tensor([1.0]))
@@ -539,7 +547,7 @@ def test_gate_proj_bias_ema_target_error_includes_module_source():
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         debug=False,
     )
     experts = Qwen3MLPExperts(config, layer_idx=3)
@@ -556,6 +564,7 @@ def test_gate_proj_bias_ema_target_loss_has_finite_gradient_at_zero():
         floor_frac=0.8,
     )
     keeper.target_rms.fill_(2.0)
+    keeper.target_ready.fill_(True)
 
     value = torch.zeros(4, requires_grad=True)
     loss = keeper.loss(value)
@@ -566,13 +575,13 @@ def test_gate_proj_bias_ema_target_loss_has_finite_gradient_at_zero():
     assert torch.isfinite(value.grad).all()
 
 
-def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
+def test_gate_proj_bias_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
         gate_proj_bias_input="router_probs",
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         gate_proj_bias_l2_ema_beta=0.99,
         gate_proj_bias_l2_ema_anchor_start=0.0,
         gate_proj_bias_l2_ema_anchor_end=0.0,
@@ -582,28 +591,35 @@ def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
     experts = Qwen3MLPExperts(config)
 
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
-    experts.set_gate_proj_bias_l2_target_total_iterations(1)
-    experts.set_gate_proj_bias_l2_target_step(0)
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
+    experts.set_gate_proj_bias_ema_rms_reg_total_iterations(1)
+    experts.set_gate_proj_bias_ema_rms_reg_step(0)
     experts._accumulate_gate_proj_bias_scale_l2_losses(torch.full((2, 16), 2.0))
-    first_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    first_l2_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    first_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_scale_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
 
-    experts.set_gate_proj_bias_l2_target_step(1)
+    experts.set_gate_proj_bias_ema_rms_reg_step(1)
     experts._accumulate_gate_proj_bias_scale_l2_losses(torch.full((2, 16), 0.25))
-    second_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    second_l2_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    second_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_scale_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
 
-    torch.testing.assert_close(first_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.25) ** 2))
+    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
+    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_l2_loss, torch.tensor(0.0625))
+    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.25) ** 2))
 
 
-def test_dense_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
+def test_dense_gate_proj_bias_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     config = GPTConfig(
         n_embd=4,
         use_gate_proj_bias=True,
         constant_gate_proj_bias_dense_layers=True,
         gate_proj_bias_input="constant",
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         gate_proj_bias_l2_ema_beta=0.99,
         gate_proj_bias_l2_ema_anchor_start=0.0,
         gate_proj_bias_l2_ema_anchor_end=0.0,
@@ -613,19 +629,26 @@ def test_dense_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
     mlp = Qwen3MLP(config)
 
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
-    mlp.set_gate_proj_bias_l2_target_total_iterations(1)
-    mlp.set_gate_proj_bias_l2_target_step(0)
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
+    mlp.set_gate_proj_bias_ema_rms_reg_total_iterations(1)
+    mlp.set_gate_proj_bias_ema_rms_reg_step(0)
     mlp._accumulate_gate_proj_bias_scale_l2_losses(torch.full((16,), 2.0))
-    first_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    first_l2_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    first_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_scale_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
 
-    mlp.set_gate_proj_bias_l2_target_step(1)
+    mlp.set_gate_proj_bias_ema_rms_reg_step(1)
     mlp._accumulate_gate_proj_bias_scale_l2_losses(torch.full((16,), 0.25))
-    second_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    second_l2_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    second_ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_scale_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_ema_rms_reg_loss")
 
-    torch.testing.assert_close(first_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.25) ** 2))
+    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
+    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_l2_loss, torch.tensor(0.0625))
+    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.25) ** 2))
 
 
 def test_gate_proj_bias_ema_target_buffers_load_from_older_checkpoints():
@@ -642,14 +665,14 @@ def test_gate_proj_bias_ema_target_buffers_load_from_older_checkpoints():
         use_aux_loss=False,
         use_router_z_loss=False,
         use_gate_proj_bias=True,
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         debug=False,
     )
     model = GPT(config)
     state_dict = {
         name: value
         for name, value in model.state_dict().items()
-        if "l2_target_keeper" not in name
+        if "ema_rms_reg_keeper" not in name
     }
 
     load_result = model.load_state_dict(state_dict, strict=True)
@@ -657,10 +680,10 @@ def test_gate_proj_bias_ema_target_buffers_load_from_older_checkpoints():
     assert not load_result.missing_keys
     assert not load_result.unexpected_keys
     experts = model.transformer.h[1].mlp.experts
-    assert torch.equal(experts.gate_proj_bias_l2_target_keeper.ema_rms, torch.zeros(()))
-    assert torch.equal(experts.gate_proj_bias_scale_l2_target_keeper.ema_rms, torch.zeros(()))
-    assert not bool(experts.gate_proj_bias_l2_target_keeper.initialized.item())
-    assert not bool(experts.gate_proj_bias_scale_l2_target_keeper.initialized.item())
+    assert torch.equal(experts.gate_proj_bias_ema_rms_reg_keeper.ema_rms, torch.zeros(()))
+    assert torch.equal(experts.gate_proj_bias_scale_ema_rms_reg_keeper.ema_rms, torch.zeros(()))
+    assert not bool(experts.gate_proj_bias_ema_rms_reg_keeper.initialized.item())
+    assert not bool(experts.gate_proj_bias_scale_ema_rms_reg_keeper.initialized.item())
 
 
 def test_gate_proj_bias_ema_anchor_fractions_resolve_against_total_iterations():
@@ -668,7 +691,7 @@ def test_gate_proj_bias_ema_anchor_fractions_resolve_against_total_iterations():
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         gate_proj_bias_l2_ema_beta=0.99,
         gate_proj_bias_l2_ema_anchor_start=0.4,
         gate_proj_bias_l2_ema_anchor_end=0.8,
@@ -676,20 +699,20 @@ def test_gate_proj_bias_ema_anchor_fractions_resolve_against_total_iterations():
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
-    experts.set_gate_proj_bias_l2_target_total_iterations(10)
+    experts.set_gate_proj_bias_ema_rms_reg_total_iterations(10)
 
-    anchor_start, anchor_end = experts.gate_proj_bias_l2_target_keeper._resolve_anchor_steps()
+    anchor_start, anchor_end = experts.gate_proj_bias_ema_rms_reg_keeper._resolve_anchor_steps()
 
     assert anchor_start == 4
     assert anchor_end == 8
 
 
-def test_gate_proj_bias_ema_target_uses_zero_target_penalty_before_anchor():
+def test_gate_proj_bias_ema_rms_reg_is_zero_before_anchor():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
         use_gate_proj_bias=True,
-        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_ema_rms_reg=True,
         gate_proj_bias_l2_ema_beta=0.99,
         gate_proj_bias_l2_ema_anchor_start=0.4,
         gate_proj_bias_l2_ema_anchor_end=0.8,
@@ -697,17 +720,21 @@ def test_gate_proj_bias_ema_target_uses_zero_target_penalty_before_anchor():
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
-    experts.set_gate_proj_bias_l2_target_total_iterations(10)
+    experts.set_gate_proj_bias_ema_rms_reg_total_iterations(10)
 
     value = torch.full((2, 16), 2.0)
     MANAGER.reset("gate_proj_bias_l2_loss")
-    experts.set_gate_proj_bias_l2_target_step(0)
+    MANAGER.reset("gate_proj_bias_ema_rms_reg_loss")
+    experts.set_gate_proj_bias_ema_rms_reg_step(0)
     experts._accumulate_gate_proj_bias_l2_losses(value)
-    loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    l2_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    ema_rms_reg_loss = MANAGER.aggregate("gate_proj_bias_ema_rms_reg_loss")
     MANAGER.reset("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_ema_rms_reg_loss")
 
-    torch.testing.assert_close(loss, value.square().mean())
-    assert not bool(experts.gate_proj_bias_l2_target_keeper.target_ready.item())
+    torch.testing.assert_close(l2_loss, value.square().mean())
+    torch.testing.assert_close(ema_rms_reg_loss, torch.tensor(0.0))
+    assert not bool(experts.gate_proj_bias_ema_rms_reg_keeper.target_ready.item())
 
 
 def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():

@@ -34,7 +34,7 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
-        gate_proj_bias_l2_target: str = "zero",
+        gate_proj_bias_ema_rms_reg: bool = False,
         gate_proj_bias_l2_ema_beta: float = 0.99,
         gate_proj_bias_l2_ema_anchor_start: float = 0.4,
         gate_proj_bias_l2_ema_anchor_end: float = 0.8,
@@ -111,13 +111,7 @@ class GPTConfig:
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
             )
         self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
-        valid_gate_proj_bias_l2_targets = {"zero", "ema"}
-        if gate_proj_bias_l2_target not in valid_gate_proj_bias_l2_targets:
-            raise ValueError(
-                "gate_proj_bias_l2_target must be one of "
-                f"{sorted(valid_gate_proj_bias_l2_targets)}, got {gate_proj_bias_l2_target!r}"
-            )
-        self.gate_proj_bias_l2_target = gate_proj_bias_l2_target
+        self.gate_proj_bias_ema_rms_reg = bool(gate_proj_bias_ema_rms_reg)
         self.gate_proj_bias_l2_ema_beta = float(gate_proj_bias_l2_ema_beta)
         if not (0.0 <= self.gate_proj_bias_l2_ema_beta < 1.0):
             raise ValueError(

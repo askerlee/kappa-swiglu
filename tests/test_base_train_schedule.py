@@ -119,9 +119,9 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
     assert '--use-gate-proj-bias-as-lr-scaler' not in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-target", type=str, default="zero", choices=["zero", "ema"]' in source
-    assert 'gate_proj_bias_l2_target=args.gate_proj_bias_l2_target' in source
-    assert 'orig_model.set_gate_proj_bias_l2_target_step(step)' in source
+    assert 'parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs=' in source
+    assert 'gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg' in source
+    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_step(step)' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
     assert '--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
@@ -134,21 +134,21 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
 
 
-def test_gate_proj_bias_l2_ema_target_cli_is_wired_into_config_and_step_updates():
+def test_gate_proj_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     source = BASE_TRAIN.read_text()
 
-    assert 'parser.add_argument("--gate-proj-bias-l2-target", type=str, default="zero", choices=["zero", "ema"]' in source
+    assert 'parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs=' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.8' in source
     assert 'parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.8' in source
-    assert 'gate_proj_bias_l2_target=args.gate_proj_bias_l2_target' in source
+    assert 'gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg' in source
     assert 'gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta' in source
     assert 'gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start' in source
     assert 'gate_proj_bias_l2_ema_anchor_end=args.gate_proj_bias_l2_ema_anchor_end' in source
     assert 'gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac' in source
-    assert 'orig_model.set_gate_proj_bias_l2_target_total_iterations(num_iterations)' in source
-    assert 'orig_model.set_gate_proj_bias_l2_target_step(step)' in source
+    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)' in source
+    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_step(step)' in source
 
 
 def test_nonfinite_grad_debug_guard_is_wired_before_optimizer_step():
