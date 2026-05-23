@@ -1911,11 +1911,7 @@ class GPT(nn.Module):
             target.append(param)
 
         def use_matrix_optimizer(param):
-            if param.ndim < 2:
-                return False
-            # Aurora's polar-style update is fragile and low-value on very skinny matrices
-            # such as VE gate weights (e.g. 6x32 in the default d8 config).
-            return min(param.shape[-2:]) >= 8
+            return param.ndim >= 2
 
         for block_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
