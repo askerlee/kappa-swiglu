@@ -1850,6 +1850,13 @@ class GPT(nn.Module):
             seen_param_ids.add(param_id)
             target.append(param)
 
+        def use_matrix_optimizer(param):
+            if param.ndim < 2:
+                return False
+            # Aurora's polar-style update is fragile and low-value on very skinny matrices
+            # such as VE gate weights (e.g. 6x32 in the default d8 config).
+            return min(param.shape[-2:]) >= 8
+
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             target_matrix_params = moe_matrix_params if isinstance(mlp, MOELayer) else dense_matrix_params
@@ -1857,7 +1864,7 @@ class GPT(nn.Module):
             for name, param in block.named_parameters():
                 if name.startswith('mlp.experts.gate_proj_bias') or name.startswith('mlp.gate_proj_bias'):
                     append_param(gate_proj_bias_params, param)
-                elif param.ndim < 2:
+                elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param)
                 else:
                     append_param(target_matrix_params, param)

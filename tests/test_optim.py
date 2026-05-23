@@ -420,6 +420,43 @@ def test_setup_optimizer_selects_aurora_for_matrix_groups():
     assert all(group['weight_decay'] == 0.2 for group in matrix_groups)
 
 
+def test_setup_optimizer_keeps_very_skinny_matrices_out_of_aurora_groups():
+    config = GPTConfig(
+        n_layer=4,
+        moe_start_layer=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=48,
+        n_head=6,
+    )
+    model = GPT(config)
+
+    optimizer = model.setup_optimizer(
+        matrix_lr=0.01,
+        weight_decay=0.2,
+        matrix_optimizer='aurora',
+    )
+
+    aurora_params = {
+        param
+        for group in optimizer.param_groups
+        if group.get('kind') == 'aurora'
+        for param in group['params']
+    }
+    adamw_params = {
+        param
+        for group in optimizer.param_groups
+        if group.get('kind') == 'adamw'
+        for param in group['params']
+    }
+
+    ve_gate_params = [block.attn.ve_gate.weight for block in model.transformer.h]
+
+    assert ve_gate_params
+    assert all(param not in aurora_params for param in ve_gate_params)
+    assert all(param in adamw_params for param in ve_gate_params)
+
+
 def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
     config = GPTConfig(
         n_layer=4,
