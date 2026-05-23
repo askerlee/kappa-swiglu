@@ -740,6 +740,17 @@ class Qwen3MLP(nn.Module):
             self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
             self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
 
+        def _raise_if_nonfinite(self, tensor, label):
+            if torch.isfinite(tensor).all():
+                return
+            bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
+            index = tuple(int(i) for i in bad[0].tolist()) if bad.numel() > 0 else ()
+            value = tensor[index] if index else tensor
+            scalar_value = float(value.item()) if value.numel() == 1 else str(value)
+            raise RuntimeError(
+                f"GateProjBiasEmaTargetKeeper observed non-finite {label} at index {index}: {scalar_value}"
+            )
+
         def set_total_iterations(self, total_iterations):
             self.total_iterations.fill_(max(int(total_iterations), 1))
 
@@ -751,20 +762,29 @@ class Qwen3MLP(nn.Module):
 
         @torch.no_grad()
         def update(self, value, step):
+            self._raise_if_nonfinite(value, "value")
             rms = value.detach().float().square().mean().sqrt()
+            self._raise_if_nonfinite(rms, "rms")
             if not bool(self.initialized.item()):
                 self.ema_rms.copy_(rms)
                 self.initialized.fill_(True)
             else:
                 self.ema_rms.mul_(self.beta).add_(rms, alpha=1.0 - self.beta)
+            self._raise_if_nonfinite(self.ema_rms, "ema_rms")
             anchor_start, anchor_end = self._resolve_anchor_steps()
             if anchor_start <= step <= anchor_end:
                 self.target_rms.copy_(self.ema_rms)
+            self._raise_if_nonfinite(self.target_rms, "target_rms")
 
         def loss(self, value):
+            self._raise_if_nonfinite(value, "value")
             current_rms = value.float().square().mean().sqrt()
+            self._raise_if_nonfinite(current_rms, "current_rms")
             floor = self.target_rms.detach() * self.floor_frac
-            return torch.relu(floor - current_rms).square()
+            self._raise_if_nonfinite(floor, "floor")
+            loss = torch.relu(floor - current_rms).square()
+            self._raise_if_nonfinite(loss, "loss")
+            return loss
 
     def __init__(self, config, layer_idx=None):
         super().__init__()

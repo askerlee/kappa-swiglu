@@ -509,6 +509,31 @@ def test_gate_proj_bias_l2_loss_can_use_anchored_ema_floor_target():
     torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.5) ** 2))
 
 
+def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_input():
+    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+        beta=0.99,
+        anchor_start=0.0,
+        anchor_end=1.0,
+        floor_frac=0.8,
+    )
+
+    with pytest.raises(RuntimeError, match="non-finite value"):
+        keeper.update(torch.tensor([float('nan')]), step=0)
+
+
+def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss():
+    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+        beta=0.99,
+        anchor_start=0.0,
+        anchor_end=1.0,
+        floor_frac=0.8,
+    )
+    keeper.target_rms.fill_(float('nan'))
+
+    with pytest.raises(RuntimeError, match="non-finite floor"):
+        keeper.loss(torch.tensor([1.0]))
+
+
 def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
     config = GPTConfig(
         n_exp=2,

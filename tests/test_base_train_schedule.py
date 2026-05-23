@@ -149,3 +149,14 @@ def test_gate_proj_bias_l2_ema_target_cli_is_wired_into_config_and_step_updates(
     assert 'gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac' in source
     assert 'orig_model.set_gate_proj_bias_l2_target_total_iterations(num_iterations)' in source
     assert 'orig_model.set_gate_proj_bias_l2_target_step(step)' in source
+
+
+def test_nonfinite_grad_debug_guard_is_wired_before_optimizer_step():
+    source = BASE_TRAIN.read_text()
+
+    assert 'def find_first_nonfinite_grad(model):' in source
+    assert 'def summarize_loss_snapshot(loss, micro_losses):' in source
+    assert 'abort_on_nonfinite_grad = args.debug or env_flag_is_true("NANOCHAT_ABORT_ON_NONFINITE_GRAD")' in source
+    assert 'grad_issue = find_first_nonfinite_grad(orig_model)' in source
+    assert 'Non-finite gradient detected before optimizer.step' in source
+    assert 'loss_snapshot = summarize_loss_snapshot(loss, micro_losses)' in source

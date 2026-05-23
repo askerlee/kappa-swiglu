@@ -63,6 +63,39 @@ def env_flag_is_true(name):
     return str2bool(value)
 
 
+def _first_nonfinite_tensor_entry(tensor):
+    bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
+    if bad.numel() == 0:
+        return None
+    index = tuple(int(i) for i in bad[0].tolist())
+    value = tensor[index]
+    return index, float(value.item())
+
+
+def find_first_nonfinite_grad(model):
+    for name, param in model.named_parameters():
+        grad = param.grad
+        if grad is None:
+            continue
+        result = _first_nonfinite_tensor_entry(grad)
+        if result is not None:
+            index, value = result
+            return name, index, value
+    return None
+
+
+def summarize_loss_snapshot(loss, micro_losses):
+    snapshot = {
+        "loss": float(loss.detach().float().item()),
+    }
+    for key, value in micro_losses.items():
+        if torch.is_tensor(value):
+            snapshot[key] = float(value.detach().float().item())
+        else:
+            snapshot[key] = float(value)
+    return snapshot
+
+
 def infer_last_completed_core_eval_step(checkpoint_dir, current_step, core_metric_every):
     if core_metric_every <= 0 or not os.path.isdir(checkpoint_dir):
         return None
@@ -391,6 +424,7 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type, seed=args.seed)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 trace_ddp_progress = args.debug or env_flag_is_true("NANOCHAT_TRACE_DDP_PROGRESS")
+abort_on_nonfinite_grad = args.debug or env_flag_is_true("NANOCHAT_ABORT_ON_NONFINITE_GRAD")
 
 
 def trace_rank(message):
@@ -1580,6 +1614,16 @@ while True:
             loss.backward()
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed backward")
+            if abort_on_nonfinite_grad:
+                grad_issue = find_first_nonfinite_grad(orig_model)
+                if grad_issue is not None:
+                    grad_name, grad_index, grad_value = grad_issue
+                    loss_snapshot = summarize_loss_snapshot(loss, micro_losses)
+                    raise RuntimeError(
+                        f"Non-finite gradient detected before optimizer.step at step={step}, micro_step={micro_step}. "
+                        f"name={grad_name} index={grad_index} value={grad_value}. "
+                        f"loss_snapshot={loss_snapshot}"
+                    )
             MANAGER.collect_backward_stats = False
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
