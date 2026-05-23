@@ -223,7 +223,8 @@ def _build_aurora_nonfinite_error(shape: torch.Size, param_names: list[str], par
 
 
 def _build_adamw_nonfinite_error(param_name: str | None, param: Tensor, grad: Tensor,
-                                 exp_avg: Tensor, exp_avg_sq: Tensor, updated: Tensor) -> RuntimeError:
+                                 exp_avg: Tensor, exp_avg_sq: Tensor, updated: Tensor,
+                                 *, phase: str) -> RuntimeError:
     details = []
 
     def append_first(label: str, tensor: Tensor) -> None:
@@ -242,8 +243,12 @@ def _build_adamw_nonfinite_error(param_name: str | None, param: Tensor, grad: Te
         details.append('no non-finite source identified in grad/param/exp_avg/exp_avg_sq/update snapshots')
 
     name = param_name or '<unknown>'
+    phase_text = {
+        'pre': 'AdamW received non-finite inputs/state',
+        'post': 'AdamW produced non-finite parameters',
+    }.get(phase, 'AdamW encountered non-finite tensors')
     return RuntimeError(
-        f"AdamW produced non-finite parameters for {name} with shape {tuple(param.shape)}. {'; '.join(details)}"
+        f"{phase_text} for {name} with shape {tuple(param.shape)}. {'; '.join(details)}"
     )
 
 # -----------------------------------------------------------------------------
@@ -502,6 +507,16 @@ class MuonAdamW(torch.optim.Optimizer):
             grad_flat = grad.view(-1)
             exp_avg_flat = exp_avg.view(-1)
             exp_avg_sq_flat = exp_avg_sq.view(-1)
+            if not (grad.isfinite().all() and p.isfinite().all() and exp_avg.isfinite().all() and exp_avg_sq.isfinite().all()):
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p.detach(),
+                    grad.detach(),
+                    exp_avg.detach(),
+                    exp_avg_sq.detach(),
+                    p.detach(),
+                    phase='pre',
+                )
             adamw_step_fused(
                 p_flat, grad_flat, exp_avg_flat, exp_avg_sq_flat,
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
@@ -515,6 +530,7 @@ class MuonAdamW(torch.optim.Optimizer):
                     exp_avg.detach(),
                     exp_avg_sq.detach(),
                     p.detach(),
+                    phase='post',
                 )
 
     def _step_muon(self, group: dict) -> None:
@@ -765,6 +781,16 @@ class DistMuonAdamW(torch.optim.Optimizer):
             self._adamw_beta2_t.fill_(group['betas'][1])
             self._adamw_eps_t.fill_(group['eps'])
             self._adamw_wd_t.fill_(group['weight_decay'])
+            if not (grad_slice.isfinite().all() and p_slice.isfinite().all() and state['exp_avg'].isfinite().all() and state['exp_avg_sq'].isfinite().all()):
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p_slice.detach(),
+                    grad_slice.detach(),
+                    state['exp_avg'].detach(),
+                    state['exp_avg_sq'].detach(),
+                    p_slice.detach(),
+                    phase='pre',
+                )
             adamw_step_fused(
                 p_slice, grad_slice, state['exp_avg'], state['exp_avg_sq'],
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
@@ -778,6 +804,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
                     state['exp_avg'].detach(),
                     state['exp_avg_sq'].detach(),
                     p_slice.detach(),
+                    phase='post',
                 )
 
             # Large params need all_gather
@@ -912,6 +939,16 @@ class AuroraAdamW(torch.optim.Optimizer):
             self._adamw_beta2_t.fill_(group['betas'][1])
             self._adamw_eps_t.fill_(group['eps'])
             self._adamw_wd_t.fill_(group['weight_decay'])
+            if not (grad.isfinite().all() and p.isfinite().all() and exp_avg.isfinite().all() and exp_avg_sq.isfinite().all()):
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p.detach(),
+                    grad.detach(),
+                    exp_avg.detach(),
+                    exp_avg_sq.detach(),
+                    p.detach(),
+                    phase='pre',
+                )
 
             adamw_step_fused(
                 p.view(-1), grad.view(-1), exp_avg.view(-1), exp_avg_sq.view(-1),
@@ -926,6 +963,7 @@ class AuroraAdamW(torch.optim.Optimizer):
                     exp_avg.detach(),
                     exp_avg_sq.detach(),
                     p.detach(),
+                    phase='post',
                 )
 
     def _step_aurora(self, group: dict) -> None:
@@ -1108,6 +1146,16 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             self._adamw_beta2_t.fill_(group['betas'][1])
             self._adamw_eps_t.fill_(group['eps'])
             self._adamw_wd_t.fill_(group['weight_decay'])
+            if not (grad_slice.isfinite().all() and p_slice.isfinite().all() and state['exp_avg'].isfinite().all() and state['exp_avg_sq'].isfinite().all()):
+                raise _build_adamw_nonfinite_error(
+                    param_name,
+                    p_slice.detach(),
+                    grad_slice.detach(),
+                    state['exp_avg'].detach(),
+                    state['exp_avg_sq'].detach(),
+                    p_slice.detach(),
+                    phase='pre',
+                )
             adamw_step_fused(
                 p_slice, grad_slice, state['exp_avg'], state['exp_avg_sq'],
                 self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
@@ -1121,6 +1169,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                     state['exp_avg'].detach(),
                     state['exp_avg_sq'].detach(),
                     p_slice.detach(),
+                    phase='post',
                 )
 
             if not pinfo['is_small']:

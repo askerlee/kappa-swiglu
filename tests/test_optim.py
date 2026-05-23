@@ -74,6 +74,37 @@ def test_adamw_nonfinite_error_reports_named_parameter_and_source(monkeypatch):
     assert 'updated index=(0,) value=nan' in message
 
 
+def test_adamw_nonfinite_error_reports_preexisting_state(monkeypatch):
+    param = torch.nn.Parameter(torch.ones(3, dtype=torch.float32))
+    param.grad = torch.ones_like(param)
+
+    optimizer = AuroraAdamW([
+        dict(
+            kind='adamw',
+            params=[param],
+            debug_param_names=['transformer.h.2.mlp.experts.gate_proj_bias'],
+            lr=0.1,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.0,
+        ),
+    ])
+    optimizer.state[param]['step'] = 1
+    optimizer.state[param]['exp_avg'] = torch.full_like(param, float('nan'))
+    optimizer.state[param]['exp_avg_sq'] = torch.zeros_like(param)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError('adamw_step_fused should not run when state is already non-finite')
+
+    monkeypatch.setattr(optim_module, 'adamw_step_fused', fail_if_called)
+
+    with pytest.raises(RuntimeError, match='AdamW received non-finite inputs/state') as exc_info:
+        optimizer.step()
+
+    message = str(exc_info.value)
+    assert 'exp_avg index=(0,) value=nan' in message
+
+
 def test_muon_group_update_changes_all_params():
     param_a = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10)
     param_b = torch.nn.Parameter(-param_a.detach().clone())
