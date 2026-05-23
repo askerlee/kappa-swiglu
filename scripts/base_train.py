@@ -208,6 +208,8 @@ parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
 parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=200,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
+parser.add_argument("--gate-proj-bias-delay-start-iteration-frac", type=float, default=0.1,
+                    help="fractional delay for gate_proj_bias LR start; the effective delay is max(--gate-proj-bias-delay-start-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
@@ -219,7 +221,7 @@ parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, defa
 # push the gate_proj_bias values towards 0 so that the slopes 
 # are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.5, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -305,6 +307,8 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
 
 if args.gate_proj_bias_delay_start_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.gate_proj_bias_delay_start_iteration_frac < 0:
+    raise ValueError("--gate-proj-bias-delay-start-iteration-frac must be >= 0")
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
@@ -701,6 +705,18 @@ print0(f"Total number of training tokens: {total_tokens:,}")
 print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_iterations / target_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 
+gate_proj_bias_delay_start_iterations = max(
+    args.gate_proj_bias_delay_start_iterations,
+    math.ceil(num_iterations * args.gate_proj_bias_delay_start_iteration_frac),
+)
+user_config["effective_gate_proj_bias_delay_start_iterations"] = gate_proj_bias_delay_start_iterations
+print0(
+    "Using gate_proj_bias LR delay start iterations: "
+    f"max({args.gate_proj_bias_delay_start_iterations}, "
+    f"ceil({num_iterations} * {args.gate_proj_bias_delay_start_iteration_frac:.6f})) "
+    f"= {gate_proj_bias_delay_start_iterations}"
+)
+
 # -----------------------------------------------------------------------------
 # Optimizer / data / training length related hyperparameters
 # figure out the needed gradient accumulation to reach the desired total batch size
@@ -764,7 +780,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
     gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
-    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_iterations,
+    gate_proj_bias_delay_start_iterations=gate_proj_bias_delay_start_iterations,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
@@ -1197,7 +1213,7 @@ while True:
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
         stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
-        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+        nolearn_iterations=0,
     )
     gate_proj_bias_scale_l2_loss_weight = (
         gate_proj_bias_l2_loss_weight * args.gate_proj_bias_scale_l2_loss_weight_scale
