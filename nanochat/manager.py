@@ -24,6 +24,8 @@ class MOEManager:
             "selected_scores": [],
             "gate_proj_bias_shift_abs_mean": [],
             "gate_proj_bias_shift_abs_mean_normalized": [],
+            "implicit_gate_proj_bias_top5p_mean": [],
+            "implicit_gate_proj_bias_bottom5p_mean": [],
         }
         self._tensor_var_capacity = 32
         self._drop_rate_buffer = None
@@ -42,14 +44,21 @@ class MOEManager:
         self._gate_proj_bias_shift_abs_mean_size = 0
         self._gate_proj_bias_shift_abs_mean_normalized_buffer = None
         self._gate_proj_bias_shift_abs_mean_normalized_size = 0
-        self.tensor_var_names = set(["drop_rate_per_ks", 
-                                     "expert_utilities",
-                                     "selected_scores",
-                                     "gate_proj_bias_shift_abs_top5p_mean",
-                                     "gate_proj_bias_shift_abs_bottom5p_mean",
-                                     "gate_grad_scale_mean",
-                                     "gate_proj_bias_shift_abs_mean",
-                                     "gate_proj_bias_shift_abs_mean_normalized"])
+        self._implicit_gate_proj_bias_top5p_mean_buffer = None
+        self._implicit_gate_proj_bias_top5p_mean_size = 0
+        self._implicit_gate_proj_bias_bottom5p_mean_buffer = None
+        self._implicit_gate_proj_bias_bottom5p_mean_size = 0
+        self.tensor_var_names = \
+        set(["drop_rate_per_ks", 
+             "expert_utilities",
+             "selected_scores",
+             "gate_proj_bias_shift_abs_top5p_mean",
+             "gate_proj_bias_shift_abs_bottom5p_mean",
+             "gate_grad_scale_mean",
+             "gate_proj_bias_shift_abs_mean",
+             "gate_proj_bias_shift_abs_mean_normalized",
+             "implicit_gate_proj_bias_top5p_mean",
+             "implicit_gate_proj_bias_bottom5p_mean"])
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
@@ -75,6 +84,12 @@ class MOEManager:
             return
         if name == "gate_proj_bias_shift_abs_mean_normalized":
             self._gate_proj_bias_shift_abs_mean_normalized_size = 0
+            return
+        if name == "implicit_gate_proj_bias_top5p_mean":
+            self._implicit_gate_proj_bias_top5p_mean_size = 0
+            return
+        if name == "implicit_gate_proj_bias_bottom5p_mean":
+            self._implicit_gate_proj_bias_bottom5p_mean_size = 0
             return
         self._values[name] = []
 
@@ -188,6 +203,34 @@ class MOEManager:
                 ].copy_(value.reshape(1))
                 self._gate_proj_bias_shift_abs_mean_normalized_size = new_size
             return
+        if name == "implicit_gate_proj_bias_top5p_mean":
+            with torch.inference_mode(False):
+                if self._implicit_gate_proj_bias_top5p_mean_buffer is None:
+                    self._implicit_gate_proj_bias_top5p_mean_buffer = torch.empty(
+                        (self._tensor_var_capacity,),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._implicit_gate_proj_bias_top5p_mean_size + 1
+                self._implicit_gate_proj_bias_top5p_mean_buffer[
+                    self._implicit_gate_proj_bias_top5p_mean_size:new_size
+                ].copy_(value.reshape(1))
+                self._implicit_gate_proj_bias_top5p_mean_size = new_size
+            return
+        if name == "implicit_gate_proj_bias_bottom5p_mean":
+            with torch.inference_mode(False):
+                if self._implicit_gate_proj_bias_bottom5p_mean_buffer is None:
+                    self._implicit_gate_proj_bias_bottom5p_mean_buffer = torch.empty(
+                        (self._tensor_var_capacity,),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._implicit_gate_proj_bias_bottom5p_mean_size + 1
+                self._implicit_gate_proj_bias_bottom5p_mean_buffer[
+                    self._implicit_gate_proj_bias_bottom5p_mean_size:new_size
+                ].copy_(value.reshape(1))
+                self._implicit_gate_proj_bias_bottom5p_mean_size = new_size
+            return
         self._values[name].append(value)
 
     def aggregate(self, name):
@@ -247,6 +290,26 @@ class MOEManager:
                 return None
             values = self._gate_proj_bias_shift_abs_mean_normalized_buffer[
                 :self._gate_proj_bias_shift_abs_mean_normalized_size
+            ]
+            return values
+        elif name == "implicit_gate_proj_bias_top5p_mean":
+            if (
+                self._implicit_gate_proj_bias_top5p_mean_buffer is None
+                or self._implicit_gate_proj_bias_top5p_mean_size == 0
+            ):
+                return None
+            values = self._implicit_gate_proj_bias_top5p_mean_buffer[
+                :self._implicit_gate_proj_bias_top5p_mean_size
+            ]
+            return values
+        elif name == "implicit_gate_proj_bias_bottom5p_mean":
+            if (
+                self._implicit_gate_proj_bias_bottom5p_mean_buffer is None
+                or self._implicit_gate_proj_bias_bottom5p_mean_size == 0
+            ):
+                return None
+            values = self._implicit_gate_proj_bias_bottom5p_mean_buffer[
+                :self._implicit_gate_proj_bias_bottom5p_mean_size
             ]
             return values
         else:

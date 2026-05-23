@@ -1312,7 +1312,45 @@ class Qwen3MLPExperts(nn.Module):
         ).sum() / total_active_tokens_sqrt
         MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
 
-    def forward(self, x, selected_router_scores=None):
+    @torch._dynamo.disable
+    def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
+        if (
+            not MANAGER.collect_load_balancing_stats
+            or selected_router_scores is None
+            or router_weight is None
+        ):
+            return
+
+        active_mask = selected_router_scores.detach().float().abs() > 0
+        if not active_mask.any():
+            return
+
+        x = x.detach().float()
+        router_weight = torch.nn.functional.normalize(router_weight.detach().float(), dim=1, eps=1e-12)
+        exp_gate_parallel_coeff = (self.gate_proj.detach().float() * router_weight.unsqueeze(-1)).sum(dim=1)
+        input_parallel = (x * router_weight.unsqueeze(1)).sum(dim=2)
+        MANAGER.add(
+            "implicit_gate_proj_bias_top5p_mean",
+            _mean_extreme_outer_product_percentile_per_row(
+                input_parallel,
+                exp_gate_parallel_coeff,
+                active_mask,
+                fraction=0.05,
+                largest=True,
+            ).detach(),
+        )
+        MANAGER.add(
+            "implicit_gate_proj_bias_bottom5p_mean",
+            _mean_extreme_outer_product_percentile_per_row(
+                input_parallel,
+                exp_gate_parallel_coeff,
+                active_mask,
+                fraction=0.05,
+                largest=False,
+            ).detach(),
+        )
+
+    def forward(self, x, selected_router_scores=None, router_weight=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
@@ -1334,6 +1372,7 @@ class Qwen3MLPExperts(nn.Module):
                 self._accumulate_gate_proj_bias_scale_l2_losses(gate_proj_bias_scale)
             # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
+            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
                 gate_out_raw,
                 slope_scales,
@@ -1459,7 +1498,11 @@ class MOELayer(nn.Module):
         )
 
         # --- Run experts ---
-        expert_outputs = self.experts(expert_inputs, selected_router_scores=expert_router_scores) # [n_exp, exp_capacity, C]
+        expert_outputs = self.experts(
+            expert_inputs,
+            selected_router_scores=expert_router_scores,
+            router_weight=self.router.w_g.weight,
+        ) # [n_exp, exp_capacity, C]
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = self._combine_expert_outputs(
@@ -2089,6 +2132,8 @@ class GPT(nn.Module):
                    'gate_proj_bias_shift_abs_bottom5p_mean': 0,
                    'gate_proj_bias_shift_abs_mean': 0,
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
+                   'implicit_gate_proj_bias_top5p_mean': 0,
+                   'implicit_gate_proj_bias_bottom5p_mean': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -2140,6 +2185,20 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
+        implicit_gate_proj_bias_top5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_top5p_mean")
+        losses['implicit_gate_proj_bias_top5p_mean'] = (
+            implicit_gate_proj_bias_top5p_mean.detach()
+            if implicit_gate_proj_bias_top5p_mean is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("implicit_gate_proj_bias_top5p_mean")
+        implicit_gate_proj_bias_bottom5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_bottom5p_mean")
+        losses['implicit_gate_proj_bias_bottom5p_mean'] = (
+            implicit_gate_proj_bias_bottom5p_mean.detach()
+            if implicit_gate_proj_bias_bottom5p_mean is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("implicit_gate_proj_bias_bottom5p_mean")
         gate_proj_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
@@ -2173,6 +2232,16 @@ class GPT(nn.Module):
             if gate_proj_bias_shift_abs_mean_normalized is not None and gate_proj_bias_shift_abs_mean_normalized.ndim > 0
             else 0
         )
+        implicit_gate_proj_bias_top5p_count = (
+            losses['implicit_gate_proj_bias_top5p_mean'].shape[0]
+            if losses['implicit_gate_proj_bias_top5p_mean'].ndim > 0
+            else 0
+        )
+        implicit_gate_proj_bias_bottom5p_count = (
+            losses['implicit_gate_proj_bias_bottom5p_mean'].shape[0]
+            if losses['implicit_gate_proj_bias_bottom5p_mean'].ndim > 0
+            else 0
+        )
         for layer_idx, gate_proj_bias_stats_idx in gate_proj_bias_layer_to_stats_idx.items():
             if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_count:
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
@@ -2189,6 +2258,14 @@ class GPT(nn.Module):
             if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_bottom5p_count:
                 losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_bottom5p_mean[gate_proj_bias_stats_idx].item()
+                )
+            if gate_proj_bias_stats_idx < implicit_gate_proj_bias_top5p_count:
+                losses[f'implicit_gate_proj_bias_top5p_mean_{layer_idx}'] = (
+                    losses['implicit_gate_proj_bias_top5p_mean'][gate_proj_bias_stats_idx].item()
+                )
+            if gate_proj_bias_stats_idx < implicit_gate_proj_bias_bottom5p_count:
+                losses[f'implicit_gate_proj_bias_bottom5p_mean_{layer_idx}'] = (
+                    losses['implicit_gate_proj_bias_bottom5p_mean'][gate_proj_bias_stats_idx].item()
                 )
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
