@@ -1820,6 +1820,10 @@ while True:
                 log_data.update({f"inspect/entropy_gate_{i}": losses[f'entropy_gate_{i}']})
             if f'router_weight_exp_gate_alignment_{i}' in losses:
                 log_data.update({f"inspect/router_weight_exp_gate_alignment_{i}": losses[f'router_weight_exp_gate_alignment_{i}']})
+            if f'router_weight_exp_gate_alignment_top5p_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_gate_alignment_top5p_{i}": losses[f'router_weight_exp_gate_alignment_top5p_{i}']})
+            if f'router_weight_exp_gate_alignment_bottom5p_{i}' in losses:
+                log_data.update({f"inspect/router_weight_exp_gate_alignment_bottom5p_{i}": losses[f'router_weight_exp_gate_alignment_bottom5p_{i}']})
             if f'router_grad_norm_top_{i}' in losses:
                 log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
             if f'router_grad_norm_bottom_{i}' in losses:
