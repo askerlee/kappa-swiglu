@@ -1009,6 +1009,7 @@ class Qwen3MLPExperts(nn.Module):
         self.use_gate_proj_bias = bool(getattr(config, 'use_gate_proj_bias', False)) and (
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
+        self.log_implicit_gate_proj_bias = bool(getattr(config, 'log_implicit_gate_proj_bias', False))
         self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_gate_proj_bias = None
         self._shared_gate_proj_bias_scale = None
@@ -1316,6 +1317,7 @@ class Qwen3MLPExperts(nn.Module):
     def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
         if (
             not MANAGER.collect_load_balancing_stats
+            or not self.log_implicit_gate_proj_bias
             or selected_router_scores is None
             or router_weight is None
         ):
@@ -1356,7 +1358,7 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        if selected_router_scores is not None:
+        if selected_router_scores is not None and self.use_gate_proj_bias:
             gate_proj_bias = self._materialize_gate_proj_bias()
             scaled_selected_router_scores = scale_grad(
                 selected_router_scores,
@@ -1372,13 +1374,14 @@ class Qwen3MLPExperts(nn.Module):
                 self._accumulate_gate_proj_bias_scale_l2_losses(gate_proj_bias_scale)
             # slope_scales: [n_exp, capacity, intermediate_size]
             self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
-            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
             gate_out_acts = self._apply_gate_slope_scaled_activation(
                 gate_out_raw,
                 slope_scales,
             )
         else:
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
+        if selected_router_scores is not None:
+            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
         self._update_gate_stats(gate_out_acts)
 
         fc_out = torch.bmm(x, self.c_fc)
@@ -2200,15 +2203,21 @@ class GPT(nn.Module):
         )
         MANAGER.reset("implicit_gate_proj_bias_bottom5p_mean")
         gate_proj_bias_layer_indices = []
+        implicit_gate_proj_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
                 gate_proj_bias_layer_indices.append(layer_idx)
+            if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_gate_proj_bias:
+                implicit_gate_proj_bias_layer_indices.append(layer_idx)
             elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_gate_proj_bias', mlp.use_gate_proj_bias):
                 gate_proj_bias_layer_indices.append(layer_idx)
         gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)
+        }
+        implicit_gate_proj_bias_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
         }
         gate_proj_bias_shift_abs_top5p_mean = losses['gate_proj_bias_shift_abs_top5p_mean']
         gate_proj_bias_shift_abs_bottom5p_mean = losses['gate_proj_bias_shift_abs_bottom5p_mean']
@@ -2259,13 +2268,14 @@ class GPT(nn.Module):
                 losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
                     gate_proj_bias_shift_abs_bottom5p_mean[gate_proj_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < implicit_gate_proj_bias_top5p_count:
+        for layer_idx, implicit_stats_idx in implicit_gate_proj_bias_layer_to_stats_idx.items():
+            if implicit_stats_idx < implicit_gate_proj_bias_top5p_count:
                 losses[f'implicit_gate_proj_bias_top5p_mean_{layer_idx}'] = (
-                    losses['implicit_gate_proj_bias_top5p_mean'][gate_proj_bias_stats_idx].item()
+                    losses['implicit_gate_proj_bias_top5p_mean'][implicit_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < implicit_gate_proj_bias_bottom5p_count:
+            if implicit_stats_idx < implicit_gate_proj_bias_bottom5p_count:
                 losses[f'implicit_gate_proj_bias_bottom5p_mean_{layer_idx}'] = (
-                    losses['implicit_gate_proj_bias_bottom5p_mean'][gate_proj_bias_stats_idx].item()
+                    losses['implicit_gate_proj_bias_bottom5p_mean'][implicit_stats_idx].item()
                 )
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)

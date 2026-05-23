@@ -233,6 +233,8 @@ parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="pe
                     help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--gate-proj-bias-start-layer", type=int, default=2,
                     help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-dense-layers)")
+parser.add_argument("--log-implicit-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+                    help="log the implicit gate proj bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-gate-proj-bias")
 parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 # With slope scaling always enabled, --gate-proj-bias-lr-final-scale
@@ -523,6 +525,7 @@ def build_model_meta(depth):
         constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
+        log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
         gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg,
         gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta,
         gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start,

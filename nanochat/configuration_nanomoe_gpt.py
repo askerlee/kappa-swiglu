@@ -31,6 +31,7 @@ class GPTConfig:
         constant_gate_proj_bias_dense_layers: bool = False,
         global_gate_proj_bias_granularity: str = "per-gate",
         gate_proj_bias_start_layer: int = 0,
+        log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
@@ -110,6 +111,7 @@ class GPTConfig:
             raise ValueError(
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
             )
+        self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
         self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
         self.gate_proj_bias_ema_rms_reg = bool(gate_proj_bias_ema_rms_reg)
         self.gate_proj_bias_l2_ema_beta = float(gate_proj_bias_l2_ema_beta)
