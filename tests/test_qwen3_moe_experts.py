@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, MANAGER, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
+from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():
@@ -517,7 +517,7 @@ def test_gate_proj_bias_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
 
 
 def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_input():
-    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+    keeper = GateProjBiasEmaTargetKeeper(
         beta=0.99,
         anchor_start=0.0,
         anchor_end=1.0,
@@ -529,7 +529,7 @@ def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_input():
 
 
 def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss():
-    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+    keeper = GateProjBiasEmaTargetKeeper(
         beta=0.99,
         anchor_start=0.0,
         anchor_end=1.0,
@@ -557,7 +557,7 @@ def test_gate_proj_bias_ema_target_error_includes_module_source():
 
 
 def test_gate_proj_bias_ema_target_loss_has_finite_gradient_at_zero():
-    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+    keeper = GateProjBiasEmaTargetKeeper(
         beta=0.99,
         anchor_start=0.0,
         anchor_end=1.0,

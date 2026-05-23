@@ -726,80 +726,81 @@ class MLPExperts(nn.Module):
         proj_out = torch.bmm(x, self.c_proj)
         return proj_out
 
-# Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
-class Qwen3MLP(nn.Module):
-    class GateProjBiasEmaTargetKeeper(nn.Module):
-        rms_eps = 1e-12
 
-        def __init__(self, beta, anchor_start, anchor_end, floor_frac):
-            super().__init__()
-            self.beta = float(beta)
-            self.anchor_start = float(anchor_start)
-            self.anchor_end = float(anchor_end)
-            self.floor_frac = float(floor_frac)
-            self.register_buffer("ema_rms", torch.zeros(()))
-            self.register_buffer("target_rms", torch.zeros(()))
-            self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
-            self.register_buffer("target_ready", torch.zeros((), dtype=torch.bool))
-            self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
+class GateProjBiasEmaTargetKeeper(nn.Module):
+    rms_eps = 1e-12
 
-        def _raise_if_nonfinite(self, tensor, label, source=None):
-            if torch.isfinite(tensor).all():
-                return
-            bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
-            index = tuple(int(i) for i in bad[0].tolist()) if bad.numel() > 0 else ()
-            value = tensor[index] if index else tensor
-            scalar_value = float(value.item()) if value.numel() == 1 else str(value)
-            source_suffix = "" if source is None else f" from {source}"
-            raise RuntimeError(
-                f"GateProjBiasEmaTargetKeeper observed non-finite {label}{source_suffix} at index {index}: {scalar_value}"
-            )
+    def __init__(self, beta, anchor_start, anchor_end, floor_frac):
+        super().__init__()
+        self.beta = float(beta)
+        self.anchor_start = float(anchor_start)
+        self.anchor_end = float(anchor_end)
+        self.floor_frac = float(floor_frac)
+        self.register_buffer("ema_rms", torch.zeros(()))
+        self.register_buffer("target_rms", torch.zeros(()))
+        self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
+        self.register_buffer("target_ready", torch.zeros((), dtype=torch.bool))
+        self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
 
-        def _compute_rms(self, value):
-            mean_sq = value.float().square().mean()
-            return (mean_sq + self.rms_eps).sqrt()
+    def _raise_if_nonfinite(self, tensor, label, source=None):
+        if torch.isfinite(tensor).all():
+            return
+        bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
+        index = tuple(int(i) for i in bad[0].tolist()) if bad.numel() > 0 else ()
+        value = tensor[index] if index else tensor
+        scalar_value = float(value.item()) if value.numel() == 1 else str(value)
+        source_suffix = "" if source is None else f" from {source}"
+        raise RuntimeError(
+            f"GateProjBiasEmaTargetKeeper observed non-finite {label}{source_suffix} at index {index}: {scalar_value}"
+        )
 
-        def set_total_iterations(self, total_iterations):
-            self.total_iterations.fill_(max(int(total_iterations), 1))
+    def _compute_rms(self, value):
+        mean_sq = value.float().square().mean()
+        return (mean_sq + self.rms_eps).sqrt()
 
-        def _resolve_anchor_steps(self):
-            total_iterations = max(int(self.total_iterations.item()), 1)
-            anchor_start = min(max(math.ceil(total_iterations * self.anchor_start), 0), total_iterations)
-            anchor_end = min(max(math.ceil(total_iterations * self.anchor_end), 0), total_iterations)
-            return anchor_start, anchor_end
+    def set_total_iterations(self, total_iterations):
+        self.total_iterations.fill_(max(int(total_iterations), 1))
 
-        @torch.no_grad()
-        def update(self, value, step, source=None):
-            self._raise_if_nonfinite(value, "value", source=source)
-            rms = self._compute_rms(value.detach())
-            self._raise_if_nonfinite(rms, "rms", source=source)
-            if not bool(self.initialized.item()):
-                self.ema_rms.copy_(rms)
-                self.initialized.fill_(True)
-            else:
-                self.ema_rms.mul_(self.beta).add_(rms, alpha=1.0 - self.beta)
-            self._raise_if_nonfinite(self.ema_rms, "ema_rms", source=source)
-            anchor_start, anchor_end = self._resolve_anchor_steps()
-            if anchor_start <= step <= anchor_end:
-                self.target_rms.copy_(self.ema_rms)
-                self.target_ready.fill_(True)
-            self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
+    def _resolve_anchor_steps(self):
+        total_iterations = max(int(self.total_iterations.item()), 1)
+        anchor_start = min(max(math.ceil(total_iterations * self.anchor_start), 0), total_iterations)
+        anchor_end = min(max(math.ceil(total_iterations * self.anchor_end), 0), total_iterations)
+        return anchor_start, anchor_end
 
-        def loss(self, value, source=None):
-            self._raise_if_nonfinite(value, "value", source=source)
-            if not bool(self.target_ready.item()):
-                loss = value.new_zeros((), dtype=torch.float32)
-                self._raise_if_nonfinite(loss, "loss", source=source)
-                return loss
-            value_f = value.float()
-            current_rms = self._compute_rms(value_f)
-            self._raise_if_nonfinite(current_rms, "current_rms", source=source)
-            floor = self.target_rms.detach() * self.floor_frac
-            self._raise_if_nonfinite(floor, "floor", source=source)
-            loss = torch.relu(floor - current_rms).square()
+    @torch.no_grad()
+    def update(self, value, step, source=None):
+        self._raise_if_nonfinite(value, "value", source=source)
+        rms = self._compute_rms(value.detach())
+        self._raise_if_nonfinite(rms, "rms", source=source)
+        if not bool(self.initialized.item()):
+            self.ema_rms.copy_(rms)
+            self.initialized.fill_(True)
+        else:
+            self.ema_rms.mul_(self.beta).add_(rms, alpha=1.0 - self.beta)
+        self._raise_if_nonfinite(self.ema_rms, "ema_rms", source=source)
+        anchor_start, anchor_end = self._resolve_anchor_steps()
+        if anchor_start <= step <= anchor_end:
+            self.target_rms.copy_(self.ema_rms)
+            self.target_ready.fill_(True)
+        self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
+
+    def loss(self, value, source=None):
+        self._raise_if_nonfinite(value, "value", source=source)
+        if not bool(self.target_ready.item()):
+            loss = value.new_zeros((), dtype=torch.float32)
             self._raise_if_nonfinite(loss, "loss", source=source)
             return loss
+        value_f = value.float()
+        current_rms = self._compute_rms(value_f)
+        self._raise_if_nonfinite(current_rms, "current_rms", source=source)
+        floor = self.target_rms.detach() * self.floor_frac
+        self._raise_if_nonfinite(floor, "floor", source=source)
+        loss = torch.relu(floor - current_rms).square()
+        self._raise_if_nonfinite(loss, "loss", source=source)
+        return loss
 
+# Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
+class Qwen3MLP(nn.Module):
     def __init__(self, config, layer_idx=None):
         super().__init__()
         self.layer_idx = layer_idx
@@ -836,14 +837,14 @@ class Qwen3MLP(nn.Module):
             else:
                 self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
             if self.gate_proj_bias_ema_rms_reg:
-                keeper = self.GateProjBiasEmaTargetKeeper(
+                keeper = GateProjBiasEmaTargetKeeper(
                     beta=getattr(config, 'gate_proj_bias_l2_ema_beta', 0.99),
                     anchor_start=getattr(config, 'gate_proj_bias_l2_ema_anchor_start', 0.4),
                     anchor_end=getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
                     floor_frac=getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
                 )
                 self.gate_proj_bias_ema_rms_reg_keeper = keeper
-                self.gate_proj_bias_scale_ema_rms_reg_keeper = self.GateProjBiasEmaTargetKeeper(
+                self.gate_proj_bias_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(
                     beta=keeper.beta,
                     anchor_start=keeper.anchor_start,
                     anchor_end=keeper.anchor_end,
@@ -1036,9 +1037,9 @@ class Qwen3MLPExperts(nn.Module):
                     'anchor_end': getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
                     'floor_frac': getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
                 }
-                self.gate_proj_bias_ema_rms_reg_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                self.gate_proj_bias_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
                 if self.use_gate_proj_bias_scale:
-                    self.gate_proj_bias_scale_ema_rms_reg_keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                    self.gate_proj_bias_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
         else:
             self.register_parameter('gate_proj_bias', None)
             self.register_parameter('gate_proj_bias_scale', None)
