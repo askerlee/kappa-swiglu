@@ -1055,6 +1055,15 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         row_norm = weight.norm(dim=2).clamp_min(1e-12)
         return row_mean_component_norm / row_norm
 
+    def mean_top_bottom_frac(values, frac=0.05):
+        flat_values = values.reshape(-1)
+        if flat_values.numel() == 0:
+            return None, None
+        count = max(1, math.ceil(flat_values.numel() * frac))
+        top_mean = torch.topk(flat_values, k=count, largest=True).values.mean()
+        bottom_mean = torch.topk(flat_values, k=count, largest=False).values.mean()
+        return top_mean, bottom_mean
+
     router_grad_norms = []
     router_row_norms = []
     router_grad_self_alignments = []
@@ -1120,6 +1129,17 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_weight_exp_gate_alignments.append(rw_ew_alignment)
                 mean_rw_ew_alignment = rw_ew_alignment.mean().item()
                 losses[f'router_weight_exp_gate_alignment_{i}'] = mean_rw_ew_alignment
+
+                exp_gate_weight_alignment = (exp_gate_weight * router_weight.unsqueeze(2)).sum(dim=1) / (
+                    router_weight.norm(dim=1, keepdim=True)
+                    * exp_gate_weight.norm(dim=1).clamp_min(1e-10)
+                )  # [n_exp, intermediate_size]
+                top_exp_gate_weight_alignment, bottom_exp_gate_weight_alignment = mean_top_bottom_frac(
+                    exp_gate_weight_alignment,
+                    frac=0.05,
+                )
+                losses[f'router_weight_exp_gate_alignment_top5p_{i}'] = top_exp_gate_weight_alignment.item()
+                losses[f'router_weight_exp_gate_alignment_bottom5p_{i}'] = bottom_exp_gate_weight_alignment.item()
 
                 router_weight_unit = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
                 exp_gate_parallel = (exp_gate_weight * router_weight_unit.unsqueeze(2)).sum(dim=1, keepdim=True)
