@@ -479,6 +479,154 @@ def test_gate_proj_bias_l2_losses_are_reported_from_gate_proj_biases():
     )
 
 
+def test_gate_proj_bias_l2_loss_can_use_anchored_ema_floor_target():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_l2_ema_beta=0.99,
+        gate_proj_bias_l2_ema_anchor_start=0.0,
+        gate_proj_bias_l2_ema_anchor_end=0.0,
+        gate_proj_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    MANAGER.reset("gate_proj_bias_l2_loss")
+    experts.set_gate_proj_bias_l2_target_total_iterations(1)
+    experts.set_gate_proj_bias_l2_target_step(0)
+    experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), 2.0))
+    first_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_l2_loss")
+
+    experts.set_gate_proj_bias_l2_target_step(1)
+    experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), 0.5))
+    second_loss = MANAGER.aggregate("gate_proj_bias_l2_loss")
+    MANAGER.reset("gate_proj_bias_l2_loss")
+
+    torch.testing.assert_close(first_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.5) ** 2))
+
+
+def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_input="router_probs",
+        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_l2_ema_beta=0.99,
+        gate_proj_bias_l2_ema_anchor_start=0.0,
+        gate_proj_bias_l2_ema_anchor_end=0.0,
+        gate_proj_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    experts.set_gate_proj_bias_l2_target_total_iterations(1)
+    experts.set_gate_proj_bias_l2_target_step(0)
+    experts._accumulate_gate_proj_bias_scale_l2_losses(torch.full((2, 16), 2.0))
+    first_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+
+    experts.set_gate_proj_bias_l2_target_step(1)
+    experts._accumulate_gate_proj_bias_scale_l2_losses(torch.full((2, 16), 0.25))
+    second_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+
+    torch.testing.assert_close(first_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.25) ** 2))
+
+
+def test_dense_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
+    config = GPTConfig(
+        n_embd=4,
+        use_gate_proj_bias=True,
+        constant_gate_proj_bias_dense_layers=True,
+        gate_proj_bias_input="constant",
+        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_l2_ema_beta=0.99,
+        gate_proj_bias_l2_ema_anchor_start=0.0,
+        gate_proj_bias_l2_ema_anchor_end=0.0,
+        gate_proj_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    mlp = Qwen3MLP(config)
+
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+    mlp.set_gate_proj_bias_l2_target_total_iterations(1)
+    mlp.set_gate_proj_bias_l2_target_step(0)
+    mlp._accumulate_gate_proj_bias_scale_l2_losses(torch.full((16,), 2.0))
+    first_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+
+    mlp.set_gate_proj_bias_l2_target_step(1)
+    mlp._accumulate_gate_proj_bias_scale_l2_losses(torch.full((16,), 0.25))
+    second_loss = MANAGER.aggregate("gate_proj_bias_scale_l2_loss")
+    MANAGER.reset("gate_proj_bias_scale_l2_loss")
+
+    torch.testing.assert_close(first_loss, torch.tensor(0.0))
+    torch.testing.assert_close(second_loss, torch.tensor((1.6 - 0.25) ** 2))
+
+
+def test_gate_proj_bias_ema_target_buffers_load_from_older_checkpoints():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_gate_proj_bias=True,
+        gate_proj_bias_l2_target="ema",
+        debug=False,
+    )
+    model = GPT(config)
+    state_dict = {
+        name: value
+        for name, value in model.state_dict().items()
+        if "l2_target_keeper" not in name
+    }
+
+    load_result = model.load_state_dict(state_dict, strict=True)
+
+    assert not load_result.missing_keys
+    assert not load_result.unexpected_keys
+    experts = model.transformer.h[1].mlp.experts
+    assert torch.equal(experts.gate_proj_bias_l2_target_keeper.ema_rms, torch.zeros(()))
+    assert torch.equal(experts.gate_proj_bias_scale_l2_target_keeper.ema_rms, torch.zeros(()))
+    assert not bool(experts.gate_proj_bias_l2_target_keeper.initialized.item())
+    assert not bool(experts.gate_proj_bias_scale_l2_target_keeper.initialized.item())
+
+
+def test_gate_proj_bias_ema_anchor_fractions_resolve_against_total_iterations():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_l2_target="ema",
+        gate_proj_bias_l2_ema_beta=0.99,
+        gate_proj_bias_l2_ema_anchor_start=0.4,
+        gate_proj_bias_l2_ema_anchor_end=0.8,
+        gate_proj_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    experts.set_gate_proj_bias_l2_target_total_iterations(10)
+
+    anchor_start, anchor_end = experts.gate_proj_bias_l2_target_keeper._resolve_anchor_steps()
+
+    assert anchor_start == 4
+    assert anchor_end == 8
+
+
 def test_gate_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     config = GPTConfig(
         n_exp=2,

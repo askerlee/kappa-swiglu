@@ -34,6 +34,11 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         gate_proj_bias_l2_loss_weight: float = 0.0,
+        gate_proj_bias_l2_target: str = "zero",
+        gate_proj_bias_l2_ema_beta: float = 0.99,
+        gate_proj_bias_l2_ema_anchor_start: float = 0.4,
+        gate_proj_bias_l2_ema_anchor_end: float = 0.8,
+        gate_proj_bias_l2_ema_floor_frac: float = 0.8,
         refresh_gate_proj_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
@@ -106,6 +111,42 @@ class GPTConfig:
                 f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
             )
         self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
+        valid_gate_proj_bias_l2_targets = {"zero", "ema"}
+        if gate_proj_bias_l2_target not in valid_gate_proj_bias_l2_targets:
+            raise ValueError(
+                "gate_proj_bias_l2_target must be one of "
+                f"{sorted(valid_gate_proj_bias_l2_targets)}, got {gate_proj_bias_l2_target!r}"
+            )
+        self.gate_proj_bias_l2_target = gate_proj_bias_l2_target
+        self.gate_proj_bias_l2_ema_beta = float(gate_proj_bias_l2_ema_beta)
+        if not (0.0 <= self.gate_proj_bias_l2_ema_beta < 1.0):
+            raise ValueError(
+                "gate_proj_bias_l2_ema_beta must satisfy 0 <= beta < 1, got "
+                f"{gate_proj_bias_l2_ema_beta}"
+            )
+        self.gate_proj_bias_l2_ema_anchor_start = float(gate_proj_bias_l2_ema_anchor_start)
+        self.gate_proj_bias_l2_ema_anchor_end = float(gate_proj_bias_l2_ema_anchor_end)
+        if not (0.0 <= self.gate_proj_bias_l2_ema_anchor_start <= 1.0):
+            raise ValueError(
+                "gate_proj_bias_l2_ema_anchor_start must satisfy 0 <= start <= 1, got "
+                f"{gate_proj_bias_l2_ema_anchor_start}"
+            )
+        if not (0.0 <= self.gate_proj_bias_l2_ema_anchor_end <= 1.0):
+            raise ValueError(
+                "gate_proj_bias_l2_ema_anchor_end must satisfy 0 <= end <= 1, got "
+                f"{gate_proj_bias_l2_ema_anchor_end}"
+            )
+        if self.gate_proj_bias_l2_ema_anchor_end < self.gate_proj_bias_l2_ema_anchor_start:
+            raise ValueError(
+                "gate_proj_bias_l2_ema_anchor_end must be >= gate_proj_bias_l2_ema_anchor_start, got "
+                f"start={gate_proj_bias_l2_ema_anchor_start}, end={gate_proj_bias_l2_ema_anchor_end}"
+            )
+        self.gate_proj_bias_l2_ema_floor_frac = float(gate_proj_bias_l2_ema_floor_frac)
+        if self.gate_proj_bias_l2_ema_floor_frac < 0.0:
+            raise ValueError(
+                "gate_proj_bias_l2_ema_floor_frac must be >= 0, got "
+                f"{gate_proj_bias_l2_ema_floor_frac}"
+            )
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:

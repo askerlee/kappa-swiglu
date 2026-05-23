@@ -214,6 +214,16 @@ parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
                     help="L2 weight on gate_proj_bias and gate_proj_bias_scale values")
+parser.add_argument("--gate-proj-bias-l2-target", type=str, default="zero", choices=["zero", "ema"],
+                    help="target used by gate_proj_bias and gate_proj_bias_scale magnitude losses: zero, or an anchored EMA RMS floor target")
+parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99,
+                    help="EMA beta for --gate-proj-bias-l2-target=ema")
+parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4,
+                    help="fraction of total iterations where EMA RMS starts updating the anchored gate_proj_bias L2 target")
+parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.8,
+                    help="fraction of total iterations where EMA RMS stops updating the anchored gate_proj_bias L2 target")
+parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.8,
+                    help="floor fraction applied to the anchored EMA RMS target when --gate-proj-bias-l2-target=ema")
 parser.add_argument("--gate-proj-bias-scale-l2-loss-weight-scale", type=float, default=2.0,
                     help="multiplier applied to --gate-proj-bias-l2-loss-weight when weighting gate_proj_bias_scale L2 loss")
 parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
@@ -313,6 +323,18 @@ if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
     raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
+if not (0.0 <= args.gate_proj_bias_l2_ema_beta < 1.0):
+    raise ValueError("--gate-proj-bias-l2-ema-beta must satisfy 0 <= beta < 1")
+if not (0.0 <= args.gate_proj_bias_l2_ema_anchor_start <= 1.0):
+    raise ValueError("--gate-proj-bias-l2-ema-anchor-start must satisfy 0 <= start <= 1")
+if args.gate_proj_bias_l2_ema_anchor_end < args.gate_proj_bias_l2_ema_anchor_start:
+    raise ValueError(
+        "--gate-proj-bias-l2-ema-anchor-end must be >= --gate-proj-bias-l2-ema-anchor-start"
+    )
+if args.gate_proj_bias_l2_ema_anchor_end > 1.0:
+    raise ValueError("--gate-proj-bias-l2-ema-anchor-end must satisfy 0 <= end <= 1")
+if args.gate_proj_bias_l2_ema_floor_frac < 0.0:
+    raise ValueError("--gate-proj-bias-l2-ema-floor-frac must be >= 0")
 
 # Aurora and gate-proj-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
@@ -467,6 +489,11 @@ def build_model_meta(depth):
         constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
         global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
         gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
+        gate_proj_bias_l2_target=args.gate_proj_bias_l2_target,
+        gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta,
+        gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start,
+        gate_proj_bias_l2_ema_anchor_end=args.gate_proj_bias_l2_ema_anchor_end,
+        gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -704,6 +731,7 @@ total_tokens = total_batch_size * num_iterations
 print0(f"Total number of training tokens: {total_tokens:,}")
 print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_iterations / target_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
+orig_model.set_gate_proj_bias_l2_target_total_iterations(num_iterations)
 
 gate_proj_bias_delay_start_iterations = max(
     args.gate_proj_bias_delay_start_iterations,
@@ -1514,6 +1542,7 @@ while True:
         t0 = time.time()
         step_losses = None
         training_model = orig_model if run_eager_training_step_after_core_eval else model
+        orig_model.set_gate_proj_bias_l2_target_step(step)
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
             MANAGER.collect_backward_stats = (
