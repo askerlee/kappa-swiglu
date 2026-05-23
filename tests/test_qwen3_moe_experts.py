@@ -534,6 +534,20 @@ def test_gate_proj_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss
         keeper.loss(torch.tensor([1.0]))
 
 
+def test_gate_proj_bias_ema_target_error_includes_module_source():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_gate_proj_bias=True,
+        gate_proj_bias_l2_target="ema",
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config, layer_idx=3)
+
+    with pytest.raises(RuntimeError, match=r"Qwen3MLPExperts\(layer=3, granularity=per-gate\)\.gate_proj_bias"):
+        experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), float('nan')))
+
+
 def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
     config = GPTConfig(
         n_exp=2,

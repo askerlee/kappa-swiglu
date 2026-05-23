@@ -740,15 +740,16 @@ class Qwen3MLP(nn.Module):
             self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
             self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
 
-        def _raise_if_nonfinite(self, tensor, label):
+        def _raise_if_nonfinite(self, tensor, label, source=None):
             if torch.isfinite(tensor).all():
                 return
             bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
             index = tuple(int(i) for i in bad[0].tolist()) if bad.numel() > 0 else ()
             value = tensor[index] if index else tensor
             scalar_value = float(value.item()) if value.numel() == 1 else str(value)
+            source_suffix = "" if source is None else f" from {source}"
             raise RuntimeError(
-                f"GateProjBiasEmaTargetKeeper observed non-finite {label} at index {index}: {scalar_value}"
+                f"GateProjBiasEmaTargetKeeper observed non-finite {label}{source_suffix} at index {index}: {scalar_value}"
             )
 
         def set_total_iterations(self, total_iterations):
@@ -761,33 +762,34 @@ class Qwen3MLP(nn.Module):
             return anchor_start, anchor_end
 
         @torch.no_grad()
-        def update(self, value, step):
-            self._raise_if_nonfinite(value, "value")
+        def update(self, value, step, source=None):
+            self._raise_if_nonfinite(value, "value", source=source)
             rms = value.detach().float().square().mean().sqrt()
-            self._raise_if_nonfinite(rms, "rms")
+            self._raise_if_nonfinite(rms, "rms", source=source)
             if not bool(self.initialized.item()):
                 self.ema_rms.copy_(rms)
                 self.initialized.fill_(True)
             else:
                 self.ema_rms.mul_(self.beta).add_(rms, alpha=1.0 - self.beta)
-            self._raise_if_nonfinite(self.ema_rms, "ema_rms")
+            self._raise_if_nonfinite(self.ema_rms, "ema_rms", source=source)
             anchor_start, anchor_end = self._resolve_anchor_steps()
             if anchor_start <= step <= anchor_end:
                 self.target_rms.copy_(self.ema_rms)
-            self._raise_if_nonfinite(self.target_rms, "target_rms")
+            self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
 
-        def loss(self, value):
-            self._raise_if_nonfinite(value, "value")
+        def loss(self, value, source=None):
+            self._raise_if_nonfinite(value, "value", source=source)
             current_rms = value.float().square().mean().sqrt()
-            self._raise_if_nonfinite(current_rms, "current_rms")
+            self._raise_if_nonfinite(current_rms, "current_rms", source=source)
             floor = self.target_rms.detach() * self.floor_frac
-            self._raise_if_nonfinite(floor, "floor")
+            self._raise_if_nonfinite(floor, "floor", source=source)
             loss = torch.relu(floor - current_rms).square()
-            self._raise_if_nonfinite(loss, "loss")
+            self._raise_if_nonfinite(loss, "loss", source=source)
             return loss
 
     def __init__(self, config, layer_idx=None):
         super().__init__()
+        self.layer_idx = layer_idx
         self.config = config
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
@@ -886,6 +888,12 @@ class Qwen3MLP(nn.Module):
         if self.gate_proj_bias_scale_l2_target_keeper is not None:
             self.gate_proj_bias_scale_l2_target_keeper.set_total_iterations(total_iterations)
 
+    def _gate_proj_bias_debug_source(self, suffix):
+        owner = self.__class__.__name__
+        layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
+        granularity = self.global_gate_proj_bias_granularity
+        return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
+
     @torch._dynamo.disable
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
@@ -893,10 +901,14 @@ class Qwen3MLP(nn.Module):
             self.gate_proj_bias_l2_target_keeper.update(
                 gate_proj_bias,
                 int(self.gate_proj_bias_l2_target_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
             )
             MANAGER.add(
                 "gate_proj_bias_l2_loss",
-                self.gate_proj_bias_l2_target_keeper.loss(gate_proj_bias),
+                self.gate_proj_bias_l2_target_keeper.loss(
+                    gate_proj_bias,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+                ),
             )
             return
         MANAGER.add("gate_proj_bias_l2_loss", gate_proj_bias.square().mean())
@@ -907,10 +919,14 @@ class Qwen3MLP(nn.Module):
             self.gate_proj_bias_scale_l2_target_keeper.update(
                 gate_proj_bias_scale,
                 int(self.gate_proj_bias_l2_target_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
             )
             MANAGER.add(
                 "gate_proj_bias_scale_l2_loss",
-                self.gate_proj_bias_scale_l2_target_keeper.loss(gate_proj_bias_scale),
+                self.gate_proj_bias_scale_l2_target_keeper.loss(
+                    gate_proj_bias_scale,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+                ),
             )
             return
         MANAGER.add("gate_proj_bias_scale_l2_loss", gate_proj_bias_scale.square().mean())
@@ -960,6 +976,7 @@ class Qwen3MLP(nn.Module):
 class Qwen3MLPExperts(nn.Module):
     def __init__(self, config, layer_idx=None):
         super().__init__()
+        self.layer_idx = layer_idx
         self.debug = config.debug
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
@@ -1152,6 +1169,12 @@ class Qwen3MLPExperts(nn.Module):
         if self.gate_proj_bias_scale_l2_target_keeper is not None:
             self.gate_proj_bias_scale_l2_target_keeper.set_total_iterations(total_iterations)
 
+    def _gate_proj_bias_debug_source(self, suffix):
+        owner = self.__class__.__name__
+        layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
+        granularity = self.global_gate_proj_bias_granularity
+        return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
+
     @torch._dynamo.disable
     def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
         gate_proj_bias = gate_proj_bias.float()
@@ -1159,10 +1182,14 @@ class Qwen3MLPExperts(nn.Module):
             self.gate_proj_bias_l2_target_keeper.update(
                 gate_proj_bias,
                 int(self.gate_proj_bias_l2_target_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
             )
             MANAGER.add(
                 "gate_proj_bias_l2_loss",
-                self.gate_proj_bias_l2_target_keeper.loss(gate_proj_bias),
+                self.gate_proj_bias_l2_target_keeper.loss(
+                    gate_proj_bias,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+                ),
             )
             return
         MANAGER.add(
@@ -1177,10 +1204,14 @@ class Qwen3MLPExperts(nn.Module):
             self.gate_proj_bias_scale_l2_target_keeper.update(
                 gate_proj_bias_scale,
                 int(self.gate_proj_bias_l2_target_step.item()),
+                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
             )
             MANAGER.add(
                 "gate_proj_bias_scale_l2_loss",
-                self.gate_proj_bias_scale_l2_target_keeper.loss(gate_proj_bias_scale),
+                self.gate_proj_bias_scale_l2_target_keeper.loss(
+                    gate_proj_bias_scale,
+                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+                ),
             )
             return
         MANAGER.add(
