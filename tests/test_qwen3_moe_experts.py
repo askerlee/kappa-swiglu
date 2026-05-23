@@ -548,6 +548,24 @@ def test_gate_proj_bias_ema_target_error_includes_module_source():
         experts._accumulate_gate_proj_bias_l2_losses(torch.full((2, 16), float('nan')))
 
 
+def test_gate_proj_bias_ema_target_loss_has_finite_gradient_at_zero():
+    keeper = Qwen3MLP.GateProjBiasEmaTargetKeeper(
+        beta=0.99,
+        anchor_start=0.0,
+        anchor_end=1.0,
+        floor_frac=0.8,
+    )
+    keeper.target_rms.fill_(2.0)
+
+    value = torch.zeros(4, requires_grad=True)
+    loss = keeper.loss(value)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert value.grad is not None
+    assert torch.isfinite(value.grad).all()
+
+
 def test_gate_proj_bias_scale_l2_loss_can_use_anchored_ema_floor_target():
     config = GPTConfig(
         n_exp=2,

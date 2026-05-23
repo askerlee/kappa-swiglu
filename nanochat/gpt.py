@@ -729,6 +729,8 @@ class MLPExperts(nn.Module):
 # Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
 class Qwen3MLP(nn.Module):
     class GateProjBiasEmaTargetKeeper(nn.Module):
+        rms_eps = 1e-12
+
         def __init__(self, beta, anchor_start, anchor_end, floor_frac):
             super().__init__()
             self.beta = float(beta)
@@ -752,6 +754,10 @@ class Qwen3MLP(nn.Module):
                 f"GateProjBiasEmaTargetKeeper observed non-finite {label}{source_suffix} at index {index}: {scalar_value}"
             )
 
+        def _compute_rms(self, value):
+            mean_sq = value.float().square().mean()
+            return (mean_sq + self.rms_eps).sqrt()
+
         def set_total_iterations(self, total_iterations):
             self.total_iterations.fill_(max(int(total_iterations), 1))
 
@@ -764,7 +770,7 @@ class Qwen3MLP(nn.Module):
         @torch.no_grad()
         def update(self, value, step, source=None):
             self._raise_if_nonfinite(value, "value", source=source)
-            rms = value.detach().float().square().mean().sqrt()
+            rms = self._compute_rms(value.detach())
             self._raise_if_nonfinite(rms, "rms", source=source)
             if not bool(self.initialized.item()):
                 self.ema_rms.copy_(rms)
@@ -779,7 +785,7 @@ class Qwen3MLP(nn.Module):
 
         def loss(self, value, source=None):
             self._raise_if_nonfinite(value, "value", source=source)
-            current_rms = value.float().square().mean().sqrt()
+            current_rms = self._compute_rms(value)
             self._raise_if_nonfinite(current_rms, "current_rms", source=source)
             floor = self.target_rms.detach() * self.floor_frac
             self._raise_if_nonfinite(floor, "floor", source=source)
