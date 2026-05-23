@@ -779,9 +779,14 @@ class GateProjBiasEmaTargetKeeper(nn.Module):
             self.ema_rms.mul_(self.beta).add_(rms, alpha=1.0 - self.beta)
         self._raise_if_nonfinite(self.ema_rms, "ema_rms", source=source)
         anchor_start, anchor_end = self._resolve_anchor_steps()
+        # If step < anchor_start, we are in the warming-up period, 
+        # and we keep target_rms at zero and target_ready at False, 
+        # so that the regularization is disabled.
         if anchor_start <= step <= anchor_end:
             self.target_rms.copy_(self.ema_rms)
             self.target_ready.fill_(True)
+        # If step > anchor_end, we keep using the target_rms from the anchor period, 
+        # and target_ready is still True, so that the regularization remains stable.
         self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
 
     def loss(self, value, source=None):
