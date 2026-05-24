@@ -1600,10 +1600,15 @@ while True:
         trace_rank(f"step {step}: synchronize before timer complete")
         t0 = time.time()
         step_losses = None
-        training_model = orig_model if run_eager_training_step_after_core_eval else model
+        training_model = model
         orig_model.set_gate_proj_bias_ema_rms_reg_step(step)
         gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
+            current_training_model = (
+                orig_model
+                if run_eager_training_step_after_core_eval and micro_step == 0
+                else training_model
+            )
             MANAGER.collect_backward_stats = (
                 MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
             )
@@ -1614,7 +1619,7 @@ while True:
                 if run_eager_training_step_after_core_eval:
                     print0("running first post-CORE training step eagerly before returning to compiled training")
             with autocast_ctx:
-                loss, micro_losses = training_model(x, y)
+                loss, micro_losses = current_training_model(x, y)
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses)
@@ -1647,6 +1652,16 @@ while True:
             loss.backward()
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed backward")
+            if run_eager_training_step_after_core_eval and micro_step == 0:
+                trace_rank(f"step {step}: rebuilding compiled training wrapper after eager recovery micro-step")
+                rebuild_start = time.perf_counter()
+                orig_model.train()
+                model = build_training_model(orig_model, args.compile)
+                training_model = model
+                has_rebuilt_compile_after_eval = True
+                rebuild_elapsed = time.perf_counter() - rebuild_start
+                print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
+                trace_rank(f"step {step}: rebuilt compiled training wrapper after eager recovery micro-step")
             if abort_on_nonfinite_grad:
                 grad_issue = find_first_nonfinite_grad(orig_model)
                 if grad_issue is not None:
@@ -1695,16 +1710,6 @@ while True:
         trace_rank(f"step {step}: synchronize after optimizer complete")
         t1 = time.time()
         dt = t1 - t0
-        if run_eager_training_step_after_core_eval:
-            trace_rank(f"step {step}: rebuilding compiled training wrapper after eager recovery step")
-            rebuild_start = time.perf_counter()
-            orig_model.train()
-            model = build_training_model(orig_model, args.compile)
-            has_rebuilt_compile_after_eval = True
-            rebuild_elapsed = time.perf_counter() - rebuild_start
-            print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
-            trace_rank(f"step {step}: rebuilt compiled training wrapper after eager recovery step")
-
     # -------------------------------------------------------------------------
 
     # logging (CPU action only)
