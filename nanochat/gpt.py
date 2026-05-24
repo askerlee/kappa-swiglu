@@ -1336,6 +1336,21 @@ class Qwen3MLPExperts(nn.Module):
 
         x = x.detach().float()
         router_weight = torch.nn.functional.normalize(router_weight.detach().float(), dim=1, eps=1e-12)
+        x_norm = torch.nn.functional.normalize(x, dim=2, eps=1e-12)
+        routed_token_router_cosine = (x_norm * router_weight.unsqueeze(1)).sum(dim=2)
+        active_cosines = routed_token_router_cosine[active_mask]
+        MANAGER.add(
+            "routed_token_router_weight_cosine_mean",
+            active_cosines.mean().detach(),
+        )
+        MANAGER.add(
+            "routed_token_router_weight_cosine_top5p_mean",
+            _mean_extreme_percentile(active_cosines, fraction=0.05, largest=True).detach(),
+        )
+        MANAGER.add(
+            "routed_token_router_weight_cosine_bottom5p_mean",
+            _mean_extreme_percentile(active_cosines, fraction=0.05, largest=False).detach(),
+        )
         exp_gate_parallel_coeff = (self.gate_proj.detach().float() * router_weight.unsqueeze(-1)).sum(dim=1)
         input_parallel = (x * router_weight.unsqueeze(1)).sum(dim=2)
         MANAGER.add(
@@ -2144,6 +2159,9 @@ class GPT(nn.Module):
                    'gate_proj_bias_shift_abs_mean_normalized': 0,
                    'implicit_gate_proj_bias_top5p_mean': 0,
                    'implicit_gate_proj_bias_bottom5p_mean': 0,
+                   'routed_token_router_weight_cosine_mean': 0,
+                   'routed_token_router_weight_cosine_top5p_mean': 0,
+                   'routed_token_router_weight_cosine_bottom5p_mean': 0,
                    'drop_rate_per_ks': None,
                    'expert_utilities': None,
                    'selected_scores': None,
@@ -2209,6 +2227,27 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("implicit_gate_proj_bias_bottom5p_mean")
+        routed_token_router_weight_cosine_mean = MANAGER.aggregate("routed_token_router_weight_cosine_mean")
+        losses['routed_token_router_weight_cosine_mean'] = (
+            routed_token_router_weight_cosine_mean.detach()
+            if routed_token_router_weight_cosine_mean is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("routed_token_router_weight_cosine_mean")
+        routed_token_router_weight_cosine_top5p_mean = MANAGER.aggregate("routed_token_router_weight_cosine_top5p_mean")
+        losses['routed_token_router_weight_cosine_top5p_mean'] = (
+            routed_token_router_weight_cosine_top5p_mean.detach()
+            if routed_token_router_weight_cosine_top5p_mean is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("routed_token_router_weight_cosine_top5p_mean")
+        routed_token_router_weight_cosine_bottom5p_mean = MANAGER.aggregate("routed_token_router_weight_cosine_bottom5p_mean")
+        losses['routed_token_router_weight_cosine_bottom5p_mean'] = (
+            routed_token_router_weight_cosine_bottom5p_mean.detach()
+            if routed_token_router_weight_cosine_bottom5p_mean is not None
+            else torch.zeros((), device=x.device)
+        )
+        MANAGER.reset("routed_token_router_weight_cosine_bottom5p_mean")
         gate_proj_bias_layer_indices = []
         implicit_gate_proj_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
@@ -2258,6 +2297,21 @@ class GPT(nn.Module):
             if losses['implicit_gate_proj_bias_bottom5p_mean'].ndim > 0
             else 0
         )
+        routed_token_router_weight_cosine_mean_count = (
+            losses['routed_token_router_weight_cosine_mean'].shape[0]
+            if losses['routed_token_router_weight_cosine_mean'].ndim > 0
+            else 0
+        )
+        routed_token_router_weight_cosine_top5p_count = (
+            losses['routed_token_router_weight_cosine_top5p_mean'].shape[0]
+            if losses['routed_token_router_weight_cosine_top5p_mean'].ndim > 0
+            else 0
+        )
+        routed_token_router_weight_cosine_bottom5p_count = (
+            losses['routed_token_router_weight_cosine_bottom5p_mean'].shape[0]
+            if losses['routed_token_router_weight_cosine_bottom5p_mean'].ndim > 0
+            else 0
+        )
         for layer_idx, gate_proj_bias_stats_idx in gate_proj_bias_layer_to_stats_idx.items():
             if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_count:
                 losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
@@ -2283,6 +2337,18 @@ class GPT(nn.Module):
             if implicit_stats_idx < implicit_gate_proj_bias_bottom5p_count:
                 losses[f'implicit_gate_proj_bias_bottom5p_mean_{layer_idx}'] = (
                     losses['implicit_gate_proj_bias_bottom5p_mean'][implicit_stats_idx].item()
+                )
+            if implicit_stats_idx < routed_token_router_weight_cosine_mean_count:
+                losses[f'routed_token_router_weight_cosine_mean_{layer_idx}'] = (
+                    losses['routed_token_router_weight_cosine_mean'][implicit_stats_idx].item()
+                )
+            if implicit_stats_idx < routed_token_router_weight_cosine_top5p_count:
+                losses[f'routed_token_router_weight_cosine_top5p_mean_{layer_idx}'] = (
+                    losses['routed_token_router_weight_cosine_top5p_mean'][implicit_stats_idx].item()
+                )
+            if implicit_stats_idx < routed_token_router_weight_cosine_bottom5p_count:
+                losses[f'routed_token_router_weight_cosine_bottom5p_mean_{layer_idx}'] = (
+                    losses['routed_token_router_weight_cosine_bottom5p_mean'][implicit_stats_idx].item()
                 )
         for stats_idx, layer_idx in enumerate(moe_layer_indices):
             experts = getattr(self.transformer.h[layer_idx].mlp, 'experts', None)
