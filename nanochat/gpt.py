@@ -1243,22 +1243,29 @@ class Qwen3MLPExperts(nn.Module):
         if not MANAGER.collect_load_balancing_stats:
             self.last_gate_stats = None
             return
-        abs_gate = gate_out_acts.abs().float()
-        topk = min(self.gate_stats_topk, abs_gate.size(-1))
-        abs_gate_sum = abs_gate.sum(dim=-1)
-        gate_probs = abs_gate / abs_gate_sum.clamp_min(1e-8).unsqueeze(-1)
-        entropy = -(gate_probs * gate_probs.clamp_min(1e-8).log()).sum(dim=-1)
-        # abs_gate: [n_exp, capacity, intermediate_size].
-        # topk: 16. topk_share is the sum of the top-16 gate values 
-        # divided by the sum of all gate values, averaged across tokens. 
-        # It measures how concentrated the top gates are. 
-        topk_share = abs_gate.topk(topk, dim=-1).values.sum(dim=-1) / abs_gate_sum.clamp_min(1e-8)
-        self.last_gate_stats = {
-            'mean_abs_gate': abs_gate.mean().detach(),
-            'active_frac': abs_gate.gt(self.gate_stats_threshold).float().mean().detach(),
-            'topk_share': topk_share.mean().detach(),
-            'entropy': entropy.mean().detach(),
-        }
+        with torch.no_grad():
+            abs_gate = gate_out_acts.detach().abs()
+            topk = min(self.gate_stats_topk, abs_gate.size(-1))
+            abs_gate_sum = abs_gate.sum(dim=-1, dtype=torch.float32)
+            safe_abs_gate_sum = abs_gate_sum.clamp_min(1e-8)
+            # xlogx: torch.xlogy(abs_gate, abs_gate)
+            entropy = safe_abs_gate_sum.log() - (
+                torch.xlogy(abs_gate, abs_gate).sum(dim=-1, dtype=torch.float32) / safe_abs_gate_sum
+            )
+            # abs_gate: [n_exp, capacity, intermediate_size].
+            # topk: 16. topk_share is the sum of the top-16 gate values
+            # divided by the sum of all gate values, averaged across tokens.
+            # It measures how concentrated the top gates are.
+            topk_share = (
+                abs_gate.topk(topk, dim=-1).values.sum(dim=-1, dtype=torch.float32)
+                / safe_abs_gate_sum
+            )
+            self.last_gate_stats = {
+                'mean_abs_gate': abs_gate.float().mean().detach(),
+                'active_frac': abs_gate.gt(self.gate_stats_threshold).float().mean().detach(),
+                'topk_share': topk_share.mean().detach(),
+                'entropy': entropy.mean().detach(),
+            }
 
     @torch._dynamo.disable
     def _update_gate_slope_scale_stats(self, slope_scales, selected_router_scores):
