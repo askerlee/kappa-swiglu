@@ -255,9 +255,9 @@ parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99,
                     help="EMA beta for the extra anchored EMA RMS floor regularizer used by --gate-proj-bias-ema-rms-reg")
 parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer starts updating its target")
-parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.8,
+parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.5,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
-parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.8,
+parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.9,
                     help="floor fraction applied to the anchored EMA RMS target when --gate-proj-bias-ema-rms-reg is enabled")
 parser.add_argument("--gate-proj-bias-scale-l2-loss-weight-scale", type=float, default=2.0,
                     help="multiplier applied to --gate-proj-bias-l2-loss-weight when weighting gate_proj_bias_scale L2 loss")
@@ -266,7 +266,7 @@ parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, defa
 # push the gate_proj_bias values towards 0 so that the slopes 
 # are pushed towards 1.
 parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=0.5, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
