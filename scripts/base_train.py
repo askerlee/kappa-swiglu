@@ -1774,10 +1774,12 @@ while True:
         log_data["train/gate_proj_bias_scale_l2_loss_weight"] = gate_proj_bias_scale_l2_loss_weight
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
-            if len(drop_rates) >= 1:
-                log_data["inspect/drop_rate_0_step"] = drop_rates[0]
-            if len(drop_rates) >= 2:
-                log_data["inspect/drop_rate_1_step"] = drop_rates[1]
+            for stats_idx, layer_idx in enumerate(moe_layer_indices):
+                if stats_idx >= drop_rates.shape[0] or drop_rates.shape[1] < 1:
+                    continue
+                log_data[f"inspect/drop_rate_0_step_{layer_idx}"] = scalar_loss_to_item(
+                    drop_rates[stats_idx, 0]
+                )
         expert_utilities = losses['expert_utilities']
         moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
         for i in moe_layer_indices:

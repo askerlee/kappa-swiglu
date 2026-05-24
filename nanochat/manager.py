@@ -302,7 +302,9 @@ class MOEManager:
             if self._drop_rate_buffer is None or self._drop_rate_size == 0:
                 return None
             values = self._drop_rate_buffer[:self._drop_rate_size]
-            return values.mean(dim=0)
+            # Keep one [top_k] row per MoE layer; the training loop averages
+            # across microsteps separately when it accumulates step losses.
+            return values
         elif name == "expert_utilities":
             if self._expert_utilities_buffer is None or self._expert_utilities_size == 0:
                 return None
