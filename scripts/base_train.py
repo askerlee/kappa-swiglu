@@ -1067,6 +1067,25 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         bottom_mean = torch.topk(flat_values, k=count, largest=False).values.mean()
         return top_mean, bottom_mean
 
+    def mean_by_sign(values, reduce_dims, sign):
+        values = values.float()
+        if sign == 'positive':
+            mask = values > 0
+        elif sign == 'negative':
+            mask = values < 0
+        else:
+            raise ValueError(f"Unsupported sign selector: {sign}")
+        counts = mask.sum(dim=reduce_dims)
+        sums = values.masked_fill(~mask, 0).sum(dim=reduce_dims)
+        means = sums / counts.clamp_min(1)
+        return means.masked_fill(counts == 0, float('nan'))
+
+    def finite_mean_item(values):
+        finite_values = values[torch.isfinite(values)]
+        if finite_values.numel() == 0:
+            return None
+        return finite_values.mean().item()
+
     router_grad_norms = []
     router_row_norms = []
     router_grad_self_alignments = []
@@ -1159,18 +1178,30 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         reduce_dims = tuple(range(1, exp_gate_proj_bias.ndim))
                         exp_gate_proj_bias_mean = exp_gate_proj_bias.float().mean(dim=reduce_dims)
                         exp_gate_proj_bias_abs_mean = exp_gate_proj_bias.abs().float().mean(dim=reduce_dims)
+                        exp_gate_proj_bias_positive_mean = mean_by_sign(exp_gate_proj_bias, reduce_dims, sign='positive')
+                        exp_gate_proj_bias_negative_mean = mean_by_sign(exp_gate_proj_bias, reduce_dims, sign='negative')
                         losses[f'gate_proj_bias_mean_top_{i}'] = exp_gate_proj_bias_mean[top_indices].mean().item()
                         losses[f'gate_proj_bias_mean_bottom_{i}'] = exp_gate_proj_bias_mean[bottom_indices].mean().item()
                         losses[f'gate_proj_bias_abs_mean_top_{i}'] = exp_gate_proj_bias_abs_mean[top_indices].mean().item()
                         losses[f'gate_proj_bias_abs_mean_bottom_{i}'] = exp_gate_proj_bias_abs_mean[bottom_indices].mean().item()
+                        losses[f'gate_proj_bias_positive_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_positive_mean[top_indices])
+                        losses[f'gate_proj_bias_positive_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_positive_mean[bottom_indices])
+                        losses[f'gate_proj_bias_negative_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_negative_mean[top_indices])
+                        losses[f'gate_proj_bias_negative_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_negative_mean[bottom_indices])
                     if experts.use_gate_proj_bias_scale:
                         reduce_dims = tuple(range(1, exp_gate_proj_bias_scale.ndim))
                         exp_gate_proj_bias_scale_mean = exp_gate_proj_bias_scale.float().mean(dim=reduce_dims)
                         exp_gate_proj_bias_scale_abs_mean = exp_gate_proj_bias_scale.abs().float().mean(dim=reduce_dims)
+                        exp_gate_proj_bias_scale_positive_mean = mean_by_sign(exp_gate_proj_bias_scale, reduce_dims, sign='positive')
+                        exp_gate_proj_bias_scale_negative_mean = mean_by_sign(exp_gate_proj_bias_scale, reduce_dims, sign='negative')
                         losses[f'gate_proj_bias_scale_mean_top_{i}'] = exp_gate_proj_bias_scale_mean[top_indices].mean().item()
                         losses[f'gate_proj_bias_scale_mean_bottom_{i}'] = exp_gate_proj_bias_scale_mean[bottom_indices].mean().item()
                         losses[f'gate_proj_bias_scale_abs_mean_top_{i}'] = exp_gate_proj_bias_scale_abs_mean[top_indices].mean().item()
                         losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}'] = exp_gate_proj_bias_scale_abs_mean[bottom_indices].mean().item()
+                        losses[f'gate_proj_bias_scale_positive_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_positive_mean[top_indices])
+                        losses[f'gate_proj_bias_scale_positive_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_positive_mean[bottom_indices])
+                        losses[f'gate_proj_bias_scale_negative_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_negative_mean[top_indices])
+                        losses[f'gate_proj_bias_scale_negative_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_negative_mean[bottom_indices])
 
                     top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
                     bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
@@ -1807,6 +1838,14 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_top_{i}": losses[f'gate_proj_bias_abs_mean_top_{i}']})
             if f'gate_proj_bias_abs_mean_bottom_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_abs_mean_bottom_{i}": losses[f'gate_proj_bias_abs_mean_bottom_{i}']})
+            if f'gate_proj_bias_positive_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_positive_mean_top_{i}": losses[f'gate_proj_bias_positive_mean_top_{i}']})
+            if f'gate_proj_bias_positive_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_positive_mean_bottom_{i}": losses[f'gate_proj_bias_positive_mean_bottom_{i}']})
+            if f'gate_proj_bias_negative_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_negative_mean_top_{i}": losses[f'gate_proj_bias_negative_mean_top_{i}']})
+            if f'gate_proj_bias_negative_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_negative_mean_bottom_{i}": losses[f'gate_proj_bias_negative_mean_bottom_{i}']})
             if f'gate_proj_bias_scale_mean_top_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_scale_mean_top_{i}": losses[f'gate_proj_bias_scale_mean_top_{i}']})
             if f'gate_proj_bias_scale_mean_bottom_{i}' in losses:
@@ -1815,6 +1854,14 @@ while True:
                 log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_top_{i}": losses[f'gate_proj_bias_scale_abs_mean_top_{i}']})
             if f'gate_proj_bias_scale_abs_mean_bottom_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_bottom_{i}": losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}']})
+            if f'gate_proj_bias_scale_positive_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_positive_mean_top_{i}": losses[f'gate_proj_bias_scale_positive_mean_top_{i}']})
+            if f'gate_proj_bias_scale_positive_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_positive_mean_bottom_{i}": losses[f'gate_proj_bias_scale_positive_mean_bottom_{i}']})
+            if f'gate_proj_bias_scale_negative_mean_top_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_negative_mean_top_{i}": losses[f'gate_proj_bias_scale_negative_mean_top_{i}']})
+            if f'gate_proj_bias_scale_negative_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/gate_proj_bias_scale_negative_mean_bottom_{i}": losses[f'gate_proj_bias_scale_negative_mean_bottom_{i}']})
             if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
             if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
