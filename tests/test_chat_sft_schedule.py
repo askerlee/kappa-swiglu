@@ -15,7 +15,7 @@ def test_gate_proj_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales(
 def test_gate_proj_bias_lr_schedule_wires_delay_and_warmup_cli_args():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert "nolearn_iterations=args.gate_proj_bias_delay_start_iterations" in source
+    assert "nolearn_iterations=args.gate_proj_bias_delay_start_min_iterations" in source
     assert "warmup_iterations=args.gate_proj_bias_lr_warmup_iterations" in source
 
 

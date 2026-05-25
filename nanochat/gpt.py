@@ -1710,10 +1710,13 @@ class GPT(nn.Module):
         if strict:
             state_dict = state_dict.copy()
             for name, param in self.state_dict().items():
+                # Keep the model’s current value for these parameters 
+                # if they are missing in the checkpoint, to avoid loading errors 
+                # when changing gate_proj_bias configuration.
                 if ('ema_rms_reg_keeper' in name or 'l2_target_keeper' in name) and name not in state_dict:
                     state_dict[name] = param.clone()
                 elif 'gate_proj_bias_scale' in name and name not in state_dict:
-                    state_dict[name] = torch.ones_like(param)
+                    state_dict[name] = param.clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         if self._should_refresh_gate_proj_bias_references():
             self.refresh_gate_proj_bias_references()

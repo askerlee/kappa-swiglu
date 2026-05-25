@@ -243,10 +243,11 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
 # defaults to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
-parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=200,
+parser.add_argument("--gate-proj-bias-delay-start-min-iterations", "--gate-proj-bias-delay-start-iterations",
+                    dest="gate_proj_bias_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-delay-start-iteration-frac", type=float, default=0.1,
-                    help="fractional delay for gate_proj_bias LR start; the effective delay is max(--gate-proj-bias-delay-start-iterations, ceil(total_iterations * this value))")
+                    help="fractional delay for gate_proj_bias LR start; the effective delay is max(--gate-proj-bias-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
@@ -355,8 +356,8 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
         "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
     )
 
-if args.gate_proj_bias_delay_start_iterations < 0:
-    raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.gate_proj_bias_delay_start_min_iterations < 0:
+    raise ValueError("--gate-proj-bias-delay-start-min-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iteration_frac < 0:
     raise ValueError("--gate-proj-bias-delay-start-iteration-frac must be >= 0")
 if args.aux_loss_weight_init_scale <= 0.0:
@@ -776,13 +777,13 @@ print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)
 
 gate_proj_bias_delay_start_iterations = max(
-    args.gate_proj_bias_delay_start_iterations,
+    args.gate_proj_bias_delay_start_min_iterations,
     math.ceil(num_iterations * args.gate_proj_bias_delay_start_iteration_frac),
 )
 user_config["effective_gate_proj_bias_delay_start_iterations"] = gate_proj_bias_delay_start_iterations
 print0(
     "Using gate_proj_bias LR delay start iterations: "
-    f"max({args.gate_proj_bias_delay_start_iterations}, "
+    f"max({args.gate_proj_bias_delay_start_min_iterations}, "
     f"ceil({num_iterations} * {args.gate_proj_bias_delay_start_iteration_frac:.6f})) "
     f"= {gate_proj_bias_delay_start_iterations}"
 )

@@ -85,7 +85,8 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.1,
                     help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.05,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to --gate-proj-bias-lr-max-scale")
-parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=50,
+parser.add_argument("--gate-proj-bias-delay-start-min-iterations", "--gate-proj-bias-delay-start-iterations",
+                    dest="gate_proj_bias_delay_start_min_iterations", type=int, default=50,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
@@ -122,8 +123,8 @@ parser.add_argument("--log-interval", type=int, default=10, help="interval (in s
 args = parser.parse_args()
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
-if args.gate_proj_bias_delay_start_iterations < 0:
-    raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.gate_proj_bias_delay_start_min_iterations < 0:
+    raise ValueError("--gate-proj-bias-delay-start-min-iterations must be >= 0")
 if args.gate_proj_bias_lr_warmup_iterations < 0:
     raise ValueError("--gate-proj-bias-lr-warmup-iterations must be >= 0")
 user_config = vars(args).copy()
@@ -269,7 +270,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
     gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
-    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_iterations,
+    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_min_iterations,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 # Override the initial learning rate as a fraction of the base learning rate
@@ -491,7 +492,7 @@ def get_gate_proj_bias_lr_scale(step, progress):
         gate_proj_bias_schedule_total_iterations,
         end_scale=args.gate_proj_bias_lr_final_scale,
         max_scale=args.gate_proj_bias_lr_max_scale,
-        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+        nolearn_iterations=args.gate_proj_bias_delay_start_min_iterations,
         warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
     )
 

@@ -132,7 +132,8 @@ parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
 # defaults to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
 parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
                     help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
-parser.add_argument("--gate-proj-bias-delay-start-iterations", type=int, default=400,
+parser.add_argument("--gate-proj-bias-delay-start-min-iterations", "--gate-proj-bias-delay-start-iterations",
+                    dest="gate_proj_bias_delay_start_min_iterations", type=int, default=400,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
@@ -225,8 +226,8 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
         "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
     )
 
-if args.gate_proj_bias_delay_start_iterations < 0:
-    raise ValueError("--gate-proj-bias-delay-start-iterations must be >= 0")
+if args.gate_proj_bias_delay_start_min_iterations < 0:
+    raise ValueError("--gate-proj-bias-delay-start-min-iterations must be >= 0")
 if not (0.0 <= args.gate_proj_bias_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--gate-proj-bias-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
@@ -658,7 +659,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
     gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
-    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_iterations,
+    gate_proj_bias_delay_start_iterations=args.gate_proj_bias_delay_start_min_iterations,
     gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
 )
 
@@ -1174,7 +1175,7 @@ while True:
         stage1_iterations=gate_proj_bias_l2_stage1_iterations,
         stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
         final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
-        nolearn_iterations=args.gate_proj_bias_delay_start_iterations,
+        nolearn_iterations=args.gate_proj_bias_delay_start_min_iterations,
     )
 
     # once in a while: evaluate the val bpb (all ranks participate)
