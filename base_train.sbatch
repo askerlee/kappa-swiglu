@@ -4,6 +4,7 @@
 #SBATCH -p testqueue
 #SBATCH -A aicloud-testgroup
 #SBATCH -t 18:00:00
+#SBATCH --signal=USR1@300
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
 

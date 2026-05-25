@@ -1305,6 +1305,8 @@ has_rebuilt_compile_after_eval = False
 
 signal.signal(signal.SIGTERM, handle_shutdown_signal)
 signal.signal(signal.SIGINT, handle_shutdown_signal)
+if hasattr(signal, "SIGUSR1"):
+    signal.signal(signal.SIGUSR1, handle_shutdown_signal)
 if hasattr(signal, "SIGHUP"):
     signal.signal(signal.SIGHUP, handle_shutdown_signal)
 
