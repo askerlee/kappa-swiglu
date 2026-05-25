@@ -199,6 +199,8 @@ def sanitize_chat_sft_rendezvous_env():
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
 DEFAULT_SEED = 26
+AUX_LOSS_WEIGHT_DEFAULT = 1e-3
+
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
@@ -213,7 +215,7 @@ parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of Mo
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
 parser.add_argument("--moe-top-k", type=int, default=2, help="top-k of the MoE routing")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=False, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss")
-parser.add_argument("--aux-loss-weight", type=float, default=1e-3, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
+parser.add_argument("--aux-loss-weight", type=float, default=AUX_LOSS_WEIGHT_DEFAULT, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
 parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
@@ -323,7 +325,7 @@ parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number o
 parser.add_argument("--core-metric-every", type=int, default=1000, help="evaluate CORE metric every N steps (-1 = disable)")
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=-1, help="sample from model every N steps (-1 = disable)")
-parser.add_argument("--save-every", type=int, default=5000, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--save-every", type=int, default=2000, help="save checkpoints every N steps (-1 = only at end)")
 parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=True, default=False, help="save optimizer shards alongside model checkpoints")
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
@@ -337,6 +339,9 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+
+if args.use_gate_proj_bias and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
+    args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
 
 if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
     args.model_tag = f"{args.model_tag}-s{args.seed}"
