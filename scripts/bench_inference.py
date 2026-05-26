@@ -33,14 +33,6 @@ def resolve_max_tokens(args, prompt_tokens_count, sequence_len):
     return min(args.max_tokens, remaining_context)
 
 
-def maybe_compile_model(model, compile_enabled):
-    if not compile_enabled:
-        return model
-    if hasattr(torch, "_dynamo"):
-        torch._dynamo.reset()
-    return torch.compile(model, dynamic=False)
-
-
 def refill_decode_slot(kv_cache_decode, kv_cache_prefill, logits, prefill_logits, row_idx):
     prefill_pos = kv_cache_prefill.get_pos()
     kv_cache_decode.k_cache[:, row_idx, :prefill_pos, :, :] = kv_cache_prefill.k_cache[:, 0, :prefill_pos, :, :]
@@ -196,7 +188,6 @@ def main():
     parser.add_argument("--warmup-runs", type=int, default=1, help="Number of warmup runs to discard")
     parser.add_argument("--runs", type=int, default=3, help="Number of measured runs")
     parser.add_argument("--sustain-batch", action=argparse.BooleanOptionalAction, default=True, help="When using max-seconds, refill finished rows to keep the decode batch full")
-    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True, help="Compile the model before benchmarking")
     parser.add_argument("--device-type", type=str, default="", choices=["cuda", "cpu", "mps"], help="Device type: cuda|cpu|mps. empty => autodetect")
     parser.add_argument("-d", "--dtype", type=str, default="bfloat16", choices=["float32", "bfloat16"], help="Autocast dtype on CUDA")
     args = parser.parse_args()
@@ -208,7 +199,6 @@ def main():
 
     model, tokenizer, _ = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
     model.eval()
-    model = maybe_compile_model(model, args.compile)
     engine = Engine(model, tokenizer)
     prompt_tokens = build_prompt_tokens(tokenizer, args.source, args.prompt)
     max_tokens = resolve_max_tokens(args, len(prompt_tokens), model.config.sequence_len)
@@ -227,7 +217,6 @@ def main():
     print0(f"source: {args.source}")
     print0(f"device: {device}")
     print0(f"dtype: {args.dtype}")
-    print0(f"compile: {args.compile}")
     print0(f"prompt tokens: {len(prompt_tokens)}")
     print0(f"max decode tokens/sample: {max_tokens}")
     print0(f"max decode seconds/run: {args.max_seconds}")
