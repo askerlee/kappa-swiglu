@@ -896,8 +896,16 @@ class Qwen3MLP(nn.Module):
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
 
     def _compute_gate_slope_scales(self, gate_proj_bias, softness=1.0):
-        log_kappa = 2 * gate_proj_bias.float() * float(self.gate_proj_bias_input_constant)
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
+        target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
+        gate_proj_bias = gate_proj_bias.to(dtype=target_dtype)
+        input_constant = torch.as_tensor(
+            self.gate_proj_bias_input_constant,
+            device=gate_proj_bias.device,
+            dtype=target_dtype,
+        )
+        softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
+        log_kappa = 2 * gate_proj_bias * input_constant
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
     def set_gate_proj_bias_ema_rms_reg_step(self, step):
         self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
@@ -1168,17 +1176,19 @@ class Qwen3MLPExperts(nn.Module):
         return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
     def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=1.0):
-        gate_proj_bias = gate_proj_bias.float().unsqueeze(1)
-        selected_router_scores = selected_router_scores.float().unsqueeze(-1)
+        target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
+        gate_proj_bias = gate_proj_bias.to(dtype=target_dtype).unsqueeze(1)
+        selected_router_scores = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
+        softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
-            gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().float().unsqueeze(1)
+            gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().to(dtype=target_dtype).unsqueeze(1)
             transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
             log_kappa = 2 * transformed_scores
         else:
             # Otherwise, gate_proj_bias_input == 'constant', and 
             # selected_router_scores is MOELayer.gate_proj_bias_input_constant.
             log_kappa = 2 * gate_proj_bias * selected_router_scores
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness))
+        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
     def set_gate_proj_bias_ema_rms_reg_step(self, step):
         self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
