@@ -982,7 +982,8 @@ class Qwen3MLP(nn.Module):
         gate_out_raw = self.gate_proj(x)
         gate_proj_bias = self._materialize_gate_proj_bias()
         slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
-        self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
+        if self.training:
+            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
         self._update_gate_slope_scale_stats(slope_scales)
         gate_out = gate_out_raw * torch.sigmoid(
             gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
@@ -1390,8 +1391,9 @@ class Qwen3MLPExperts(nn.Module):
                 gate_proj_bias,
                 scaled_selected_router_scores,
             )
-            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
-            if self.use_gate_proj_bias_scale:
+            if self.training:
+                self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
+            if self.training and self.use_gate_proj_bias_scale:
                 gate_proj_bias_scale = self._materialize_gate_proj_bias_scale()
                 self._accumulate_gate_proj_bias_scale_l2_losses(gate_proj_bias_scale)
             # slope_scales: [n_exp, capacity, intermediate_size]
