@@ -63,6 +63,7 @@ def build_prompt_tokens(tokenizer, source, prompt):
     return prompt_tokens
 
 
+@torch.inference_mode()
 def run_one(engine, prompt_tokens, generate_kwargs, autocast_ctx, device_type):
     model = engine.model
     tokenizer = engine.tokenizer
