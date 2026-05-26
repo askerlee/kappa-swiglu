@@ -834,6 +834,10 @@ class Qwen3MLP(nn.Module):
             layer_idx is None or layer_idx >= gate_proj_bias_start_layer
         )
         self._shared_gate_proj_bias = None
+        self._eval_gate_proj_bias_cache = None
+        self._eval_gate_proj_bias_cache_dtype = None
+        self._eval_gate_proj_bias_cache_device = None
+        self._eval_gate_proj_bias_cache_version = None
         self.gate_proj_bias_ema_rms_reg_keeper = None
         self.gate_proj_bias_scale_ema_rms_reg_keeper = None
         if self.has_active_gate_proj_bias:
@@ -894,6 +898,28 @@ class Qwen3MLP(nn.Module):
         if self.global_gate_proj_bias_granularity == 'per-gate':
             return gate_proj_bias + 0
         return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
+
+    @torch._dynamo.disable
+    def _materialize_gate_proj_bias_for_eval(self, target_dtype, target_device):
+        if not self.has_active_gate_proj_bias:
+            return self.disabled_gate_proj_bias.to(device=target_device, dtype=target_dtype)
+        gate_proj_bias = self._get_gate_proj_bias_parameter()
+        if gate_proj_bias is None:
+            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
+        version = gate_proj_bias._version
+        if (
+            self._eval_gate_proj_bias_cache is not None
+            and self._eval_gate_proj_bias_cache_dtype == target_dtype
+            and self._eval_gate_proj_bias_cache_device == target_device
+            and self._eval_gate_proj_bias_cache_version == version
+        ):
+            return self._eval_gate_proj_bias_cache
+        materialized = self._materialize_gate_proj_bias().to(device=target_device, dtype=target_dtype)
+        self._eval_gate_proj_bias_cache = materialized
+        self._eval_gate_proj_bias_cache_dtype = target_dtype
+        self._eval_gate_proj_bias_cache_device = target_device
+        self._eval_gate_proj_bias_cache_version = version
+        return materialized
 
     def _compute_gate_slope_scales(self, gate_proj_bias, softness=1.0):
         target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
@@ -989,7 +1015,10 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x):
         gate_out_raw = self.gate_proj(x)
-        gate_proj_bias = self._materialize_gate_proj_bias()
+        if self.training:
+            gate_proj_bias = self._materialize_gate_proj_bias()
+        else:
+            gate_proj_bias = self._materialize_gate_proj_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
         slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
         if self.training:
             self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
@@ -1023,6 +1052,14 @@ class Qwen3MLPExperts(nn.Module):
         self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_gate_proj_bias = None
         self._shared_gate_proj_bias_scale = None
+        self._eval_gate_proj_bias_cache = None
+        self._eval_gate_proj_bias_cache_dtype = None
+        self._eval_gate_proj_bias_cache_device = None
+        self._eval_gate_proj_bias_cache_version = None
+        self._eval_gate_proj_bias_scale_cache = None
+        self._eval_gate_proj_bias_scale_cache_dtype = None
+        self._eval_gate_proj_bias_scale_cache_device = None
+        self._eval_gate_proj_bias_scale_cache_version = None
         self.gate_proj_bias_ema_rms_reg_keeper = None
         self.gate_proj_bias_scale_ema_rms_reg_keeper = None
         self.gate_proj = nn.Parameter(
@@ -1163,6 +1200,28 @@ class Qwen3MLPExperts(nn.Module):
         return gate_proj_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
     @torch._dynamo.disable
+    def _materialize_gate_proj_bias_for_eval(self, target_dtype, target_device):
+        if not self.use_gate_proj_bias:
+            return self.disabled_gate_proj_bias.to(device=target_device, dtype=target_dtype)
+        gate_proj_bias = self._get_gate_proj_bias_parameter()
+        if gate_proj_bias is None:
+            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
+        version = gate_proj_bias._version
+        if (
+            self._eval_gate_proj_bias_cache is not None
+            and self._eval_gate_proj_bias_cache_dtype == target_dtype
+            and self._eval_gate_proj_bias_cache_device == target_device
+            and self._eval_gate_proj_bias_cache_version == version
+        ):
+            return self._eval_gate_proj_bias_cache
+        materialized = self._materialize_gate_proj_bias().to(device=target_device, dtype=target_dtype)
+        self._eval_gate_proj_bias_cache = materialized
+        self._eval_gate_proj_bias_cache_dtype = target_dtype
+        self._eval_gate_proj_bias_cache_device = target_device
+        self._eval_gate_proj_bias_cache_version = version
+        return materialized
+
+    @torch._dynamo.disable
     def _materialize_gate_proj_bias_scale(self):
         if not self.use_gate_proj_bias_scale:
             return self.disabled_gate_proj_bias_scale.detach().requires_grad_(True)
@@ -1175,13 +1234,39 @@ class Qwen3MLPExperts(nn.Module):
             return gate_proj_bias_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
+    @torch._dynamo.disable
+    def _materialize_gate_proj_bias_scale_for_eval(self, target_dtype, target_device):
+        if not self.use_gate_proj_bias_scale:
+            return self.disabled_gate_proj_bias_scale.to(device=target_device, dtype=target_dtype)
+        gate_proj_bias_scale = self._get_gate_proj_bias_scale_parameter()
+        if gate_proj_bias_scale is None:
+            raise RuntimeError("gate_proj_bias_scale was enabled but no parameter was bound")
+        version = gate_proj_bias_scale._version
+        if (
+            self._eval_gate_proj_bias_scale_cache is not None
+            and self._eval_gate_proj_bias_scale_cache_dtype == target_dtype
+            and self._eval_gate_proj_bias_scale_cache_device == target_device
+            and self._eval_gate_proj_bias_scale_cache_version == version
+        ):
+            return self._eval_gate_proj_bias_scale_cache
+        materialized = self._materialize_gate_proj_bias_scale().to(device=target_device, dtype=target_dtype)
+        self._eval_gate_proj_bias_scale_cache = materialized
+        self._eval_gate_proj_bias_scale_cache_dtype = target_dtype
+        self._eval_gate_proj_bias_scale_cache_device = target_device
+        self._eval_gate_proj_bias_scale_cache_version = version
+        return materialized
+
     def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=1.0):
         target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
         gate_proj_bias = gate_proj_bias.to(dtype=target_dtype).unsqueeze(1)
         selected_router_scores = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
         softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
-            gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().to(dtype=target_dtype).unsqueeze(1)
+            if self.training:
+                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().to(dtype=target_dtype)
+            else:
+                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale_for_eval(target_dtype, gate_proj_bias.device)
+            gate_proj_bias_scale = gate_proj_bias_scale.unsqueeze(1)
             transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
             log_kappa = 2 * transformed_scores
         else:
@@ -1393,7 +1478,10 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         if selected_router_scores is not None and self.use_gate_proj_bias:
-            gate_proj_bias = self._materialize_gate_proj_bias()
+            if self.training:
+                gate_proj_bias = self._materialize_gate_proj_bias()
+            else:
+                gate_proj_bias = self._materialize_gate_proj_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
             scaled_selected_router_scores = scale_grad(
                 selected_router_scores,
                 self.router_confidence_gate_bias_grad_scale,
