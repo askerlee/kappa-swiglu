@@ -57,6 +57,19 @@ def _unwrap_backend_output(result):
     return result
 
 
+def _fa3_compile_safe_num_splits():
+    """FA3 fake tracing rejects the kvcache heuristic path num_splits=0."""
+    if FLASH_ATTN_BACKEND != 'fa3':
+        return None
+    compiler = getattr(torch, "compiler", None)
+    if compiler is not None and compiler.is_compiling():
+        return 1
+    dynamo = getattr(torch, "_dynamo", None)
+    if dynamo is not None and dynamo.is_compiling():
+        return 1
+    return None
+
+
 def _is_fa4_window_size_type_error(exc):
     """Detect FA4/CUTLASS window-size typing issues and trigger SDPA fallback."""
     msg = str(exc)
@@ -443,10 +456,17 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
     """
     if _use_flash_attention(require_kvcache=True):
         try:
-            y = _backend.flash_attn_with_kvcache(
-                q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
-                causal=causal, window_size=window_size
-            )
+            compile_safe_num_splits = _fa3_compile_safe_num_splits()
+            if compile_safe_num_splits is not None:
+                y = _backend.flash_attn_with_kvcache(
+                    q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
+                    causal=causal, window_size=window_size, num_splits=compile_safe_num_splits
+                )
+            else:
+                y = _backend.flash_attn_with_kvcache(
+                    q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
+                    causal=causal, window_size=window_size
+                )
             return _unwrap_backend_output(y)
         except Exception as exc:
             global _flash_disabled_due_to_oom
