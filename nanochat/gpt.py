@@ -557,8 +557,9 @@ class Router(nn.Module):
 
             top_k_scores = top_k_logits
 
-            selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
-            MANAGER.add("selected_scores", selected_scores.detach())
+            if self.training or MANAGER.collect_load_balancing_stats:
+                selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
+                MANAGER.add("selected_scores", selected_scores.detach())
 
             # 3. COMPUTE ROUTER PROBABILITIES
             # --------------------------------
