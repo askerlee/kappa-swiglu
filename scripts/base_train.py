@@ -377,10 +377,12 @@ if args.gate_proj_bias_l2_ema_anchor_end > 1.0:
 if args.gate_proj_bias_l2_ema_floor_frac < 0.0:
     raise ValueError("--gate-proj-bias-l2-ema-floor-frac must be >= 0")
 
+'''
 # Aurora and gate-proj-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
 if args.matrix_optimizer == "aurora" and args.gate_proj_bias_input != "constant":
     args.gate_proj_bias_input = "router_probs"
+'''
 
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
