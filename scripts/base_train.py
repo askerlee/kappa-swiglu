@@ -293,6 +293,15 @@ parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', co
 parser.add_argument("--rebuild-compile-after-first-eval-only", type=str2bool, nargs='?', const=True, default=False, help="experimentally rebuild the compiled training wrapper only after the first uncompiled CORE/sample pass, then reuse it afterward")
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument(
+    "--loss-chunk-tokens",
+    type=int,
+    default=-1,
+    help=(
+        "max tokens per lm_head/cross-entropy chunk. Use a smaller value to reduce peak "
+        "logit memory during training (-1 = auto)."
+    ),
+)
+parser.add_argument(
     "--total-batch-size",
     type=int,
     default=-1,
@@ -419,6 +428,8 @@ if args.gate_proj_bias_start_layer < 0:
     raise ValueError("--gate-proj-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
+if args.loss_chunk_tokens == 0 or args.loss_chunk_tokens < -1:
+    raise ValueError("--loss-chunk-tokens must be a positive integer or -1 to auto-select")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 
@@ -435,6 +446,20 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 trace_ddp_progress = args.debug or env_flag_is_true("NANOCHAT_TRACE_DDP_PROGRESS")
 abort_on_nonfinite_grad = args.debug or env_flag_is_true("NANOCHAT_ABORT_ON_NONFINITE_GRAD")
+
+
+def resolve_loss_chunk_tokens(args, ddp_world_size, vocab_size):
+    if args.loss_chunk_tokens > 0:
+        return args.loss_chunk_tokens, False
+
+    max_logit_elements = 64 * 1024 * 1024
+    # Compiled multi-GPU runs keep extra CUDA state per rank; use a smaller
+    # logits chunk to leave headroom for the chunked CE buffer.
+    if args.compile and ddp_world_size >= 4:
+        max_logit_elements //= 2
+
+    chunk_tokens = max(1, max_logit_elements // int(vocab_size))
+    return chunk_tokens, True
 
 
 def trace_rank(message):
@@ -504,6 +529,14 @@ tokenizer = get_tokenizer()
 token_bytes = get_token_bytes(device=device)
 vocab_size = tokenizer.get_vocab_size()
 print0(f"Vocab size: {vocab_size:,}")
+resolved_loss_chunk_tokens, auto_loss_chunk_tokens = resolve_loss_chunk_tokens(args, ddp_world_size, vocab_size)
+user_config["loss_chunk_tokens"] = resolved_loss_chunk_tokens
+if auto_loss_chunk_tokens:
+    print0(
+        "Auto-selected loss_chunk_tokens="
+        f"{resolved_loss_chunk_tokens:,} "
+        f"for vocab_size={vocab_size:,}, ddp_world_size={ddp_world_size}, compile={args.compile}"
+    )
 
 # -----------------------------------------------------------------------------
 # Initialize the Model
@@ -546,6 +579,7 @@ def build_model_meta(depth):
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
+        loss_chunk_tokens=resolved_loss_chunk_tokens,
         debug=args.debug
     )
     with torch.device("meta"):
@@ -1816,10 +1850,10 @@ while True:
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             for stats_idx, layer_idx in enumerate(moe_layer_indices):
-                if stats_idx >= drop_rates.shape[0] or drop_rates.shape[1] < 1:
+                if stats_idx >= drop_rates.shape[0] or drop_rates.shape[1] < 2:
                     continue
-                log_data[f"inspect/drop_rate_0_step_{layer_idx}"] = scalar_loss_to_item(
-                    drop_rates[stats_idx, 0]
+                log_data[f"inspect/drop_rate_1_step_{layer_idx}"] = scalar_loss_to_item(
+                    drop_rates[stats_idx, 1]
                 )
         expert_utilities = losses['expert_utilities']
         moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
