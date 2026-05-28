@@ -64,6 +64,25 @@ def test_gate_proj_bias_l2_two_stage_schedule_can_increase_during_stage_2():
     ) == 0.4
 
 
+def test_gate_slope_max_scale_anneals_from_one_to_target_during_initial_fraction():
+    get_gate_slope_max_scale = load_function_from_script("get_gate_slope_max_scale")
+
+    assert get_gate_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1) == 1.0
+    assert get_gate_slope_max_scale(3.0, 5, total_iterations=100, warmup_iteration_frac=0.1) == 2.0
+    assert get_gate_slope_max_scale(3.0, 10, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
+    assert get_gate_slope_max_scale(3.0, 50, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
+
+
+def test_gate_slope_max_scale_stays_at_one_during_delay_then_anneals():
+    get_gate_slope_max_scale = load_function_from_script("get_gate_slope_max_scale")
+
+    assert get_gate_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_gate_slope_max_scale(3.0, 19, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_gate_slope_max_scale(3.0, 20, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_gate_slope_max_scale(3.0, 25, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 2.0
+    assert get_gate_slope_max_scale(3.0, 30, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 3.0
+
+
 def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
     build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
 
@@ -149,6 +168,22 @@ def test_gate_proj_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     assert 'gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac' in source
     assert 'orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)' in source
     assert 'orig_model.set_gate_proj_bias_ema_rms_reg_step(step)' in source
+
+
+def test_gate_slope_max_scale_anneal_cli_is_wired_into_step_updates():
+    source = BASE_TRAIN.read_text()
+
+    assert '"--gate-slope-max-scale-warmup-iteration-frac"' in source
+    assert '"--gate-slope-max-scale-annealing-iteration-frac"' not in source
+    assert 'dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.1' in source
+    assert 'def get_gate_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):' in source
+    assert 'moe_gate_slope_max_scale = get_gate_slope_max_scale(' in source
+    assert 'dense_gate_slope_max_scale = get_gate_slope_max_scale(' in source
+    assert 'warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac' in source
+    assert 'delay_iterations=gate_proj_bias_delay_start_iterations' in source
+    assert 'orig_model.set_gate_slope_max_scales(' in source
+    assert 'log_data["train/moe_gate_slope_max_scale"] = moe_gate_slope_max_scale' in source
+    assert 'log_data["train/dense_gate_slope_max_scale"] = dense_gate_slope_max_scale' in source
 
 
 def test_nonfinite_grad_debug_guard_is_wired_before_optimizer_step():

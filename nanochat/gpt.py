@@ -821,7 +821,11 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiLUActivation()
         self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
         self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
-        self.gate_slope_max_scale = float(getattr(config, 'dense_gate_slope_max_scale', 2.0))
+        self.register_buffer(
+            'gate_slope_max_scale',
+            torch.tensor(float(getattr(config, 'dense_gate_slope_max_scale', 2.0))),
+            persistent=False,
+        )
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_proj_bias_ema_rms_reg = bool(getattr(config, 'gate_proj_bias_ema_rms_reg', False))
         gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
@@ -924,6 +928,7 @@ class Qwen3MLP(nn.Module):
     def _compute_gate_slope_scales(self, gate_proj_bias, softness=1.0):
         target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
         gate_proj_bias = gate_proj_bias.to(dtype=target_dtype)
+        gate_slope_max_scale = self.gate_slope_max_scale.to(device=gate_proj_bias.device, dtype=target_dtype)
         input_constant = torch.as_tensor(
             self.gate_proj_bias_input_constant,
             device=gate_proj_bias.device,
@@ -931,10 +936,13 @@ class Qwen3MLP(nn.Module):
         )
         softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
         log_kappa = 2 * gate_proj_bias * input_constant
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
+        return torch.exp(torch.log(gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
     def set_gate_proj_bias_ema_rms_reg_step(self, step):
         self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
+
+    def set_gate_slope_max_scale(self, gate_slope_max_scale):
+        self.gate_slope_max_scale.fill_(float(gate_slope_max_scale))
 
     def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
         if self.gate_proj_bias_ema_rms_reg_keeper is not None:
@@ -1039,7 +1047,11 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
-        self.gate_slope_max_scale = float(getattr(config, 'moe_gate_slope_max_scale', 3.0))
+        self.register_buffer(
+            'gate_slope_max_scale',
+            torch.tensor(float(getattr(config, 'moe_gate_slope_max_scale', 3.0))),
+            persistent=False,
+        )
         self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
@@ -1260,6 +1272,7 @@ class Qwen3MLPExperts(nn.Module):
         target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
         gate_proj_bias = gate_proj_bias.to(dtype=target_dtype).unsqueeze(1)
         selected_router_scores = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
+        gate_slope_max_scale = self.gate_slope_max_scale.to(device=gate_proj_bias.device, dtype=target_dtype)
         softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
         if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
             if self.training:
@@ -1273,10 +1286,13 @@ class Qwen3MLPExperts(nn.Module):
             # Otherwise, gate_proj_bias_input == 'constant', and 
             # selected_router_scores is MOELayer.gate_proj_bias_input_constant.
             log_kappa = 2 * gate_proj_bias * selected_router_scores
-        return torch.exp(math.log(self.gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
+        return torch.exp(torch.log(gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
     def set_gate_proj_bias_ema_rms_reg_step(self, step):
         self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
+
+    def set_gate_slope_max_scale(self, gate_slope_max_scale):
+        self.gate_slope_max_scale.fill_(float(gate_slope_max_scale))
 
     def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
         if self.gate_proj_bias_ema_rms_reg_keeper is not None:
@@ -1785,6 +1801,16 @@ class GPT(nn.Module):
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts):
                 experts.set_gate_proj_bias_ema_rms_reg_total_iterations(total_iterations)
+
+    def set_gate_slope_max_scales(self, moe_gate_slope_max_scale=None, dense_gate_slope_max_scale=None):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, Qwen3MLP) and dense_gate_slope_max_scale is not None:
+                mlp.set_gate_slope_max_scale(dense_gate_slope_max_scale)
+                continue
+            experts = getattr(mlp, 'experts', None)
+            if isinstance(experts, Qwen3MLPExperts) and moe_gate_slope_max_scale is not None:
+                experts.set_gate_slope_max_scale(moe_gate_slope_max_scale)
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)

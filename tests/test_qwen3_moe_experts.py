@@ -386,6 +386,46 @@ def test_gpt_sets_router_confidence_gate_bias_grad_scale_for_all_qwen3_moe_exper
     assert found_experts == 2
 
 
+def test_gpt_sets_gate_slope_max_scales_for_dense_and_moe_qwen3_mlps():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=4,
+        moe_start_layer=1,
+        num_moe_layers=2,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_gate_proj_bias=True,
+        constant_gate_proj_bias_dense_layers=True,
+        use_qwen3_moe_mlp=True,
+        use_qwen3_dense_mlp=True,
+        debug=False,
+    )
+
+    model = GPT(config)
+    model.set_gate_slope_max_scales(moe_gate_slope_max_scale=2.5, dense_gate_slope_max_scale=1.75)
+
+    dense_layers = 0
+    moe_layers = 0
+    for block in model.transformer.h:
+        mlp = getattr(block, 'mlp', None)
+        if isinstance(mlp, Qwen3MLP):
+            dense_layers += 1
+            torch.testing.assert_close(mlp.gate_slope_max_scale, torch.tensor(1.75))
+            continue
+        experts = getattr(mlp, 'experts', None)
+        if isinstance(experts, Qwen3MLPExperts):
+            moe_layers += 1
+            torch.testing.assert_close(experts.gate_slope_max_scale, torch.tensor(2.5))
+
+    assert dense_layers == 2
+    assert moe_layers == 2
+
+
 def test_gate_proj_bias_input_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,

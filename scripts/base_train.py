@@ -228,6 +228,9 @@ parser.add_argument("--moe-gate-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE gate_proj_bias modulation")
 parser.add_argument("--dense-gate-slope-max-scale", type=float, default=2.0,
                     help="maximum slope scale used by dense gate_proj_bias modulation")
+parser.add_argument("--gate-slope-max-scale-warmup-iteration-frac",
+                    dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.1,
+                    help="fraction of total iterations used to warm gate slope max scales from 1.0 to --moe-gate-slope-max-scale / --dense-gate-slope-max-scale after the initial delay window")
 parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gate_proj_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
                     help="apply the constant gate_proj_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
 parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
@@ -246,7 +249,7 @@ parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
 parser.add_argument("--gate-proj-bias-delay-start-min-iterations", "--gate-proj-bias-delay-start-iterations",
                     dest="gate_proj_bias_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
-parser.add_argument("--gate-proj-bias-delay-start-iteration-frac", type=float, default=0.1,
+parser.add_argument("--gate-proj-bias-delay-start-iteration-frac", type=float, default=0.05,
                     help="fractional delay for gate_proj_bias LR start; the effective delay is max(--gate-proj-bias-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
@@ -369,6 +372,8 @@ if args.gate_proj_bias_delay_start_min_iterations < 0:
     raise ValueError("--gate-proj-bias-delay-start-min-iterations must be >= 0")
 if args.gate_proj_bias_delay_start_iteration_frac < 0:
     raise ValueError("--gate-proj-bias-delay-start-iteration-frac must be >= 0")
+if not (0.0 <= args.gate_slope_max_scale_warmup_iteration_frac <= 1.0):
+    raise ValueError("--gate-slope-max-scale-warmup-iteration-frac must satisfy 0 <= frac <= 1")
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
@@ -1009,6 +1014,27 @@ def get_gate_proj_bias_lr_scale(optimizer, step, num_iterations):
             )
     return 1.0
 
+
+def get_gate_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):
+    import math
+
+    target_max_scale = float(target_max_scale)
+    if target_max_scale == 1.0:
+        return 1.0
+
+    delay_iterations = max(int(delay_iterations), 0)
+    if int(it) < delay_iterations:
+        return 1.0
+
+    warmup_iteration_frac = min(max(float(warmup_iteration_frac), 0.0), 1.0)
+    warmup_iterations = math.ceil(max(int(total_iterations), 0) * warmup_iteration_frac)
+    if warmup_iterations <= 0:
+        return target_max_scale
+
+    warmup_step = min(max(int(it) - delay_iterations, 0), warmup_iterations)
+    progress = warmup_step / warmup_iterations
+    return 1.0 + (target_max_scale - 1.0) * progress
+
 def scalar_loss_to_item(value):
     if isinstance(value, torch.Tensor):
         return value.detach().item()
@@ -1377,6 +1403,24 @@ while True:
     )
     gate_proj_bias_scale_l2_loss_weight = (
         gate_proj_bias_l2_loss_weight * args.gate_proj_bias_scale_l2_loss_weight_scale
+    )
+    moe_gate_slope_max_scale = get_gate_slope_max_scale(
+        args.moe_gate_slope_max_scale,
+        step,
+        total_iterations=num_iterations,
+        warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac,
+        delay_iterations=gate_proj_bias_delay_start_iterations,
+    )
+    dense_gate_slope_max_scale = get_gate_slope_max_scale(
+        args.dense_gate_slope_max_scale,
+        step,
+        total_iterations=num_iterations,
+        warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac,
+        delay_iterations=gate_proj_bias_delay_start_iterations,
+    )
+    orig_model.set_gate_slope_max_scales(
+        moe_gate_slope_max_scale=moe_gate_slope_max_scale,
+        dense_gate_slope_max_scale=dense_gate_slope_max_scale,
     )
 
     # once in a while: evaluate the val bpb (all ranks participate)
@@ -1847,6 +1891,8 @@ while True:
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
         log_data["train/gate_proj_bias_scale_l2_loss_weight"] = gate_proj_bias_scale_l2_loss_weight
+        log_data["train/moe_gate_slope_max_scale"] = moe_gate_slope_max_scale
+        log_data["train/dense_gate_slope_max_scale"] = dense_gate_slope_max_scale
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if drop_rates.shape[1] >= 1:
