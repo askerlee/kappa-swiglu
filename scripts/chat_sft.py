@@ -670,12 +670,13 @@ while True:
         last_step = bool(last_step_tensor.item())
 
     # once in a while: evaluate the val bpb (all ranks participate)
-    if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
+    if last_step or (args.eval_every > 0 and step > 0 and step % args.eval_every == 0):
         model.eval()
+        orig_model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with autocast_ctx:
-            val_bpb, ntp_loss = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+            val_bpb, ntp_loss = evaluate_bpb(orig_model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -686,6 +687,8 @@ while True:
             "val/bpb": val_bpb,
         }), step=step)
         model.train()
+        orig_model.train()
+        MANAGER.reset_all()
 
     # save checkpoint at the end of the run before the expensive final chat eval
     if master_process and last_step and not args.dry_run:

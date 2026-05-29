@@ -194,11 +194,17 @@ def _chunked_cross_entropy(
     """Compute next-token loss without materializing full training logits at once."""
     hidden_flat = hidden_states.reshape(-1, hidden_states.size(-1))
     targets_flat = targets.reshape(-1)
+    valid_tokens = targets_flat.ne(-1).sum()
 
     if chunk_tokens >= hidden_flat.size(0):
         logits = lm_head(hidden_flat)
         logits = logits[:, :vocab_size]
         logits = SoftcapInPlace.apply(logits, softcap)
+        if loss_reduction == 'mean':
+            loss_sum = F.cross_entropy(logits, targets_flat, ignore_index=-1, reduction='sum')
+            mean_loss = loss_sum / valid_tokens.clamp_min(1)
+            zero_loss = hidden_flat.sum(dtype=loss_sum.dtype) * 0.0
+            return torch.where(valid_tokens > 0, mean_loss, zero_loss)
         return F.cross_entropy(logits, targets_flat, ignore_index=-1, reduction=loss_reduction)
 
     if loss_reduction == 'none':
@@ -236,8 +242,9 @@ def _chunked_cross_entropy(
     if loss_reduction == 'sum':
         return loss_sum
 
-    valid_tokens = targets_flat.ne(-1).sum()
-    return loss_sum / valid_tokens
+    mean_loss = loss_sum / valid_tokens.clamp_min(1)
+    zero_loss = hidden_flat.sum(dtype=loss_sum.dtype) * 0.0
+    return torch.where(valid_tokens > 0, mean_loss, zero_loss)
 
 class ReuseMmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
