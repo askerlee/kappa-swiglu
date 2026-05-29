@@ -72,7 +72,7 @@ for i in 1 2 3
     set cuda $devices[$i]
     set sess exp64-d8-kappa-lin-au-s$seed
 
-    tmux new -d -s $sess "CUDA_VISIBLE_DEVICES=$cuda torchrun --standalone --nproc_per_node=2 -m scripts.base_train --delete-old-ckpts-before-save --model-tag exp64-d8-kappa-lin-au --n-exp 64 --depth 8 --device-batch-size 32 --use-kappa-swiglu --constant-kappa-dense-layers --kappa-ema-rms-reg --rebuild-compile-after-first-eval-only --seed $seed"
+    tmux new -d -s $sess "CUDA_VISIBLE_DEVICES=$cuda torchrun --standalone --nproc_per_node=2 -m scripts.base_train --delete-old-ckpts-before-save --model-tag exp64-d8-kappa-lin-au --n-exp 64 --depth 8 --device-batch-size 32 --use-kappa-swiglu --constant-kappa-dense-layers --kappa-ema-rms-reg --seed $seed"
 
     tmux pipe-pane -t $sess:0.0 -o "cat >> $sess.log"
 end
