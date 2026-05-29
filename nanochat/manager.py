@@ -24,8 +24,8 @@ class MOEManager:
             "selected_scores": [],
             "kappa_bias_shift_abs_mean": [],
             "kappa_bias_shift_abs_mean_normalized": [],
-            "implicit_kappa_bias_top5p_mean": [],
-            "implicit_kappa_bias_bottom5p_mean": [],
+            "implicit_gate_proj_bias_top5p_mean": [],
+            "implicit_gate_proj_bias_bottom5p_mean": [],
             "routed_token_router_weight_cosine_mean": [],
             "routed_token_router_weight_cosine_top5p_mean": [],
             "routed_token_router_weight_cosine_bottom5p_mean": [],
@@ -47,10 +47,10 @@ class MOEManager:
         self._kappa_bias_shift_abs_mean_size = 0
         self._kappa_bias_shift_abs_mean_normalized_buffer = None
         self._kappa_bias_shift_abs_mean_normalized_size = 0
-        self._implicit_kappa_bias_top5p_mean_buffer = None
-        self._implicit_kappa_bias_top5p_mean_size = 0
-        self._implicit_kappa_bias_bottom5p_mean_buffer = None
-        self._implicit_kappa_bias_bottom5p_mean_size = 0
+        self._implicit_gate_proj_bias_top5p_mean_buffer = None
+        self._implicit_gate_proj_bias_top5p_mean_size = 0
+        self._implicit_gate_proj_bias_bottom5p_mean_buffer = None
+        self._implicit_gate_proj_bias_bottom5p_mean_size = 0
         self._routed_token_router_weight_cosine_mean_buffer = None
         self._routed_token_router_weight_cosine_mean_size = 0
         self._routed_token_router_weight_cosine_top5p_mean_buffer = None
@@ -66,8 +66,8 @@ class MOEManager:
              "gate_grad_scale_mean",
              "kappa_bias_shift_abs_mean",
              "kappa_bias_shift_abs_mean_normalized",
-             "implicit_kappa_bias_top5p_mean",
-             "implicit_kappa_bias_bottom5p_mean",
+             "implicit_gate_proj_bias_top5p_mean",
+             "implicit_gate_proj_bias_bottom5p_mean",
              "routed_token_router_weight_cosine_mean",
              "routed_token_router_weight_cosine_top5p_mean",
              "routed_token_router_weight_cosine_bottom5p_mean"])
@@ -97,11 +97,11 @@ class MOEManager:
         if name == "kappa_bias_shift_abs_mean_normalized":
             self._kappa_bias_shift_abs_mean_normalized_size = 0
             return
-        if name == "implicit_kappa_bias_top5p_mean":
-            self._implicit_kappa_bias_top5p_mean_size = 0
+        if name == "implicit_gate_proj_bias_top5p_mean":
+            self._implicit_gate_proj_bias_top5p_mean_size = 0
             return
-        if name == "implicit_kappa_bias_bottom5p_mean":
-            self._implicit_kappa_bias_bottom5p_mean_size = 0
+        if name == "implicit_gate_proj_bias_bottom5p_mean":
+            self._implicit_gate_proj_bias_bottom5p_mean_size = 0
             return
         if name == "routed_token_router_weight_cosine_mean":
             self._routed_token_router_weight_cosine_mean_size = 0
@@ -224,33 +224,33 @@ class MOEManager:
                 ].copy_(value.reshape(1))
                 self._kappa_bias_shift_abs_mean_normalized_size = new_size
             return
-        if name == "implicit_kappa_bias_top5p_mean":
+        if name == "implicit_gate_proj_bias_top5p_mean":
             with torch.inference_mode(False):
-                if self._implicit_kappa_bias_top5p_mean_buffer is None:
-                    self._implicit_kappa_bias_top5p_mean_buffer = torch.empty(
+                if self._implicit_gate_proj_bias_top5p_mean_buffer is None:
+                    self._implicit_gate_proj_bias_top5p_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._implicit_kappa_bias_top5p_mean_size + 1
-                self._implicit_kappa_bias_top5p_mean_buffer[
-                    self._implicit_kappa_bias_top5p_mean_size:new_size
+                new_size = self._implicit_gate_proj_bias_top5p_mean_size + 1
+                self._implicit_gate_proj_bias_top5p_mean_buffer[
+                    self._implicit_gate_proj_bias_top5p_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._implicit_kappa_bias_top5p_mean_size = new_size
+                self._implicit_gate_proj_bias_top5p_mean_size = new_size
             return
-        if name == "implicit_kappa_bias_bottom5p_mean":
+        if name == "implicit_gate_proj_bias_bottom5p_mean":
             with torch.inference_mode(False):
-                if self._implicit_kappa_bias_bottom5p_mean_buffer is None:
-                    self._implicit_kappa_bias_bottom5p_mean_buffer = torch.empty(
+                if self._implicit_gate_proj_bias_bottom5p_mean_buffer is None:
+                    self._implicit_gate_proj_bias_bottom5p_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._implicit_kappa_bias_bottom5p_mean_size + 1
-                self._implicit_kappa_bias_bottom5p_mean_buffer[
-                    self._implicit_kappa_bias_bottom5p_mean_size:new_size
+                new_size = self._implicit_gate_proj_bias_bottom5p_mean_size + 1
+                self._implicit_gate_proj_bias_bottom5p_mean_buffer[
+                    self._implicit_gate_proj_bias_bottom5p_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._implicit_kappa_bias_bottom5p_mean_size = new_size
+                self._implicit_gate_proj_bias_bottom5p_mean_size = new_size
             return
         if name == "routed_token_router_weight_cosine_mean":
             with torch.inference_mode(False):
@@ -357,24 +357,24 @@ class MOEManager:
                 :self._kappa_bias_shift_abs_mean_normalized_size
             ]
             return values
-        elif name == "implicit_kappa_bias_top5p_mean":
+        elif name == "implicit_gate_proj_bias_top5p_mean":
             if (
-                self._implicit_kappa_bias_top5p_mean_buffer is None
-                or self._implicit_kappa_bias_top5p_mean_size == 0
+                self._implicit_gate_proj_bias_top5p_mean_buffer is None
+                or self._implicit_gate_proj_bias_top5p_mean_size == 0
             ):
                 return None
-            values = self._implicit_kappa_bias_top5p_mean_buffer[
-                :self._implicit_kappa_bias_top5p_mean_size
+            values = self._implicit_gate_proj_bias_top5p_mean_buffer[
+                :self._implicit_gate_proj_bias_top5p_mean_size
             ]
             return values
-        elif name == "implicit_kappa_bias_bottom5p_mean":
+        elif name == "implicit_gate_proj_bias_bottom5p_mean":
             if (
-                self._implicit_kappa_bias_bottom5p_mean_buffer is None
-                or self._implicit_kappa_bias_bottom5p_mean_size == 0
+                self._implicit_gate_proj_bias_bottom5p_mean_buffer is None
+                or self._implicit_gate_proj_bias_bottom5p_mean_size == 0
             ):
                 return None
-            values = self._implicit_kappa_bias_bottom5p_mean_buffer[
-                :self._implicit_kappa_bias_bottom5p_mean_size
+            values = self._implicit_gate_proj_bias_bottom5p_mean_buffer[
+                :self._implicit_gate_proj_bias_bottom5p_mean_size
             ]
             return values
         elif name == "routed_token_router_weight_cosine_mean":

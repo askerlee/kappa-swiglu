@@ -220,10 +220,10 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--kappa-bias-input", dest="kappa_bias_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
+parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--kappa-bias-input-constant", dest="kappa_bias_input_constant", type=float, default=0.5,
-                    help="constant confidence value to use when --kappa-bias-input=constant")
+parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=0.5,
+                    help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
 parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
@@ -231,48 +231,47 @@ parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
 parser.add_argument("--kappa-slope-max-scale-warmup-iteration-frac",
                     dest="kappa_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
                     help="fraction of total iterations used to warm gate slope max scales from 1.0 to --moe-kappa-slope-max-scale / --dense-kappa-slope-max-scale after the initial delay window")
-parser.add_argument("--constant-kappa-bias-dense-layers", dest="constant_kappa_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs='?', const=True, default=False,
                     help="apply the constant kappa_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
-parser.add_argument("--global-kappa-bias-granularity", type=str, default="per-gate",
+parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
-parser.add_argument("--kappa-bias-start-layer", type=int, default=2,
-                    help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-bias-dense-layers)")
-parser.add_argument("--log-implicit-kappa-bias", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
+                    help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
+parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
                         help="log the implicit kappa bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-kappa-swiglu")
-parser.add_argument("--kappa-bias-lr-max-scale", type=float, default=0.4,
-                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-bias-lr-final-scale")
-# With slope scaling always enabled, --kappa-bias-lr-final-scale
-# defaults to half of --kappa-bias-lr-max-scale, which is 0.2 by default.
-parser.add_argument("--kappa-bias-lr-final-scale", type=float, default=0.2,
+parser.add_argument("--kappa-lr-max-scale", dest="kappa_lr_max_scale", type=float, default=0.4,
+                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
+# With slope scaling always enabled, --kappa-lr-final-scale
+# defaults to half of --kappa-lr-max-scale, which is 0.2 by default.
+parser.add_argument("--kappa-lr-final-scale", dest="kappa_lr_final_scale", type=float, default=0.2,
                     help="final LR scale factor for kappa_bias params after warming from 0 to 1")
-parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
-                    dest="kappa_bias_delay_start_min_iterations", type=int, default=200,
+parser.add_argument("--kappa-delay-start-min-iterations", dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
-parser.add_argument("--kappa-bias-delay-start-iteration-frac", type=float, default=0.05,
-                    help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-bias-delay-start-min-iterations, ceil(total_iterations * this value))")
-parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=1000,
-                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
-parser.add_argument("--kappa-bias-l2-loss-weight", type=float, default=1e-2,
+parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.05,
+                    help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
+parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
+parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
                     help="L2 weight on kappa_bias and kappa_scale values")
-parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs='?', const=True, default=False,
                     help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
-parser.add_argument("--kappa-bias-l2-ema-beta", type=float, default=0.99,
-                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --kappa-bias-ema-rms-reg")
-parser.add_argument("--kappa-bias-l2-ema-anchor-start", type=float, default=0.4,
+parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99,
+                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --kappa-ema-rms-reg")
+parser.add_argument("--kappa-l2-ema-anchor-start", dest="kappa_l2_ema_anchor_start", type=float, default=0.4,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer starts updating its target")
-parser.add_argument("--kappa-bias-l2-ema-anchor-end", type=float, default=0.5,
+parser.add_argument("--kappa-l2-ema-anchor-end", dest="kappa_l2_ema_anchor_end", type=float, default=0.5,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
-parser.add_argument("--kappa-bias-l2-ema-floor-frac", type=float, default=0.9,
-                    help="floor fraction applied to the anchored EMA RMS target when --kappa-bias-ema-rms-reg is enabled")
+parser.add_argument("--kappa-l2-ema-floor-frac", dest="kappa_l2_ema_floor_frac", type=float, default=0.9,
+                    help="floor fraction applied to the anchored EMA RMS target when --kappa-ema-rms-reg is enabled")
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=2.0,
-                    help="multiplier applied to --kappa-bias-l2-loss-weight when weighting kappa_scale L2 loss")
-parser.add_argument("--kappa-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
+                    help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
+parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
 # push the kappa_bias values towards 0 so that the slopes 
 # are pushed towards 1.
-parser.add_argument("--kappa-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--kappa-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -368,34 +367,34 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
         "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
     )
 
-if args.kappa_bias_delay_start_min_iterations < 0:
-    raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
-if args.kappa_bias_delay_start_iteration_frac < 0:
-    raise ValueError("--kappa-bias-delay-start-iteration-frac must be >= 0")
+if args.kappa_delay_start_min_iterations < 0:
+    raise ValueError("--kappa-delay-start-min-iterations must be >= 0")
+if args.kappa_delay_start_iteration_frac < 0:
+    raise ValueError("--kappa-delay-start-iteration-frac must be >= 0")
 if not (0.0 <= args.kappa_slope_max_scale_warmup_iteration_frac <= 1.0):
     raise ValueError("--kappa-slope-max-scale-warmup-iteration-frac must satisfy 0 <= frac <= 1")
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
     raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
-if not (0.0 <= args.kappa_bias_l2_ema_beta < 1.0):
-    raise ValueError("--kappa-bias-l2-ema-beta must satisfy 0 <= beta < 1")
-if not (0.0 <= args.kappa_bias_l2_ema_anchor_start <= 1.0):
-    raise ValueError("--kappa-bias-l2-ema-anchor-start must satisfy 0 <= start <= 1")
-if args.kappa_bias_l2_ema_anchor_end < args.kappa_bias_l2_ema_anchor_start:
+if not (0.0 <= args.kappa_l2_ema_beta < 1.0):
+    raise ValueError("--kappa-l2-ema-beta must satisfy 0 <= beta < 1")
+if not (0.0 <= args.kappa_l2_ema_anchor_start <= 1.0):
+    raise ValueError("--kappa-l2-ema-anchor-start must satisfy 0 <= start <= 1")
+if args.kappa_l2_ema_anchor_end < args.kappa_l2_ema_anchor_start:
     raise ValueError(
-        "--kappa-bias-l2-ema-anchor-end must be >= --kappa-bias-l2-ema-anchor-start"
+        "--kappa-l2-ema-anchor-end must be >= --kappa-l2-ema-anchor-start"
     )
-if args.kappa_bias_l2_ema_anchor_end > 1.0:
-    raise ValueError("--kappa-bias-l2-ema-anchor-end must satisfy 0 <= end <= 1")
-if args.kappa_bias_l2_ema_floor_frac < 0.0:
-    raise ValueError("--kappa-bias-l2-ema-floor-frac must be >= 0")
+if args.kappa_l2_ema_anchor_end > 1.0:
+    raise ValueError("--kappa-l2-ema-anchor-end must satisfy 0 <= end <= 1")
+if args.kappa_l2_ema_floor_frac < 0.0:
+    raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
 
 '''
 # Aurora and kappa-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
-if args.matrix_optimizer == "aurora" and args.kappa_bias_input != "constant":
-    args.kappa_bias_input = "router_probs"
+if args.matrix_optimizer == "aurora" and args.kappa_input != "constant":
+    args.kappa_input = "router_probs"
 '''
 
 # num_moe_layers: 
@@ -417,7 +416,7 @@ if args.use_moe_adjusted_scaling_params and effective_moe_layer_count < args.dep
         "Disabling --use-moe-adjusted-scaling-params because the effective number of MoE layers "
         f"({effective_moe_layer_count}) is less than one fifth of depth ({args.depth / 5:.2f})."
     )
-if args.kappa_bias_start_layer is None:
+if args.kappa_start_layer is None:
     if args.num_moe_layers != 0:
         # If depth = 4, start layer = 2; if depth = 6, start layer = 3;
         # If depth = 8, start layer = 4; 
@@ -426,11 +425,11 @@ if args.kappa_bias_start_layer is None:
         # moe_start_layer + 2: at most skip the first 2 moe layers, 
         # to avoid missing too many moe layers.
         # If depth = 10 and moe_start_layer = 2, then bias starts at layer 4 instead of 5.
-        args.kappa_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
+        args.kappa_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
-        args.kappa_bias_start_layer = 0
-if args.kappa_bias_start_layer < 0:
-    raise ValueError("--kappa-bias-start-layer must be >= 0")
+        args.kappa_start_layer = 0
+if args.kappa_start_layer < 0:
+    raise ValueError("--kappa-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.loss_chunk_tokens == 0 or args.loss_chunk_tokens < -1:
@@ -564,19 +563,19 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_kappa_swiglu=args.use_kappa_swiglu,
-        kappa_bias_input=args.kappa_bias_input,
-        kappa_bias_input_constant=args.kappa_bias_input_constant,
+        kappa_input=args.kappa_input,
+        kappa_input_constant=args.kappa_input_constant,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
-        constant_kappa_bias_dense_layers=args.constant_kappa_bias_dense_layers,
-        global_kappa_bias_granularity=args.global_kappa_bias_granularity,
-        kappa_bias_start_layer=args.kappa_bias_start_layer,
-        log_implicit_kappa_bias=args.log_implicit_kappa_bias,
-        kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg,
-        kappa_bias_l2_ema_beta=args.kappa_bias_l2_ema_beta,
-        kappa_bias_l2_ema_anchor_start=args.kappa_bias_l2_ema_anchor_start,
-        kappa_bias_l2_ema_anchor_end=args.kappa_bias_l2_ema_anchor_end,
-        kappa_bias_l2_ema_floor_frac=args.kappa_bias_l2_ema_floor_frac,
+        constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
+        global_kappa_bias_granularity=args.global_kappa_granularity,
+        kappa_bias_start_layer=args.kappa_start_layer,
+        log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
+        kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg,
+        kappa_bias_l2_ema_beta=args.kappa_l2_ema_beta,
+        kappa_bias_l2_ema_anchor_start=args.kappa_l2_ema_anchor_start,
+        kappa_bias_l2_ema_anchor_end=args.kappa_l2_ema_anchor_end,
+        kappa_bias_l2_ema_floor_frac=args.kappa_l2_ema_floor_frac,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -818,14 +817,14 @@ print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)
 
 kappa_bias_delay_start_iterations = max(
-    args.kappa_bias_delay_start_min_iterations,
-    math.ceil(num_iterations * args.kappa_bias_delay_start_iteration_frac),
+    args.kappa_delay_start_min_iterations,
+    math.ceil(num_iterations * args.kappa_delay_start_iteration_frac),
 )
-user_config["effective_kappa_bias_delay_start_iterations"] = kappa_bias_delay_start_iterations
+user_config["effective_kappa_delay_start_iterations"] = kappa_bias_delay_start_iterations
 print0(
     "Using kappa_bias LR delay start iterations: "
-    f"max({args.kappa_bias_delay_start_min_iterations}, "
-    f"ceil({num_iterations} * {args.kappa_bias_delay_start_iteration_frac:.6f})) "
+    f"max({args.kappa_delay_start_min_iterations}, "
+    f"ceil({num_iterations} * {args.kappa_delay_start_iteration_frac:.6f})) "
     f"= {kappa_bias_delay_start_iterations}"
 )
 
@@ -890,10 +889,10 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
-    kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
-    kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
+    kappa_bias_lr_final_scale=args.kappa_lr_final_scale,
+    kappa_bias_lr_max_scale=args.kappa_lr_max_scale,
     kappa_bias_delay_start_iterations=kappa_bias_delay_start_iterations,
-    kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
+    kappa_bias_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
 )
 
 if resuming and load_optimizer_state:
@@ -1388,17 +1387,17 @@ while True:
         num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations,
         final_weight=args.aux_loss_weight,
     )
-    # By default, stage1_iterations = kappa_bias_l2_loss_anneal_iterations = -1.
+    # By default, stage1_iterations = kappa_l2_loss_anneal_iterations = -1.
     # In this case, it's set as half of the total iterations in 
     # get_two_stage_annealed_loss_weight().
-    kappa_bias_l2_stage1_iterations = args.kappa_bias_l2_loss_anneal_iterations
+    kappa_bias_l2_stage1_iterations = args.kappa_l2_loss_anneal_iterations
     kappa_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.kappa_bias_l2_loss_weight,
+        args.kappa_l2_loss_weight,
         step,
         total_iterations=num_iterations,
         stage1_iterations=kappa_bias_l2_stage1_iterations,
-        stage1_floor_frac=args.kappa_bias_l2_loss_stage1_frac,
-        final_floor_frac=args.kappa_bias_l2_loss_final_frac,
+        stage1_floor_frac=args.kappa_l2_loss_stage1_frac,
+        final_floor_frac=args.kappa_l2_loss_final_frac,
         nolearn_iterations=0,
     )
     kappa_scale_l2_loss_weight = (
@@ -1876,8 +1875,8 @@ while True:
             "train/kappa_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_top5p_mean'].mean()),
             "train/kappa_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_bottom5p_mean'].mean()),
             "train/kappa_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean_normalized'].mean()),
-            "train/implicit_kappa_bias_top5p_mean_step": scalar_loss_to_item(losses['implicit_kappa_bias_top5p_mean'].mean()),
-            "train/implicit_kappa_bias_bottom5p_mean_step": scalar_loss_to_item(losses['implicit_kappa_bias_bottom5p_mean'].mean()),
+            "train/implicit_gate_proj_bias_top5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_top5p_mean'].mean()),
+            "train/implicit_gate_proj_bias_bottom5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_bottom5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_mean'].mean()),
             "train/routed_token_router_weight_cosine_top5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_top5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_bottom5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_bottom5p_mean'].mean()),
@@ -1965,10 +1964,10 @@ while True:
                 log_data.update({f"inspect/kappa_bias_shift_abs_bottom5p_mean_{i}": losses[f'kappa_bias_shift_abs_bottom5p_mean_{i}']})
             if f'kappa_bias_shift_abs_mean_normalized_{i}' in losses:
                 log_data.update({f"inspect/kappa_bias_shift_abs_mean_normalized_{i}": losses[f'kappa_bias_shift_abs_mean_normalized_{i}']})
-            if f'implicit_kappa_bias_top5p_mean_{i}' in losses:
-                log_data.update({f"inspect/implicit_kappa_bias_top5p_mean_{i}": losses[f'implicit_kappa_bias_top5p_mean_{i}']})
-            if f'implicit_kappa_bias_bottom5p_mean_{i}' in losses:
-                log_data.update({f"inspect/implicit_kappa_bias_bottom5p_mean_{i}": losses[f'implicit_kappa_bias_bottom5p_mean_{i}']})
+            if f'implicit_gate_proj_bias_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/implicit_gate_proj_bias_top5p_mean_{i}": losses[f'implicit_gate_proj_bias_top5p_mean_{i}']})
+            if f'implicit_gate_proj_bias_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/implicit_gate_proj_bias_bottom5p_mean_{i}": losses[f'implicit_gate_proj_bias_bottom5p_mean_{i}']})
             if f'routed_token_router_weight_cosine_mean_{i}' in losses:
                 log_data.update({f"inspect/routed_token_router_weight_cosine_mean_{i}": losses[f'routed_token_router_weight_cosine_mean_{i}']})
             if f'routed_token_router_weight_cosine_top5p_mean_{i}' in losses:

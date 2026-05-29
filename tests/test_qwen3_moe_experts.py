@@ -275,14 +275,14 @@ def test_config_allows_constant_dense_kappa_bias_with_router_probs_for_moe_layer
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_input="router_probs",
-        kappa_bias_input_constant=0.5,
+        kappa_input="router_probs",
+        kappa_input_constant=0.5,
         constant_kappa_bias_dense_layers=True,
         debug=False,
     )
 
-    assert config.kappa_bias_input == "router_probs"
-    assert config.kappa_bias_input_constant == pytest.approx(0.5)
+    assert config.kappa_input == "router_probs"
+    assert config.kappa_input_constant == pytest.approx(0.5)
     assert config.constant_kappa_bias_dense_layers is True
 
 
@@ -291,8 +291,8 @@ def test_dense_qwen3_mlp_enables_constant_kappa_bias_when_requested():
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_input="router_probs",
-        kappa_bias_input_constant=0.5,
+        kappa_input="router_probs",
+        kappa_input_constant=0.5,
         constant_kappa_bias_dense_layers=True,
         debug=False,
     )
@@ -312,8 +312,8 @@ def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_input="router_probs",
-        kappa_bias_input_constant=0.5,
+        kappa_input="router_probs",
+        kappa_input_constant=0.5,
         constant_kappa_bias_dense_layers=True,
         kappa_bias_start_layer=2,
         debug=False,
@@ -426,7 +426,7 @@ def test_gpt_sets_kappa_slope_max_scales_for_dense_and_moe_qwen3_mlps():
     assert moe_layers == 2
 
 
-def test_kappa_bias_input_defaults_and_overrides_from_config():
+def test_kappa_input_defaults_and_overrides_from_config():
     default_config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -437,12 +437,12 @@ def test_kappa_bias_input_defaults_and_overrides_from_config():
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_input="router_probs",
+        kappa_input="router_probs",
         debug=False,
     )
 
-    assert default_config.kappa_bias_input == "router_probs"
-    assert override_config.kappa_bias_input == "router_probs"
+    assert default_config.kappa_input == "router_probs"
+    assert override_config.kappa_input == "router_probs"
 
 def test_kappa_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(
@@ -637,7 +637,7 @@ def test_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_input="router_probs",
+        kappa_input="router_probs",
         kappa_bias_ema_rms_reg=True,
         kappa_bias_l2_ema_beta=0.99,
         kappa_bias_l2_ema_anchor_start=0.0,
@@ -675,7 +675,7 @@ def test_dense_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
         n_embd=4,
         use_kappa_swiglu=True,
         constant_kappa_bias_dense_layers=True,
-        kappa_bias_input="constant",
+        kappa_input="constant",
         kappa_bias_ema_rms_reg=True,
         kappa_bias_l2_ema_beta=0.99,
         kappa_bias_l2_ema_anchor_start=0.0,

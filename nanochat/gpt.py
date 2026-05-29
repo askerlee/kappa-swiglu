@@ -826,8 +826,8 @@ class Qwen3MLP(nn.Module):
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
-        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
-        self.kappa_bias_input_constant = getattr(config, 'kappa_bias_input_constant', None)
+        self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
         self.register_buffer(
             'kappa_slope_max_scale',
             torch.tensor(float(getattr(config, 'dense_kappa_slope_max_scale', 2.0))),
@@ -937,7 +937,7 @@ class Qwen3MLP(nn.Module):
         kappa_bias = kappa_bias.to(dtype=target_dtype)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
         input_constant = torch.as_tensor(
-            self.kappa_bias_input_constant,
+            self.kappa_input_constant,
             device=kappa_bias.device,
             dtype=target_dtype,
         )
@@ -1053,7 +1053,7 @@ class Qwen3MLPExperts(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
-        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
+        self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.register_buffer(
             'kappa_slope_max_scale',
             torch.tensor(float(getattr(config, 'moe_kappa_slope_max_scale', 3.0))),
@@ -1067,7 +1067,7 @@ class Qwen3MLPExperts(nn.Module):
         self.use_kappa_swiglu = bool(getattr(config, 'use_kappa_swiglu', False)) and (
             layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
-        self.log_implicit_kappa_bias = bool(getattr(config, 'log_implicit_kappa_bias', False))
+        self.log_implicit_gate_proj_bias = bool(getattr(config, 'log_implicit_gate_proj_bias', False))
         self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_kappa_bias = None
         self._shared_kappa_scale = None
@@ -1086,7 +1086,7 @@ class Qwen3MLPExperts(nn.Module):
         )
         self.use_kappa_scale = (
             self.use_kappa_swiglu
-            and self.kappa_bias_input in {'top_logits', 'router_probs'}
+            and self.kappa_input in {'top_logits', 'router_probs'}
         )
         if self.use_kappa_swiglu:
             kappa_bias_shape = self._get_kappa_bias_parameter_shape()
@@ -1281,7 +1281,7 @@ class Qwen3MLPExperts(nn.Module):
         selected_router_scores = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
         softness_t = torch.as_tensor(softness, device=kappa_bias.device, dtype=target_dtype)
-        if self.kappa_bias_input in {'top_logits', 'router_probs'}:
+        if self.kappa_input in {'top_logits', 'router_probs'}:
             if self.training:
                 kappa_scale = self._materialize_kappa_scale().to(dtype=target_dtype)
             else:
@@ -1290,8 +1290,8 @@ class Qwen3MLPExperts(nn.Module):
             transformed_scores = kappa_scale * selected_router_scores + kappa_bias
             log_kappa = 2 * transformed_scores
         else:
-            # Otherwise, kappa_bias_input == 'constant', and 
-            # selected_router_scores is MOELayer.kappa_bias_input_constant.
+            # Otherwise, kappa_input == 'constant', and 
+            # selected_router_scores is MOELayer.kappa_input_constant.
             log_kappa = 2 * kappa_bias * selected_router_scores
         return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
@@ -1441,10 +1441,10 @@ class Qwen3MLPExperts(nn.Module):
         MANAGER.add("kappa_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
 
     @torch._dynamo.disable
-    def _update_implicit_kappa_bias_stats(self, x, router_weight, selected_router_scores):
+    def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
         if (
             not MANAGER.collect_load_balancing_stats
-            or not self.log_implicit_kappa_bias
+            or not self.log_implicit_gate_proj_bias
             or selected_router_scores is None
             or router_weight is None
         ):
@@ -1474,7 +1474,7 @@ class Qwen3MLPExperts(nn.Module):
         exp_gate_parallel_coeff = (self.gate_proj.detach().float() * router_weight.unsqueeze(-1)).sum(dim=1)
         input_parallel = (x * router_weight.unsqueeze(1)).sum(dim=2)
         MANAGER.add(
-            "implicit_kappa_bias_top5p_mean",
+            "implicit_gate_proj_bias_top5p_mean",
             _mean_extreme_outer_product_percentile_per_row(
                 input_parallel,
                 exp_gate_parallel_coeff,
@@ -1484,7 +1484,7 @@ class Qwen3MLPExperts(nn.Module):
             ).detach(),
         )
         MANAGER.add(
-            "implicit_kappa_bias_bottom5p_mean",
+            "implicit_gate_proj_bias_bottom5p_mean",
             _mean_extreme_outer_product_percentile_per_row(
                 input_parallel,
                 exp_gate_parallel_coeff,
@@ -1527,7 +1527,7 @@ class Qwen3MLPExperts(nn.Module):
         else:
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
         if selected_router_scores is not None:
-            self._update_implicit_kappa_bias_stats(x, router_weight, selected_router_scores)
+            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
         self._update_gate_stats(gate_out_acts)
 
         fc_out = torch.bmm(x, self.c_fc)
@@ -1554,8 +1554,8 @@ class MOELayer(nn.Module):
         self.n_exp = config.n_exp
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
-        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
-        self.kappa_bias_input_constant = getattr(config, 'kappa_bias_input_constant', None)
+        self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1587,20 +1587,20 @@ class MOELayer(nn.Module):
         return output_flat
 
     def _select_gate_confidence(self, top_k_scores, router_probs):
-        if self.kappa_bias_input == 'top_logits':
+        if self.kappa_input == 'top_logits':
             # top_logits are usually 3~4. * 0.15 -> 0.45~0.6. 
             # Similar as the default "constant" setting of 0.5.
             return top_k_scores * 0.15
-        if self.kappa_bias_input == 'router_probs':
+        if self.kappa_input == 'router_probs':
             return router_probs
-        if self.kappa_bias_input == 'constant':
-            if self.kappa_bias_input_constant is None:
+        if self.kappa_input == 'constant':
+            if self.kappa_input_constant is None:
                 raise RuntimeError(
-                    "kappa_bias_input_constant must be set when kappa_bias_input='constant'"
+                    "kappa_input_constant must be set when kappa_input='constant'"
                 )
-            return torch.full_like(router_probs, self.kappa_bias_input_constant)
+            return torch.full_like(router_probs, self.kappa_input_constant)
         raise ValueError(
-            f"Unsupported kappa_bias_input: {self.kappa_bias_input!r}"
+            f"Unsupported kappa_input: {self.kappa_input!r}"
         )
 
     def forward(self, x: torch.Tensor):
@@ -2294,8 +2294,8 @@ class GPT(nn.Module):
                    'kappa_bias_shift_abs_bottom5p_mean': 0,
                    'kappa_bias_shift_abs_mean': 0,
                    'kappa_bias_shift_abs_mean_normalized': 0,
-                   'implicit_kappa_bias_top5p_mean': 0,
-                   'implicit_kappa_bias_bottom5p_mean': 0,
+                   'implicit_gate_proj_bias_top5p_mean': 0,
+                   'implicit_gate_proj_bias_bottom5p_mean': 0,
                    'routed_token_router_weight_cosine_mean': 0,
                    'routed_token_router_weight_cosine_top5p_mean': 0,
                    'routed_token_router_weight_cosine_bottom5p_mean': 0,
@@ -2350,20 +2350,20 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("kappa_bias_shift_abs_mean_normalized")
-        implicit_kappa_bias_top5p_mean = MANAGER.aggregate("implicit_kappa_bias_top5p_mean")
-        losses['implicit_kappa_bias_top5p_mean'] = (
-            implicit_kappa_bias_top5p_mean.detach()
-            if implicit_kappa_bias_top5p_mean is not None
+        implicit_gate_proj_bias_top5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_top5p_mean")
+        losses['implicit_gate_proj_bias_top5p_mean'] = (
+            implicit_gate_proj_bias_top5p_mean.detach()
+            if implicit_gate_proj_bias_top5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("implicit_kappa_bias_top5p_mean")
-        implicit_kappa_bias_bottom5p_mean = MANAGER.aggregate("implicit_kappa_bias_bottom5p_mean")
-        losses['implicit_kappa_bias_bottom5p_mean'] = (
-            implicit_kappa_bias_bottom5p_mean.detach()
-            if implicit_kappa_bias_bottom5p_mean is not None
+        MANAGER.reset("implicit_gate_proj_bias_top5p_mean")
+        implicit_gate_proj_bias_bottom5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_bottom5p_mean")
+        losses['implicit_gate_proj_bias_bottom5p_mean'] = (
+            implicit_gate_proj_bias_bottom5p_mean.detach()
+            if implicit_gate_proj_bias_bottom5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("implicit_kappa_bias_bottom5p_mean")
+        MANAGER.reset("implicit_gate_proj_bias_bottom5p_mean")
         routed_token_router_weight_cosine_mean = MANAGER.aggregate("routed_token_router_weight_cosine_mean")
         losses['routed_token_router_weight_cosine_mean'] = (
             routed_token_router_weight_cosine_mean.detach()
@@ -2386,21 +2386,21 @@ class GPT(nn.Module):
         )
         MANAGER.reset("routed_token_router_weight_cosine_bottom5p_mean")
         kappa_bias_layer_indices = []
-        implicit_kappa_bias_layer_indices = []
+        implicit_gate_proj_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
                 kappa_bias_layer_indices.append(layer_idx)
-            if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_kappa_bias:
-                implicit_kappa_bias_layer_indices.append(layer_idx)
+            if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_gate_proj_bias:
+                implicit_gate_proj_bias_layer_indices.append(layer_idx)
             elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
                 kappa_bias_layer_indices.append(layer_idx)
         kappa_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_bias_layer_indices)
         }
-        implicit_kappa_bias_layer_to_stats_idx = {
-            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_kappa_bias_layer_indices)
+        implicit_gate_proj_bias_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
         }
         kappa_bias_shift_abs_top5p_mean = losses['kappa_bias_shift_abs_top5p_mean']
         kappa_bias_shift_abs_bottom5p_mean = losses['kappa_bias_shift_abs_bottom5p_mean']
@@ -2424,14 +2424,14 @@ class GPT(nn.Module):
             if kappa_bias_shift_abs_mean_normalized is not None and kappa_bias_shift_abs_mean_normalized.ndim > 0
             else 0
         )
-        implicit_kappa_bias_top5p_count = (
-            losses['implicit_kappa_bias_top5p_mean'].shape[0]
-            if losses['implicit_kappa_bias_top5p_mean'].ndim > 0
+        implicit_gate_proj_bias_top5p_count = (
+            losses['implicit_gate_proj_bias_top5p_mean'].shape[0]
+            if losses['implicit_gate_proj_bias_top5p_mean'].ndim > 0
             else 0
         )
-        implicit_kappa_bias_bottom5p_count = (
-            losses['implicit_kappa_bias_bottom5p_mean'].shape[0]
-            if losses['implicit_kappa_bias_bottom5p_mean'].ndim > 0
+        implicit_gate_proj_bias_bottom5p_count = (
+            losses['implicit_gate_proj_bias_bottom5p_mean'].shape[0]
+            if losses['implicit_gate_proj_bias_bottom5p_mean'].ndim > 0
             else 0
         )
         routed_token_router_weight_cosine_mean_count = (
@@ -2466,14 +2466,14 @@ class GPT(nn.Module):
                 losses[f'kappa_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
                     kappa_bias_shift_abs_bottom5p_mean[kappa_bias_stats_idx].item()
                 )
-        for layer_idx, implicit_stats_idx in implicit_kappa_bias_layer_to_stats_idx.items():
-            if implicit_stats_idx < implicit_kappa_bias_top5p_count:
-                losses[f'implicit_kappa_bias_top5p_mean_{layer_idx}'] = (
-                    losses['implicit_kappa_bias_top5p_mean'][implicit_stats_idx].item()
+        for layer_idx, implicit_stats_idx in implicit_gate_proj_bias_layer_to_stats_idx.items():
+            if implicit_stats_idx < implicit_gate_proj_bias_top5p_count:
+                losses[f'implicit_gate_proj_bias_top5p_mean_{layer_idx}'] = (
+                    losses['implicit_gate_proj_bias_top5p_mean'][implicit_stats_idx].item()
                 )
-            if implicit_stats_idx < implicit_kappa_bias_bottom5p_count:
-                losses[f'implicit_kappa_bias_bottom5p_mean_{layer_idx}'] = (
-                    losses['implicit_kappa_bias_bottom5p_mean'][implicit_stats_idx].item()
+            if implicit_stats_idx < implicit_gate_proj_bias_bottom5p_count:
+                losses[f'implicit_gate_proj_bias_bottom5p_mean_{layer_idx}'] = (
+                    losses['implicit_gate_proj_bias_bottom5p_mean'][implicit_stats_idx].item()
                 )
             if implicit_stats_idx < routed_token_router_weight_cosine_mean_count:
                 losses[f'routed_token_router_weight_cosine_mean_{layer_idx}'] = (

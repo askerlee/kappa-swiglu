@@ -24,14 +24,14 @@ class GPTConfig:
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        kappa_bias_input: str = "router_probs",
-        kappa_bias_input_constant: float = 0.5,
+        kappa_input: str = "router_probs",
+        kappa_input_constant: float = 0.5,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
         global_kappa_bias_granularity: str = "per-gate",
         kappa_bias_start_layer: int = 0,
-        log_implicit_kappa_bias: bool = False,
+        log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         kappa_bias_l2_loss_weight: float = 0.0,
@@ -82,20 +82,20 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
-        valid_kappa_bias_inputs = {"top_logits", "router_probs", "constant"}
-        if kappa_bias_input not in valid_kappa_bias_inputs:
+        valid_kappa_inputs = {"top_logits", "router_probs", "constant"}
+        if kappa_input not in valid_kappa_inputs:
             raise ValueError(
-                "kappa_bias_input must be one of "
-                f"{sorted(valid_kappa_bias_inputs)}, got {kappa_bias_input!r}"
+                "kappa_input must be one of "
+                f"{sorted(valid_kappa_inputs)}, got {kappa_input!r}"
             )
-        if kappa_bias_input == "constant" and kappa_bias_input_constant is None:
+        if kappa_input == "constant" and kappa_input_constant is None:
             raise ValueError(
-                "kappa_bias_input_constant must be set when kappa_bias_input='constant'"
+                "kappa_input_constant must be set when kappa_input='constant'"
             )
         self.constant_kappa_bias_dense_layers = bool(constant_kappa_bias_dense_layers)
-        self.kappa_bias_input = kappa_bias_input
-        self.kappa_bias_input_constant = (
-            None if kappa_bias_input_constant is None else float(kappa_bias_input_constant)
+        self.kappa_input = kappa_input
+        self.kappa_input_constant = (
+            None if kappa_input_constant is None else float(kappa_input_constant)
         )
         self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
         self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
@@ -111,7 +111,7 @@ class GPTConfig:
             raise ValueError(
                 f"kappa_bias_start_layer must be >= 0, got {kappa_bias_start_layer}"
             )
-        self.log_implicit_kappa_bias = bool(log_implicit_kappa_bias)
+        self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
         self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
         self.kappa_bias_ema_rms_reg = bool(kappa_bias_ema_rms_reg)
         self.kappa_bias_l2_ema_beta = float(kappa_bias_l2_ema_beta)

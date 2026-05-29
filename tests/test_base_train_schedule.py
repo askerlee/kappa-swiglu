@@ -138,11 +138,11 @@ def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
     assert '--use-kappa-swiglu-as-lr-scaler' not in source
-    assert 'parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs=' in source
-    assert 'kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg' in source
+    assert 'parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs=' in source
+    assert 'kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg' in source
     assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
-    assert 'parser.add_argument("--kappa-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
-    assert '--kappa-bias-l2-loss-final-frac", type=float, default=0.02' in source
+    assert 'parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=0.1' in source
+    assert '--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
     assert 'parser.add_argument("--continue-to-chat-sft", action="store_true"' in source
     assert 'parser.add_argument("--continue-to-chat-sft-args", type=str, default=""' in source
@@ -156,16 +156,16 @@ def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
 def test_kappa_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     source = BASE_TRAIN.read_text()
 
-    assert 'parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs=' in source
-    assert 'parser.add_argument("--kappa-bias-l2-ema-beta", type=float, default=0.99' in source
-    assert 'parser.add_argument("--kappa-bias-l2-ema-anchor-start", type=float, default=0.4' in source
-    assert 'parser.add_argument("--kappa-bias-l2-ema-anchor-end", type=float, default=0.8' in source
-    assert 'parser.add_argument("--kappa-bias-l2-ema-floor-frac", type=float, default=0.8' in source
-    assert 'kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg' in source
-    assert 'kappa_bias_l2_ema_beta=args.kappa_bias_l2_ema_beta' in source
-    assert 'kappa_bias_l2_ema_anchor_start=args.kappa_bias_l2_ema_anchor_start' in source
-    assert 'kappa_bias_l2_ema_anchor_end=args.kappa_bias_l2_ema_anchor_end' in source
-    assert 'kappa_bias_l2_ema_floor_frac=args.kappa_bias_l2_ema_floor_frac' in source
+    assert 'parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs=' in source
+    assert 'parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99' in source
+    assert 'parser.add_argument("--kappa-l2-ema-anchor-start", dest="kappa_l2_ema_anchor_start", type=float, default=0.4' in source
+    assert 'parser.add_argument("--kappa-l2-ema-anchor-end", dest="kappa_l2_ema_anchor_end", type=float, default=0.8' in source
+    assert 'parser.add_argument("--kappa-l2-ema-floor-frac", dest="kappa_l2_ema_floor_frac", type=float, default=0.8' in source
+    assert 'kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg' in source
+    assert 'kappa_bias_l2_ema_beta=args.kappa_l2_ema_beta' in source
+    assert 'kappa_bias_l2_ema_anchor_start=args.kappa_l2_ema_anchor_start' in source
+    assert 'kappa_bias_l2_ema_anchor_end=args.kappa_l2_ema_anchor_end' in source
+    assert 'kappa_bias_l2_ema_floor_frac=args.kappa_l2_ema_floor_frac' in source
     assert 'orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)' in source
     assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
 

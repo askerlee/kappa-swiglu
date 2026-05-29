@@ -91,8 +91,8 @@ parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-del
 parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
 parser.add_argument(
-    "--kappa-bias-l2-loss-weight",
-    dest="kappa_bias_l2_loss_weight",
+    "--kappa-l2-loss-weight",
+    dest="kappa_l2_loss_weight",
     type=float,
     default=1e-2,
     help="L2 weight on kappa_bias values",
@@ -182,11 +182,11 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
-user_config["kappa_bias_l2_loss_weight"] = args.kappa_bias_l2_loss_weight
+user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update(
         {
-            "kappa_bias_l2_loss_weight": args.kappa_bias_l2_loss_weight,
+            "kappa_l2_loss_weight": args.kappa_l2_loss_weight,
         },
         allow_val_change=True,
     )
@@ -851,7 +851,7 @@ while True:
         kappa_bias_l2_loss = losses.get("kappa_bias_l2_loss")
         if kappa_bias_l2_loss is None:
             kappa_bias_l2_loss = 0.0
-        loss = loss + args.kappa_bias_l2_loss_weight * kappa_bias_l2_loss
+        loss = loss + args.kappa_l2_loss_weight * kappa_bias_l2_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -915,7 +915,7 @@ while True:
             "train/kappa_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_bottom5p_mean'].mean()),
             "train/kappa_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
-            "train/kappa_bias_l2_loss_weight": args.kappa_bias_l2_loss_weight,
+            "train/kappa_bias_l2_loss_weight": args.kappa_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,

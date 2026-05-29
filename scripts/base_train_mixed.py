@@ -137,12 +137,12 @@ parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-del
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
 parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
-parser.add_argument("--kappa-bias-l2-loss-weight", type=float, default=1e-2, help="weight for MoE kappa_bias L2 loss")
-parser.add_argument("--kappa-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
+parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2, help="weight for MoE kappa_bias L2 loss")
+parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # With slope scaling always enabled, the stage1 frac and final frac
 # default to 1 to push kappa_bias values toward 0 and slopes toward 1.
-parser.add_argument("--kappa-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--kappa-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -214,7 +214,7 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 args = parser.parse_args()
 kappa_bias_l2_loss_weight_was_specified = arg_was_explicitly_set(
     sys.argv[1:],
-    '--kappa-bias-l2-loss-weight',
+    '--kappa-l2-loss-weight',
 )
 if args.debug:
     args.compile = False
@@ -228,13 +228,13 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
 
 if args.kappa_bias_delay_start_min_iterations < 0:
     raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
-if not (0.0 <= args.kappa_bias_l2_loss_stage1_frac <= 1.0):
+if not (0.0 <= args.kappa_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
-        "--kappa-bias-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
+        "--kappa-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
     )
-if not (0.0 <= args.kappa_bias_l2_loss_final_frac <= 1.0):
+if not (0.0 <= args.kappa_l2_loss_final_frac <= 1.0):
     raise ValueError(
-        "--kappa-bias-l2-loss-final-frac must satisfy 0 <= final_frac <= 1"
+        "--kappa-l2-loss-final-frac must satisfy 0 <= final_frac <= 1"
     )
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
@@ -374,7 +374,7 @@ def build_model_meta(depth):
         aux_loss_weight=args.aux_loss_weight,
         use_kappa_swiglu=args.use_kappa_swiglu,
         kappa_bias_start_layer=args.kappa_bias_start_layer,
-        kappa_bias_l2_loss_weight=args.kappa_bias_l2_loss_weight,
+        kappa_bias_l2_loss_weight=args.kappa_l2_loss_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1167,14 +1167,14 @@ while True:
     refresh_compiled_training_model = False
     tokens_seen = total_batch_size * step
     flops_so_far = num_flops_per_token * tokens_seen
-    kappa_bias_l2_stage1_iterations = args.kappa_bias_l2_loss_anneal_iterations
+    kappa_bias_l2_stage1_iterations = args.kappa_l2_loss_anneal_iterations
     kappa_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.kappa_bias_l2_loss_weight,
+        args.kappa_l2_loss_weight,
         step,
         total_iterations=num_iterations,
         stage1_iterations=kappa_bias_l2_stage1_iterations,
-        stage1_floor_frac=args.kappa_bias_l2_loss_stage1_frac,
-        final_floor_frac=args.kappa_bias_l2_loss_final_frac,
+        stage1_floor_frac=args.kappa_l2_loss_stage1_frac,
+        final_floor_frac=args.kappa_l2_loss_final_frac,
         nolearn_iterations=args.kappa_bias_delay_start_min_iterations,
     )
 
