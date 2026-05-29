@@ -332,8 +332,8 @@ val_dataset = TaskMixture([
 last_step = False # we will toggle this to True when we reach the end of the training dataset
 approx_progress = 0.0 # will go from 0 to 1 over the course of the epoch
 current_epoch = 1 # track epoch for logging
-train_seen_conversations = 0 # consumed + skipped overlong conversations in train split
-train_skipped_conversations = 0 # conversations skipped for exceeding row_capacity
+train_seen_conversations = 0 # consumed + skipped conversations in train split
+train_skipped_conversations = 0 # conversations skipped for exceeding row_capacity or lacking supervised targets
 
 def sft_data_generator_bos_bestfit(split, buffer_size=100):
     """
@@ -368,7 +368,8 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
             ids, mask = tokenizer.render_conversation(conversation, max_tokens=None)
             # NOTE: in the call above, max_tokens=None, this means:
             # Full render, then fit-check, instead of truncating to fit.
-            if len(ids) <= row_capacity:
+            has_supervised_targets = any(mask[1:]) if len(mask) > 1 else False
+            if len(ids) <= row_capacity and has_supervised_targets:
                 conv_buffer.append((ids, mask))
             else:
                 skipped_overlong += ddp_world_size
@@ -441,6 +442,10 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
         target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
+
+        # Skip fully unsupervised batches so training/eval never runs only on padding/user tokens.
+        if not target_mask.any():
+            continue
 
         # Supervise only assistant tokens; user, BOS, and padding tokens are ignored.
         targets[~target_mask] = -1
