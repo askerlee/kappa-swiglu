@@ -739,6 +739,12 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     model.to_empty(device=device)
     model.init_weights() # note: this is dumb, but we need to init the rotary embeddings. TODO: fix model re-init
     model.load_state_dict(model_data, strict=True, assign=True)
+    # Rehydrate non-persistent live gate-state buffers after meta -> to_empty construction.
+    model.set_gate_slope_max_scales(
+        moe_gate_slope_max_scale=getattr(model_config, "moe_gate_slope_max_scale", None),
+        dense_gate_slope_max_scale=getattr(model_config, "dense_gate_slope_max_scale", None),
+    )
+    model.set_gate_proj_bias_ema_rms_reg_step(0)
     # Put the model in the right training phase / mode
     if phase == "eval":
         model.eval()

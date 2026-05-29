@@ -501,6 +501,24 @@ def get_gate_proj_bias_lr_scale(step, progress):
         warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
     )
 
+
+def get_gate_slope_max_scale(target_max_scale, step, total_iterations):
+    target_max_scale = float(target_max_scale)
+    if target_max_scale == 1.0:
+        return 1.0
+
+    delay_iterations = max(int(args.gate_proj_bias_delay_start_min_iterations), 0)
+    if int(step) < delay_iterations:
+        return 1.0
+
+    warmup_iterations = max(int(args.gate_proj_bias_lr_warmup_iterations), 0)
+    if warmup_iterations <= 0:
+        return target_max_scale
+
+    warmup_step = min(max(int(step) - delay_iterations, 0), warmup_iterations)
+    progress = warmup_step / warmup_iterations
+    return 1.0 + (target_max_scale - 1.0) * progress
+
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
     frac = min(it / 300, 1)
@@ -673,6 +691,27 @@ while True:
         last_step_tensor = torch.tensor(last_step, dtype=torch.int32, device=device)
         dist.all_reduce(last_step_tensor, op=dist.ReduceOp.MAX)
         last_step = bool(last_step_tensor.item())
+
+    gate_proj_bias_schedule_total_iterations = get_gate_proj_bias_schedule_total_iterations(
+        step,
+        max(progress, approx_progress),
+    )
+    orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(gate_proj_bias_schedule_total_iterations)
+    orig_model.set_gate_proj_bias_ema_rms_reg_step(step)
+    moe_gate_slope_max_scale = get_gate_slope_max_scale(
+        getattr(orig_model.config, "moe_gate_slope_max_scale", 3.0),
+        step,
+        gate_proj_bias_schedule_total_iterations,
+    )
+    dense_gate_slope_max_scale = get_gate_slope_max_scale(
+        getattr(orig_model.config, "dense_gate_slope_max_scale", 2.0),
+        step,
+        gate_proj_bias_schedule_total_iterations,
+    )
+    orig_model.set_gate_slope_max_scales(
+        moe_gate_slope_max_scale=moe_gate_slope_max_scale,
+        dense_gate_slope_max_scale=dense_gate_slope_max_scale,
+    )
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if last_step or (args.eval_every > 0 and step > 0 and step % args.eval_every == 0):
