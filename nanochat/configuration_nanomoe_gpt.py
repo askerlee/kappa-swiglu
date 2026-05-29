@@ -23,24 +23,24 @@ class GPTConfig:
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
-        use_gate_proj_bias: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
-        gate_proj_bias_input: str = "router_probs",
-        gate_proj_bias_input_constant: float = 0.5,
-        moe_gate_slope_max_scale: float = 3.0,
-        dense_gate_slope_max_scale: float = 2.0,
-        constant_gate_proj_bias_dense_layers: bool = False,
-        global_gate_proj_bias_granularity: str = "per-gate",
-        gate_proj_bias_start_layer: int = 0,
-        log_implicit_gate_proj_bias: bool = False,
+        use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
+        kappa_bias_input: str = "router_probs",
+        kappa_bias_input_constant: float = 0.5,
+        moe_kappa_slope_max_scale: float = 3.0,
+        dense_kappa_slope_max_scale: float = 2.0,
+        constant_kappa_bias_dense_layers: bool = False,
+        global_kappa_bias_granularity: str = "per-gate",
+        kappa_bias_start_layer: int = 0,
+        log_implicit_kappa_bias: bool = False,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
-        gate_proj_bias_l2_loss_weight: float = 0.0,
-        gate_proj_bias_ema_rms_reg: bool = False,
-        gate_proj_bias_l2_ema_beta: float = 0.99,
-        gate_proj_bias_l2_ema_anchor_start: float = 0.4,
-        gate_proj_bias_l2_ema_anchor_end: float = 0.8,
-        gate_proj_bias_l2_ema_floor_frac: float = 0.8,
-        refresh_gate_proj_bias_references: bool = False,
+        kappa_bias_l2_loss_weight: float = 0.0,
+        kappa_bias_ema_rms_reg: bool = False,
+        kappa_bias_l2_ema_beta: float = 0.99,
+        kappa_bias_l2_ema_anchor_start: float = 0.4,
+        kappa_bias_l2_ema_anchor_end: float = 0.8,
+        kappa_bias_l2_ema_floor_frac: float = 0.8,
+        refresh_kappa_bias_references: bool = False,
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
@@ -81,74 +81,74 @@ class GPTConfig:
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
-        self.use_gate_proj_bias = bool(use_gate_proj_bias)
-        valid_gate_proj_bias_inputs = {"top_logits", "router_probs", "constant"}
-        if gate_proj_bias_input not in valid_gate_proj_bias_inputs:
+        self.use_kappa_swiglu = bool(use_kappa_swiglu)
+        valid_kappa_bias_inputs = {"top_logits", "router_probs", "constant"}
+        if kappa_bias_input not in valid_kappa_bias_inputs:
             raise ValueError(
-                "gate_proj_bias_input must be one of "
-                f"{sorted(valid_gate_proj_bias_inputs)}, got {gate_proj_bias_input!r}"
+                "kappa_bias_input must be one of "
+                f"{sorted(valid_kappa_bias_inputs)}, got {kappa_bias_input!r}"
             )
-        if gate_proj_bias_input == "constant" and gate_proj_bias_input_constant is None:
+        if kappa_bias_input == "constant" and kappa_bias_input_constant is None:
             raise ValueError(
-                "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
+                "kappa_bias_input_constant must be set when kappa_bias_input='constant'"
             )
-        self.constant_gate_proj_bias_dense_layers = bool(constant_gate_proj_bias_dense_layers)
-        self.gate_proj_bias_input = gate_proj_bias_input
-        self.gate_proj_bias_input_constant = (
-            None if gate_proj_bias_input_constant is None else float(gate_proj_bias_input_constant)
+        self.constant_kappa_bias_dense_layers = bool(constant_kappa_bias_dense_layers)
+        self.kappa_bias_input = kappa_bias_input
+        self.kappa_bias_input_constant = (
+            None if kappa_bias_input_constant is None else float(kappa_bias_input_constant)
         )
-        self.moe_gate_slope_max_scale = float(moe_gate_slope_max_scale)
-        self.dense_gate_slope_max_scale = float(dense_gate_slope_max_scale)
-        valid_gate_proj_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
-        if global_gate_proj_bias_granularity not in valid_gate_proj_bias_granularities:
+        self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
+        self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
+        valid_kappa_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
+        if global_kappa_bias_granularity not in valid_kappa_bias_granularities:
             raise ValueError(
-                "global_gate_proj_bias_granularity must be one of "
-                f"{sorted(valid_gate_proj_bias_granularities)}, got {global_gate_proj_bias_granularity!r}"
+                "global_kappa_bias_granularity must be one of "
+                f"{sorted(valid_kappa_bias_granularities)}, got {global_kappa_bias_granularity!r}"
             )
-        self.global_gate_proj_bias_granularity = global_gate_proj_bias_granularity
-        self.gate_proj_bias_start_layer = int(gate_proj_bias_start_layer)
-        if self.gate_proj_bias_start_layer < 0:
+        self.global_kappa_bias_granularity = global_kappa_bias_granularity
+        self.kappa_bias_start_layer = int(kappa_bias_start_layer)
+        if self.kappa_bias_start_layer < 0:
             raise ValueError(
-                f"gate_proj_bias_start_layer must be >= 0, got {gate_proj_bias_start_layer}"
+                f"kappa_bias_start_layer must be >= 0, got {kappa_bias_start_layer}"
             )
-        self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
-        self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
-        self.gate_proj_bias_ema_rms_reg = bool(gate_proj_bias_ema_rms_reg)
-        self.gate_proj_bias_l2_ema_beta = float(gate_proj_bias_l2_ema_beta)
-        if not (0.0 <= self.gate_proj_bias_l2_ema_beta < 1.0):
+        self.log_implicit_kappa_bias = bool(log_implicit_kappa_bias)
+        self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
+        self.kappa_bias_ema_rms_reg = bool(kappa_bias_ema_rms_reg)
+        self.kappa_bias_l2_ema_beta = float(kappa_bias_l2_ema_beta)
+        if not (0.0 <= self.kappa_bias_l2_ema_beta < 1.0):
             raise ValueError(
-                "gate_proj_bias_l2_ema_beta must satisfy 0 <= beta < 1, got "
-                f"{gate_proj_bias_l2_ema_beta}"
+                "kappa_bias_l2_ema_beta must satisfy 0 <= beta < 1, got "
+                f"{kappa_bias_l2_ema_beta}"
             )
-        self.gate_proj_bias_l2_ema_anchor_start = float(gate_proj_bias_l2_ema_anchor_start)
-        self.gate_proj_bias_l2_ema_anchor_end = float(gate_proj_bias_l2_ema_anchor_end)
-        if not (0.0 <= self.gate_proj_bias_l2_ema_anchor_start <= 1.0):
+        self.kappa_bias_l2_ema_anchor_start = float(kappa_bias_l2_ema_anchor_start)
+        self.kappa_bias_l2_ema_anchor_end = float(kappa_bias_l2_ema_anchor_end)
+        if not (0.0 <= self.kappa_bias_l2_ema_anchor_start <= 1.0):
             raise ValueError(
-                "gate_proj_bias_l2_ema_anchor_start must satisfy 0 <= start <= 1, got "
-                f"{gate_proj_bias_l2_ema_anchor_start}"
+                "kappa_bias_l2_ema_anchor_start must satisfy 0 <= start <= 1, got "
+                f"{kappa_bias_l2_ema_anchor_start}"
             )
-        if not (0.0 <= self.gate_proj_bias_l2_ema_anchor_end <= 1.0):
+        if not (0.0 <= self.kappa_bias_l2_ema_anchor_end <= 1.0):
             raise ValueError(
-                "gate_proj_bias_l2_ema_anchor_end must satisfy 0 <= end <= 1, got "
-                f"{gate_proj_bias_l2_ema_anchor_end}"
+                "kappa_bias_l2_ema_anchor_end must satisfy 0 <= end <= 1, got "
+                f"{kappa_bias_l2_ema_anchor_end}"
             )
-        if self.gate_proj_bias_l2_ema_anchor_end < self.gate_proj_bias_l2_ema_anchor_start:
+        if self.kappa_bias_l2_ema_anchor_end < self.kappa_bias_l2_ema_anchor_start:
             raise ValueError(
-                "gate_proj_bias_l2_ema_anchor_end must be >= gate_proj_bias_l2_ema_anchor_start, got "
-                f"start={gate_proj_bias_l2_ema_anchor_start}, end={gate_proj_bias_l2_ema_anchor_end}"
+                "kappa_bias_l2_ema_anchor_end must be >= kappa_bias_l2_ema_anchor_start, got "
+                f"start={kappa_bias_l2_ema_anchor_start}, end={kappa_bias_l2_ema_anchor_end}"
             )
-        self.gate_proj_bias_l2_ema_floor_frac = float(gate_proj_bias_l2_ema_floor_frac)
-        if self.gate_proj_bias_l2_ema_floor_frac < 0.0:
+        self.kappa_bias_l2_ema_floor_frac = float(kappa_bias_l2_ema_floor_frac)
+        if self.kappa_bias_l2_ema_floor_frac < 0.0:
             raise ValueError(
-                "gate_proj_bias_l2_ema_floor_frac must be >= 0, got "
-                f"{gate_proj_bias_l2_ema_floor_frac}"
+                "kappa_bias_l2_ema_floor_frac must be >= 0, got "
+                f"{kappa_bias_l2_ema_floor_frac}"
             )
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
-        self.gate_proj_bias_l2_loss_weight = float(gate_proj_bias_l2_loss_weight)
-        self.refresh_gate_proj_bias_references = bool(refresh_gate_proj_bias_references)
+        self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
+        self.refresh_kappa_bias_references = bool(refresh_kappa_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight

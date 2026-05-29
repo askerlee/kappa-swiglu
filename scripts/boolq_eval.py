@@ -206,18 +206,18 @@ def build_parser():
     parser.add_argument('--tau', type=float, default=0.0, help='Predict yes when margin logp_yes - logp_no is greater than tau')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument(
-        '--use-gate-proj-bias',
-        '--use-exp-gate-proj-bias',
+        '--use-kappa-swiglu',
+        '--use-exp-kappa-bias',
         action=argparse.BooleanOptionalAction,
-        dest='use_gate_proj_bias',
+        dest='use_kappa_swiglu',
         default=None,
-        help='Override the checkpoint config for expert gate_proj_bias on nanochat checkpoints',
+        help='Override the checkpoint config for expert kappa_bias on nanochat checkpoints',
     )
     parser.add_argument(
-        '--gate-proj-bias-fill-value',
+        '--kappa-bias-fill-value',
         type=float,
         default=None,
-        help='Override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value',
+        help='Override all expert kappa_bias tensors in the loaded checkpoint with this constant value',
     )
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     return parser
@@ -245,14 +245,14 @@ def main():
             model_tag=args.model_tag,
             step=args.step,
             eval_capacity=args.eval_capacity,
-            use_gate_proj_bias=args.use_gate_proj_bias,
-            gate_proj_bias_fill_value=args.gate_proj_bias_fill_value,
+            use_kappa_swiglu=args.use_kappa_swiglu,
+            kappa_bias_fill_value=args.kappa_bias_fill_value,
         )
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
-        if args.gate_proj_bias_fill_value is not None:
-            model_name = f"{model_name}, gate_proj_bias_fill_value={args.gate_proj_bias_fill_value:g}"
+        if args.kappa_bias_fill_value is not None:
+            model_name = f"{model_name}, kappa_bias_fill_value={args.kappa_bias_fill_value:g}"
 
     data, task_meta = load_boolq_data(args.max_examples)
     print0(f"Evaluating model on BoolQ: {model_name}")

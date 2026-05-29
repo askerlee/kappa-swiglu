@@ -188,7 +188,7 @@ class GateBiasStatsCollector:
 
     def observe(self, layer: MOELayer, expert_inputs: torch.Tensor, expert_slot_mask: torch.Tensor):
         experts = layer.experts
-        if getattr(experts, "gate_proj_bias", None) is None:
+        if getattr(experts, "kappa_bias", None) is None:
             return
 
         gate_base = torch.bmm(expert_inputs, experts.gate_proj)
@@ -200,7 +200,7 @@ class GateBiasStatsCollector:
         if router_confidence is None:
             return
 
-        bias_term = router_confidence.unsqueeze(-1) * experts.gate_proj_bias.unsqueeze(1)
+        bias_term = router_confidence.unsqueeze(-1) * experts.kappa_bias.unsqueeze(1)
         gate_base_acts = experts.act_fn(gate_base)
         delta_gate = experts.act_fn(gate_base + self.bias_sign * bias_term) - gate_base_acts
         delta_gate = delta_gate.float()
@@ -374,7 +374,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
                 flat_top_k_indices[valid_mask],
                 flat_rank[valid_mask],
             ] = True
-            if self.use_qwen3_moe_mlp and getattr(self.experts, "gate_proj_bias", None) is not None:
+            if self.use_qwen3_moe_mlp and getattr(self.experts, "kappa_bias", None) is not None:
                 observer_host.observe(self, expert_inputs, expert_slot_mask)
 
         expert_outputs = self.experts(expert_inputs)
@@ -395,7 +395,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
             continue
         if not getattr(module, "use_qwen3_moe_mlp", False):
             continue
-        if getattr(module.experts, "gate_proj_bias", None) is None:
+        if getattr(module.experts, "kappa_bias", None) is None:
             continue
         module.forward = MethodType(instrumented_forward, module)
         instrumented_layers += 1
@@ -441,10 +441,10 @@ def parse_args():
     parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size")
     parser.add_argument("--eval-capacity", type=float, default=None, help="override MoE eval capacity")
     parser.add_argument(
-        "--gate-proj-bias-fill-value",
+        "--kappa-bias-fill-value",
         type=float,
         default=None,
-        help="override all expert gate_proj_bias tensors in the loaded checkpoint with this constant value",
+        help="override all expert kappa_bias tensors in the loaded checkpoint with this constant value",
     )
     parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
     parser.add_argument(
@@ -472,14 +472,14 @@ def main():
         model_tag=args.model_tag,
         step=args.step,
         eval_capacity=args.eval_capacity,
-        gate_proj_bias_fill_value=args.gate_proj_bias_fill_value,
+        kappa_bias_fill_value=args.kappa_bias_fill_value,
     )
     model.eval()
 
     observer_host = GateBiasObserverHost()
     instrumented_layers = install_gate_bias_instrumentation(model, observer_host)
     if instrumented_layers == 0:
-        raise RuntimeError("No MoE expert layers with gate_proj_bias were found in the loaded model")
+        raise RuntimeError("No MoE expert layers with kappa_bias were found in the loaded model")
     if args.compile:
         model = torch.compile(model, dynamic=False)
 

@@ -24,8 +24,8 @@ def log0(message):
 
 def _patch_missing_config_keys(model_config_kwargs):
     """Add default values for new config keys missing in old checkpoints."""
-    if "use_gate_proj_bias" not in model_config_kwargs and "use_exp_gate_proj_bias" in model_config_kwargs:
-        model_config_kwargs["use_gate_proj_bias"] = model_config_kwargs.pop("use_exp_gate_proj_bias")
+    if "use_kappa_swiglu" not in model_config_kwargs and "use_exp_kappa_bias" in model_config_kwargs:
+        model_config_kwargs["use_kappa_swiglu"] = model_config_kwargs.pop("use_exp_kappa_bias")
     # Old models were trained with full context (no sliding window)
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
@@ -59,98 +59,98 @@ def _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs):
         log0("Patching missing use_qwen3_dense_mlp in model config to False")
 
 
-def _infer_exp_gate_proj_bias(model_data, model_config_kwargs):
+def _infer_exp_kappa_bias(model_data, model_config_kwargs):
     """Infer expert gate-projection bias config for checkpoints with sparse metadata."""
-    if "use_gate_proj_bias" in model_config_kwargs:
+    if "use_kappa_swiglu" in model_config_kwargs:
         return
-    if "use_exp_gate_proj_bias" in model_config_kwargs:
-        model_config_kwargs["use_gate_proj_bias"] = model_config_kwargs.pop("use_exp_gate_proj_bias")
+    if "use_exp_kappa_bias" in model_config_kwargs:
+        model_config_kwargs["use_kappa_swiglu"] = model_config_kwargs.pop("use_exp_kappa_bias")
         return
 
-    gate_proj_bias_layers = []
-    gate_proj_bias_patterns = (
-        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias$"),
-        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_expert$"),
-        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_intermediate$"),
-        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.gate_proj_bias_residual$"),
+    kappa_bias_layers = []
+    kappa_bias_patterns = (
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.kappa_bias$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.kappa_bias_expert$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.kappa_bias_intermediate$"),
+        re.compile(r"^transformer\.h\.(\d+)\.mlp\.experts\.kappa_bias_residual$"),
     )
     for key in model_data:
-        for pattern in gate_proj_bias_patterns:
+        for pattern in kappa_bias_patterns:
             match = pattern.match(key)
             if match is not None:
-                gate_proj_bias_layers.append(int(match.group(1)))
+                kappa_bias_layers.append(int(match.group(1)))
                 break
 
-    use_gate_proj_bias = bool(gate_proj_bias_layers)
-    model_config_kwargs["use_gate_proj_bias"] = use_gate_proj_bias
-    if not use_gate_proj_bias:
+    use_kappa_swiglu = bool(kappa_bias_layers)
+    model_config_kwargs["use_kappa_swiglu"] = use_kappa_swiglu
+    if not use_kappa_swiglu:
         return
 
-    inferred_start_layer = min(gate_proj_bias_layers)
-    model_config_kwargs.setdefault("gate_proj_bias_start_layer", inferred_start_layer)
+    inferred_start_layer = min(kappa_bias_layers)
+    model_config_kwargs.setdefault("kappa_bias_start_layer", inferred_start_layer)
     log0(
-        "Patching missing expert gate_proj_bias config in model config to "
-        f"enabled from layer {model_config_kwargs['gate_proj_bias_start_layer']}"
+        "Patching missing expert kappa_bias config in model config to "
+        f"enabled from layer {model_config_kwargs['kappa_bias_start_layer']}"
     )
 
 
-def _override_exp_gate_proj_bias_values(model_data, model_kwargs):
-    """Apply caller overrides to checkpoint expert gate_proj_bias tensors before loading."""
-    gate_proj_bias_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias$")
-    gate_proj_bias_expert_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_expert$")
-    gate_proj_bias_intermediate_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_intermediate$")
-    gate_proj_bias_residual_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.gate_proj_bias_residual$")
-    gate_proj_bias_keys = [key for key in model_data if gate_proj_bias_pattern.match(key)]
-    gate_proj_bias_expert_keys = [key for key in model_data if gate_proj_bias_expert_pattern.match(key)]
-    gate_proj_bias_intermediate_keys = [key for key in model_data if gate_proj_bias_intermediate_pattern.match(key)]
-    gate_proj_bias_residual_keys = [key for key in model_data if gate_proj_bias_residual_pattern.match(key)]
-    if not gate_proj_bias_keys and not gate_proj_bias_expert_keys and not gate_proj_bias_intermediate_keys and not gate_proj_bias_residual_keys:
+def _override_exp_kappa_bias_values(model_data, model_kwargs):
+    """Apply caller overrides to checkpoint expert kappa_bias tensors before loading."""
+    kappa_bias_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias$")
+    kappa_bias_expert_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias_expert$")
+    kappa_bias_intermediate_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias_intermediate$")
+    kappa_bias_residual_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias_residual$")
+    kappa_bias_keys = [key for key in model_data if kappa_bias_pattern.match(key)]
+    kappa_bias_expert_keys = [key for key in model_data if kappa_bias_expert_pattern.match(key)]
+    kappa_bias_intermediate_keys = [key for key in model_data if kappa_bias_intermediate_pattern.match(key)]
+    kappa_bias_residual_keys = [key for key in model_data if kappa_bias_residual_pattern.match(key)]
+    if not kappa_bias_keys and not kappa_bias_expert_keys and not kappa_bias_intermediate_keys and not kappa_bias_residual_keys:
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
-    legacy_use_gate_proj_bias = model_kwargs.pop("use_exp_gate_proj_bias", None)
-    if legacy_use_gate_proj_bias is not None and "use_gate_proj_bias" not in model_kwargs:
-        model_kwargs["use_gate_proj_bias"] = legacy_use_gate_proj_bias
-    gate_proj_bias_fill_value = model_kwargs.pop("gate_proj_bias_fill_value", None)
-    if gate_proj_bias_fill_value is not None:
-        model_kwargs.pop("use_gate_proj_bias", None)
-        gate_proj_bias_fill_value = float(gate_proj_bias_fill_value)
-        for key in gate_proj_bias_keys:
-            model_data[key] = torch.full_like(model_data[key], gate_proj_bias_fill_value)
-        for key in gate_proj_bias_expert_keys:
+    legacy_use_kappa_swiglu = model_kwargs.pop("use_exp_kappa_bias", None)
+    if legacy_use_kappa_swiglu is not None and "use_kappa_swiglu" not in model_kwargs:
+        model_kwargs["use_kappa_swiglu"] = legacy_use_kappa_swiglu
+    kappa_bias_fill_value = model_kwargs.pop("kappa_bias_fill_value", None)
+    if kappa_bias_fill_value is not None:
+        model_kwargs.pop("use_kappa_swiglu", None)
+        kappa_bias_fill_value = float(kappa_bias_fill_value)
+        for key in kappa_bias_keys:
+            model_data[key] = torch.full_like(model_data[key], kappa_bias_fill_value)
+        for key in kappa_bias_expert_keys:
             model_data[key] = torch.ones_like(model_data[key])
-        for key in gate_proj_bias_intermediate_keys:
-            model_data[key] = torch.full_like(model_data[key], gate_proj_bias_fill_value)
-        for key in gate_proj_bias_residual_keys:
+        for key in kappa_bias_intermediate_keys:
+            model_data[key] = torch.full_like(model_data[key], kappa_bias_fill_value)
+        for key in kappa_bias_residual_keys:
             model_data[key] = torch.zeros_like(model_data[key])
         log0(
-            "Preserving checkpoint expert gate_proj_bias parameters for loading and filling them "
-            f"with {gate_proj_bias_fill_value:g}"
+            "Preserving checkpoint expert kappa_bias parameters for loading and filling them "
+            f"with {kappa_bias_fill_value:g}"
         )
         return model_kwargs
 
-    if model_kwargs.get("use_gate_proj_bias") is not False:
+    if model_kwargs.get("use_kappa_swiglu") is not False:
         return model_kwargs
 
-    model_kwargs.pop("use_gate_proj_bias", None)
-    for key in gate_proj_bias_keys:
+    model_kwargs.pop("use_kappa_swiglu", None)
+    for key in kappa_bias_keys:
         model_data[key] = torch.zeros_like(model_data[key])
-    for key in gate_proj_bias_expert_keys:
+    for key in kappa_bias_expert_keys:
         model_data[key] = torch.ones_like(model_data[key])
-    for key in gate_proj_bias_intermediate_keys:
+    for key in kappa_bias_intermediate_keys:
         model_data[key] = torch.zeros_like(model_data[key])
-    for key in gate_proj_bias_residual_keys:
+    for key in kappa_bias_residual_keys:
         model_data[key] = torch.zeros_like(model_data[key])
     log0(
-        "Preserving checkpoint expert gate_proj_bias parameters for loading and zeroing them "
-        "because use_gate_proj_bias was overridden to False"
+        "Preserving checkpoint expert kappa_bias parameters for loading and zeroing them "
+        "because use_kappa_swiglu was overridden to False"
     )
     return model_kwargs
 
 
-def _gate_proj_bias_enabled_for_layer(model_config, layer_idx):
-    return bool(getattr(model_config, "use_gate_proj_bias", False)) and (
-        layer_idx >= int(getattr(model_config, "gate_proj_bias_start_layer", 0))
+def _kappa_bias_enabled_for_layer(model_config, layer_idx):
+    return bool(getattr(model_config, "use_kappa_swiglu", False)) and (
+        layer_idx >= int(getattr(model_config, "kappa_bias_start_layer", 0))
     )
 
 def _patch_missing_keys(model_data, model_config):
@@ -169,10 +169,10 @@ def _patch_missing_keys(model_data, model_config):
             gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"
             gate_proj_a_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_a"
             gate_proj_b_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_b"
-            gate_proj_bias_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias"
-            gate_proj_bias_expert_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_expert"
-            gate_proj_bias_intermediate_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_intermediate"
-            gate_proj_bias_residual_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_bias_residual"
+            kappa_bias_key = f"transformer.h.{layer_idx}.mlp.experts.kappa_bias"
+            kappa_bias_expert_key = f"transformer.h.{layer_idx}.mlp.experts.kappa_bias_expert"
+            kappa_bias_intermediate_key = f"transformer.h.{layer_idx}.mlp.experts.kappa_bias_intermediate"
+            kappa_bias_residual_key = f"transformer.h.{layer_idx}.mlp.experts.kappa_bias_residual"
             gate_proj = model_data.get(gate_proj_key)
             if gate_proj is not None and gate_proj.ndim != 3:
                 raise ValueError(
@@ -180,20 +180,20 @@ def _patch_missing_keys(model_data, model_config):
                 )
             model_data.pop(gate_proj_a_key, None)
             model_data.pop(gate_proj_b_key, None)
-            if _gate_proj_bias_enabled_for_layer(model_config, layer_idx):
-                if gate_proj_bias_key not in model_data:
-                    expert_bias = model_data.pop(gate_proj_bias_expert_key, None)
-                    intermediate_bias = model_data.pop(gate_proj_bias_intermediate_key, None)
-                    residual_bias = model_data.pop(gate_proj_bias_residual_key, None)
+            if _kappa_bias_enabled_for_layer(model_config, layer_idx):
+                if kappa_bias_key not in model_data:
+                    expert_bias = model_data.pop(kappa_bias_expert_key, None)
+                    intermediate_bias = model_data.pop(kappa_bias_intermediate_key, None)
+                    residual_bias = model_data.pop(kappa_bias_residual_key, None)
                     if expert_bias is not None and intermediate_bias is not None:
-                        gate_proj_bias = expert_bias.unsqueeze(1) * intermediate_bias.unsqueeze(0)
+                        kappa_bias = expert_bias.unsqueeze(1) * intermediate_bias.unsqueeze(0)
                         if residual_bias is not None:
-                            gate_proj_bias = gate_proj_bias + residual_bias
-                        model_data[gate_proj_bias_key] = gate_proj_bias
+                            kappa_bias = kappa_bias + residual_bias
+                        model_data[kappa_bias_key] = kappa_bias
                 else:
-                    model_data.pop(gate_proj_bias_expert_key, None)
-                    model_data.pop(gate_proj_bias_intermediate_key, None)
-                    model_data.pop(gate_proj_bias_residual_key, None)
+                    model_data.pop(kappa_bias_expert_key, None)
+                    model_data.pop(kappa_bias_intermediate_key, None)
+                    model_data.pop(kappa_bias_residual_key, None)
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)
@@ -723,13 +723,13 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
         }
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
-    kwargs = _override_exp_gate_proj_bias_values(model_data, kwargs)
+    kwargs = _override_exp_kappa_bias_values(model_data, kwargs)
     model_config_kwargs = meta_data["model_config"]
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)
     _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
-    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
+    _infer_exp_kappa_bias(model_data, model_config_kwargs)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)
@@ -740,11 +740,11 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     model.init_weights() # note: this is dumb, but we need to init the rotary embeddings. TODO: fix model re-init
     model.load_state_dict(model_data, strict=True, assign=True)
     # Rehydrate non-persistent live gate-state buffers after meta -> to_empty construction.
-    model.set_gate_slope_max_scales(
-        moe_gate_slope_max_scale=getattr(model_config, "moe_gate_slope_max_scale", None),
-        dense_gate_slope_max_scale=getattr(model_config, "dense_gate_slope_max_scale", None),
+    model.set_kappa_slope_max_scales(
+        moe_kappa_slope_max_scale=getattr(model_config, "moe_kappa_slope_max_scale", None),
+        dense_kappa_slope_max_scale=getattr(model_config, "dense_kappa_slope_max_scale", None),
     )
-    model.set_gate_proj_bias_ema_rms_reg_step(0)
+    model.set_kappa_bias_ema_rms_reg_step(0)
     # Put the model in the right training phase / mode
     if phase == "eval":
         model.eval()

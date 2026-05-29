@@ -52,7 +52,7 @@ def test_adamw_nonfinite_error_reports_named_parameter_and_source(monkeypatch):
         dict(
             kind='adamw',
             params=[param],
-            debug_param_names=['transformer.h.2.mlp.experts.gate_proj_bias'],
+            debug_param_names=['transformer.h.2.mlp.experts.kappa_bias'],
             lr=0.1,
             betas=(0.9, 0.95),
             eps=1e-8,
@@ -67,7 +67,7 @@ def test_adamw_nonfinite_error_reports_named_parameter_and_source(monkeypatch):
 
     monkeypatch.setattr(optim_module, 'adamw_step_fused', fake_adamw_step_fused)
 
-    with pytest.raises(RuntimeError, match='transformer\.h\.2\.mlp\.experts\.gate_proj_bias') as exc_info:
+    with pytest.raises(RuntimeError, match='transformer\.h\.2\.mlp\.experts\.kappa_bias') as exc_info:
         optimizer.step()
 
     message = str(exc_info.value)
@@ -82,7 +82,7 @@ def test_adamw_nonfinite_error_reports_preexisting_state(monkeypatch):
         dict(
             kind='adamw',
             params=[param],
-            debug_param_names=['transformer.h.2.mlp.experts.gate_proj_bias'],
+            debug_param_names=['transformer.h.2.mlp.experts.kappa_bias'],
             lr=0.1,
             betas=(0.9, 0.95),
             eps=1e-8,
@@ -450,7 +450,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
 
 
-def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
+def test_setup_optimizer_keeps_kappa_biases_out_of_muon_groups():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
@@ -458,7 +458,7 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
         n_exp=2,
         n_embd=8,
         n_head=2,
-        use_gate_proj_bias=True,
+        use_kappa_swiglu=True,
     )
     model = GPT(config)
 
@@ -471,8 +471,8 @@ def test_setup_optimizer_keeps_gate_projection_biases_out_of_muon_groups():
     moe_gate_bias = []
     for block in model.transformer.h:
         mlp = getattr(block, 'mlp', None)
-        if hasattr(mlp, 'experts') and getattr(mlp.experts, 'gate_proj_bias', None) is not None:
-            moe_gate_bias.append(mlp.experts.gate_proj_bias)
+        if hasattr(mlp, 'experts') and getattr(mlp.experts, 'kappa_bias', None) is not None:
+            moe_gate_bias.append(mlp.experts.kappa_bias)
 
     muon_params = {
         param
@@ -517,7 +517,7 @@ def test_setup_optimizer_selects_aurora_for_matrix_groups():
 
 
 
-def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
+def test_setup_optimizer_places_kappa_biases_in_scaled_groups():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
@@ -525,7 +525,7 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         n_exp=2,
         n_embd=8,
         n_head=2,
-        use_gate_proj_bias=True,
+        use_kappa_swiglu=True,
     )
     model = GPT(config)
 
@@ -533,34 +533,34 @@ def test_setup_optimizer_places_gate_proj_biases_in_scaled_groups():
         embedding_lr=0.2,
         matrix_lr=0.01,
         weight_decay=0.0,
-        gate_proj_bias_lr_final_scale=1.0,
-        gate_proj_bias_lr_warmup_iterations=1000,
+        kappa_bias_lr_final_scale=1.0,
+        kappa_bias_lr_warmup_iterations=1000,
     )
 
-    moe_gate_proj_bias_params = []
+    moe_kappa_bias_params = []
     for block in model.transformer.h:
         mlp = getattr(block, 'mlp', None)
         experts = getattr(mlp, 'experts', None)
-        if getattr(experts, 'gate_proj_bias', None) is not None:
-            moe_gate_proj_bias_params.append(experts.gate_proj_bias)
+        if getattr(experts, 'kappa_bias', None) is not None:
+            moe_kappa_bias_params.append(experts.kappa_bias)
 
-    gate_proj_bias_group = None
+    kappa_bias_group = None
     for group in optimizer.param_groups:
         params = set(group['params'])
-        if params == set(moe_gate_proj_bias_params):
-            gate_proj_bias_group = group
+        if params == set(moe_kappa_bias_params):
+            kappa_bias_group = group
 
-    assert gate_proj_bias_group is not None
-    assert gate_proj_bias_group['kind'] == 'adamw'
+    assert kappa_bias_group is not None
+    assert kappa_bias_group['kind'] == 'adamw'
     dmodel_lr_scale = (config.n_embd / 768) ** -0.5
-    assert gate_proj_bias_group['lr'] == 0.0
-    assert gate_proj_bias_group['initial_lr'] == gate_proj_bias_group['lr']
-    assert gate_proj_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
-    assert gate_proj_bias_group['lr_scale_end'] == 1.0
-    assert gate_proj_bias_group['lr_scale_warmup_iterations'] == 1000
+    assert kappa_bias_group['lr'] == 0.0
+    assert kappa_bias_group['initial_lr'] == kappa_bias_group['lr']
+    assert kappa_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
+    assert kappa_bias_group['lr_scale_end'] == 1.0
+    assert kappa_bias_group['lr_scale_warmup_iterations'] == 1000
 
 
-def test_gate_proj_bias_lr_schedule_warms_then_decays_to_final_scale():
+def test_kappa_bias_lr_schedule_warms_then_decays_to_final_scale():
     schedule = load_base_train_function("get_linear_lr_scale")
 
     assert schedule(0, 100, end_scale=0.2, warmup_iterations=10) == 0.0

@@ -826,190 +826,190 @@ class Qwen3MLP(nn.Module):
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
-        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
-        self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
+        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
+        self.kappa_bias_input_constant = getattr(config, 'kappa_bias_input_constant', None)
         self.register_buffer(
-            'gate_slope_max_scale',
-            torch.tensor(float(getattr(config, 'dense_gate_slope_max_scale', 2.0))),
+            'kappa_slope_max_scale',
+            torch.tensor(float(getattr(config, 'dense_kappa_slope_max_scale', 2.0))),
             persistent=False,
         )
-        self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
-        self.gate_proj_bias_ema_rms_reg = bool(getattr(config, 'gate_proj_bias_ema_rms_reg', False))
-        gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
-        self.use_gate_proj_bias = (
-            bool(getattr(config, 'use_gate_proj_bias', False))
-            and bool(getattr(config, 'constant_gate_proj_bias_dense_layers', False))
+        self.global_kappa_bias_granularity = getattr(config, 'global_kappa_bias_granularity', 'per-gate')
+        self.kappa_bias_ema_rms_reg = bool(getattr(config, 'kappa_bias_ema_rms_reg', False))
+        kappa_bias_start_layer = int(getattr(config, 'kappa_bias_start_layer', 0))
+        self.use_kappa_swiglu = (
+            bool(getattr(config, 'use_kappa_swiglu', False))
+            and bool(getattr(config, 'constant_kappa_bias_dense_layers', False))
         )
-        self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
-        self.has_active_gate_proj_bias = self.use_gate_proj_bias and (
-            layer_idx is None or layer_idx >= gate_proj_bias_start_layer
+        self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
+        self.has_active_kappa_bias = self.use_kappa_swiglu and (
+            layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
-        self._shared_gate_proj_bias = None
-        self._eval_gate_proj_bias_cache = None
-        self._eval_gate_proj_bias_cache_dtype = None
-        self._eval_gate_proj_bias_cache_device = None
-        self._eval_gate_proj_bias_cache_version = None
-        self.gate_proj_bias_ema_rms_reg_keeper = None
-        self.gate_proj_bias_scale_ema_rms_reg_keeper = None
-        if self.has_active_gate_proj_bias:
-            gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
-            if self.global_gate_proj_bias_granularity == 'global':
-                self.register_parameter('gate_proj_bias', None)
+        self._shared_kappa_bias = None
+        self._eval_kappa_bias_cache = None
+        self._eval_kappa_bias_cache_dtype = None
+        self._eval_kappa_bias_cache_device = None
+        self._eval_kappa_bias_cache_version = None
+        self.kappa_bias_ema_rms_reg_keeper = None
+        self.kappa_scale_ema_rms_reg_keeper = None
+        if self.has_active_kappa_bias:
+            kappa_bias_shape = self._get_kappa_bias_parameter_shape()
+            if self.global_kappa_bias_granularity == 'global':
+                self.register_parameter('kappa_bias', None)
             else:
-                self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
-            if self.gate_proj_bias_ema_rms_reg:
+                self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
+            if self.kappa_bias_ema_rms_reg:
                 keeper = GateProjBiasEmaTargetKeeper(
-                    beta=getattr(config, 'gate_proj_bias_l2_ema_beta', 0.99),
-                    anchor_start=getattr(config, 'gate_proj_bias_l2_ema_anchor_start', 0.4),
-                    anchor_end=getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
-                    floor_frac=getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
+                    beta=getattr(config, 'kappa_bias_l2_ema_beta', 0.99),
+                    anchor_start=getattr(config, 'kappa_bias_l2_ema_anchor_start', 0.4),
+                    anchor_end=getattr(config, 'kappa_bias_l2_ema_anchor_end', 0.8),
+                    floor_frac=getattr(config, 'kappa_bias_l2_ema_floor_frac', 0.8),
                 )
-                self.gate_proj_bias_ema_rms_reg_keeper = keeper
-                self.gate_proj_bias_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(
+                self.kappa_bias_ema_rms_reg_keeper = keeper
+                self.kappa_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(
                     beta=keeper.beta,
                     anchor_start=keeper.anchor_start,
                     anchor_end=keeper.anchor_end,
                     floor_frac=keeper.floor_frac,
                 )
         else:
-            # disabled_gate_proj_bias: placeholder to satisfy _materialize_gate_proj_bias().
+            # disabled_kappa_bias: placeholder to satisfy _materialize_kappa_bias().
             self.register_buffer(
-                'disabled_gate_proj_bias',
+                'disabled_kappa_bias',
                 torch.zeros(self.intermediate_size),
                 persistent=False,
             )
 
-    def _get_gate_proj_bias_parameter_shape(self):
-        if self.global_gate_proj_bias_granularity == 'per-gate':
+    def _get_kappa_bias_parameter_shape(self):
+        if self.global_kappa_bias_granularity == 'per-gate':
             return (self.intermediate_size,)
-        if self.global_gate_proj_bias_granularity in {'per-expert', 'per-layer', 'global'}:
+        if self.global_kappa_bias_granularity in {'per-expert', 'per-layer', 'global'}:
             return (1,)
         raise ValueError(
-            f"Unsupported gate proj bias granularity: {self.global_gate_proj_bias_granularity!r}"
+              f"Unsupported kappa bias granularity: {self.global_kappa_bias_granularity!r}"
         )
 
-    def bind_shared_gate_proj_bias(self, gate_proj_bias):
-        if self.global_gate_proj_bias_granularity != 'global':
-            raise ValueError("Shared gate_proj_bias binding is only valid for global granularity")
-        self._shared_gate_proj_bias = gate_proj_bias
+    def bind_shared_kappa_bias(self, kappa_bias):
+        if self.global_kappa_bias_granularity != 'global':
+            raise ValueError("Shared kappa_bias binding is only valid for global granularity")
+        self._shared_kappa_bias = kappa_bias
 
-    def _get_gate_proj_bias_parameter(self):
-        gate_proj_bias = getattr(self, 'gate_proj_bias', None)
-        if gate_proj_bias is not None:
-            return gate_proj_bias
-        return self._shared_gate_proj_bias
-
-    @torch._dynamo.disable
-    def _materialize_gate_proj_bias(self):
-        if not self.has_active_gate_proj_bias:
-            return self.disabled_gate_proj_bias.detach().requires_grad_(True)
-        gate_proj_bias = self._get_gate_proj_bias_parameter()
-        if gate_proj_bias is None:
-            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
-        if self.global_gate_proj_bias_granularity == 'per-gate':
-            return gate_proj_bias + 0
-        return gate_proj_bias.reshape(1).expand(self.intermediate_size) + 0
+    def _get_kappa_bias_parameter(self):
+        kappa_bias = getattr(self, 'kappa_bias', None)
+        if kappa_bias is not None:
+            return kappa_bias
+        return self._shared_kappa_bias
 
     @torch._dynamo.disable
-    def _materialize_gate_proj_bias_for_eval(self, target_dtype, target_device):
-        if not self.has_active_gate_proj_bias:
-            return self.disabled_gate_proj_bias.to(device=target_device, dtype=target_dtype)
-        gate_proj_bias = self._get_gate_proj_bias_parameter()
-        if gate_proj_bias is None:
-            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
-        version = gate_proj_bias._version
+    def _materialize_kappa_bias(self):
+        if not self.has_active_kappa_bias:
+            return self.disabled_kappa_bias.detach().requires_grad_(True)
+        kappa_bias = self._get_kappa_bias_parameter()
+        if kappa_bias is None:
+            raise RuntimeError("kappa_bias was enabled but no parameter was bound")
+        if self.global_kappa_bias_granularity == 'per-gate':
+            return kappa_bias + 0
+        return kappa_bias.reshape(1).expand(self.intermediate_size) + 0
+
+    @torch._dynamo.disable
+    def _materialize_kappa_bias_for_eval(self, target_dtype, target_device):
+        if not self.has_active_kappa_bias:
+            return self.disabled_kappa_bias.to(device=target_device, dtype=target_dtype)
+        kappa_bias = self._get_kappa_bias_parameter()
+        if kappa_bias is None:
+            raise RuntimeError("kappa_bias was enabled but no parameter was bound")
+        version = kappa_bias._version
         if (
-            self._eval_gate_proj_bias_cache is not None
-            and self._eval_gate_proj_bias_cache_dtype == target_dtype
-            and self._eval_gate_proj_bias_cache_device == target_device
-            and self._eval_gate_proj_bias_cache_version == version
+            self._eval_kappa_bias_cache is not None
+            and self._eval_kappa_bias_cache_dtype == target_dtype
+            and self._eval_kappa_bias_cache_device == target_device
+            and self._eval_kappa_bias_cache_version == version
         ):
-            return self._eval_gate_proj_bias_cache
-        materialized = self._materialize_gate_proj_bias().to(device=target_device, dtype=target_dtype)
-        self._eval_gate_proj_bias_cache = materialized
-        self._eval_gate_proj_bias_cache_dtype = target_dtype
-        self._eval_gate_proj_bias_cache_device = target_device
-        self._eval_gate_proj_bias_cache_version = version
+            return self._eval_kappa_bias_cache
+        materialized = self._materialize_kappa_bias().to(device=target_device, dtype=target_dtype)
+        self._eval_kappa_bias_cache = materialized
+        self._eval_kappa_bias_cache_dtype = target_dtype
+        self._eval_kappa_bias_cache_device = target_device
+        self._eval_kappa_bias_cache_version = version
         return materialized
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, softness=1.0):
-        target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
-        gate_proj_bias = gate_proj_bias.to(dtype=target_dtype)
-        gate_slope_max_scale = self.gate_slope_max_scale.to(device=gate_proj_bias.device, dtype=target_dtype)
+    def _compute_kappa_slope_scales(self, kappa_bias, softness=1.0):
+        target_dtype = torch.float32 if self.training else kappa_bias.dtype
+        kappa_bias = kappa_bias.to(dtype=target_dtype)
+        kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
         input_constant = torch.as_tensor(
-            self.gate_proj_bias_input_constant,
-            device=gate_proj_bias.device,
+            self.kappa_bias_input_constant,
+            device=kappa_bias.device,
             dtype=target_dtype,
         )
-        softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
-        log_kappa = 2 * gate_proj_bias * input_constant
-        return torch.exp(torch.log(gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
+        softness_t = torch.as_tensor(softness, device=kappa_bias.device, dtype=target_dtype)
+        log_kappa = 2 * kappa_bias * input_constant
+        return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
-    def set_gate_proj_bias_ema_rms_reg_step(self, step):
-        self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
+    def set_kappa_bias_ema_rms_reg_step(self, step):
+        self.kappa_bias_ema_rms_reg_step.fill_(int(step))
 
-    def set_gate_slope_max_scale(self, gate_slope_max_scale):
-        self.gate_slope_max_scale.fill_(float(gate_slope_max_scale))
+    def set_kappa_slope_max_scale(self, kappa_slope_max_scale):
+        self.kappa_slope_max_scale.fill_(float(kappa_slope_max_scale))
 
-    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
-        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
-        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+    def set_kappa_bias_ema_rms_reg_total_iterations(self, total_iterations):
+        if self.kappa_bias_ema_rms_reg_keeper is not None:
+            self.kappa_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+        if self.kappa_scale_ema_rms_reg_keeper is not None:
+            self.kappa_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
 
-    def _gate_proj_bias_debug_source(self, suffix):
+    def _kappa_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
         layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
-        granularity = self.global_gate_proj_bias_granularity
+        granularity = self.global_kappa_bias_granularity
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
-    def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
-        gate_proj_bias = gate_proj_bias.float()
-        MANAGER.add("gate_proj_bias_l2_loss", gate_proj_bias.square().mean())
-        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_ema_rms_reg_keeper.update(
-                gate_proj_bias,
-                int(self.gate_proj_bias_ema_rms_reg_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+    def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
+        kappa_bias = kappa_bias.float()
+        MANAGER.add("kappa_bias_l2_loss", kappa_bias.square().mean())
+        if self.kappa_bias_ema_rms_reg_keeper is not None:
+            self.kappa_bias_ema_rms_reg_keeper.update(
+                kappa_bias,
+                int(self.kappa_bias_ema_rms_reg_step.item()),
+                source=self._kappa_bias_debug_source("kappa_bias"),
             )
             MANAGER.add(
-                "gate_proj_bias_ema_rms_reg_loss",
-                self.gate_proj_bias_ema_rms_reg_keeper.loss(
-                    gate_proj_bias,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+                "kappa_bias_ema_rms_reg_loss",
+                self.kappa_bias_ema_rms_reg_keeper.loss(
+                    kappa_bias,
+                    source=self._kappa_bias_debug_source("kappa_bias"),
                 ),
             )
 
-    def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
-        gate_proj_bias_scale = gate_proj_bias_scale.float()
-        MANAGER.add("gate_proj_bias_scale_l2_loss", gate_proj_bias_scale.square().mean())
-        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_scale_ema_rms_reg_keeper.update(
-                gate_proj_bias_scale,
-                int(self.gate_proj_bias_ema_rms_reg_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+    def _accumulate_kappa_scale_l2_losses(self, kappa_scale):
+        kappa_scale = kappa_scale.float()
+        MANAGER.add("kappa_scale_l2_loss", kappa_scale.square().mean())
+        if self.kappa_scale_ema_rms_reg_keeper is not None:
+            self.kappa_scale_ema_rms_reg_keeper.update(
+                kappa_scale,
+                int(self.kappa_bias_ema_rms_reg_step.item()),
+                source=self._kappa_bias_debug_source("kappa_scale"),
             )
             MANAGER.add(
-                "gate_proj_bias_scale_ema_rms_reg_loss",
-                self.gate_proj_bias_scale_ema_rms_reg_keeper.loss(
-                    gate_proj_bias_scale,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+                "kappa_scale_ema_rms_reg_loss",
+                self.kappa_scale_ema_rms_reg_keeper.loss(
+                    kappa_scale,
+                    source=self._kappa_bias_debug_source("kappa_scale"),
                 ),
             )
 
     @torch._dynamo.disable
-    def _update_gate_slope_scale_stats(self, slope_scales):
-        if not MANAGER.collect_load_balancing_stats or not self.has_active_gate_proj_bias:
+    def _update_kappa_slope_scale_stats(self, slope_scales):
+        if not MANAGER.collect_load_balancing_stats or not self.has_active_kappa_bias:
             return
 
         slope_scales = slope_scales.detach().float()
         flat_slope_scales = slope_scales.reshape(1, -1)
         flat_mask = torch.ones_like(flat_slope_scales, dtype=torch.bool)
         slope_scale_mean = slope_scales.mean()
-        MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean)
+        MANAGER.add("kappa_bias_shift_abs_mean", slope_scale_mean)
         MANAGER.add(
-            "gate_proj_bias_shift_abs_top5p_mean",
+            "kappa_bias_shift_abs_top5p_mean",
             _mean_extreme_percentile_per_row(
                 flat_slope_scales,
                 flat_mask,
@@ -1018,7 +1018,7 @@ class Qwen3MLP(nn.Module):
             ).squeeze(0),
         )
         MANAGER.add(
-            "gate_proj_bias_shift_abs_bottom5p_mean",
+            "kappa_bias_shift_abs_bottom5p_mean",
             _mean_extreme_percentile_per_row(
                 flat_slope_scales,
                 flat_mask,
@@ -1026,18 +1026,18 @@ class Qwen3MLP(nn.Module):
                 largest=False,
             ).squeeze(0),
         )
-        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", slope_scale_mean)
+        MANAGER.add("kappa_bias_shift_abs_mean_normalized", slope_scale_mean)
 
     def forward(self, x):
         gate_out_raw = self.gate_proj(x)
         if self.training:
-            gate_proj_bias = self._materialize_gate_proj_bias()
+            kappa_bias = self._materialize_kappa_bias()
         else:
-            gate_proj_bias = self._materialize_gate_proj_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
-        slope_scales = self._compute_gate_slope_scales(gate_proj_bias)
+            kappa_bias = self._materialize_kappa_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
+        slope_scales = self._compute_kappa_slope_scales(kappa_bias)
         if self.training:
-            self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
-        self._update_gate_slope_scale_stats(slope_scales)
+            self._accumulate_kappa_bias_l2_losses(kappa_bias)
+        self._update_kappa_slope_scale_stats(slope_scales)
         gate_out = gate_out_raw * torch.sigmoid(
             gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
         )
@@ -1053,83 +1053,83 @@ class Qwen3MLPExperts(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
-        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
+        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
         self.register_buffer(
-            'gate_slope_max_scale',
-            torch.tensor(float(getattr(config, 'moe_gate_slope_max_scale', 3.0))),
+            'kappa_slope_max_scale',
+            torch.tensor(float(getattr(config, 'moe_kappa_slope_max_scale', 3.0))),
             persistent=False,
         )
-        self.global_gate_proj_bias_granularity = getattr(config, 'global_gate_proj_bias_granularity', 'per-gate')
+        self.global_kappa_bias_granularity = getattr(config, 'global_kappa_bias_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
-        self.gate_proj_bias_ema_rms_reg = bool(getattr(config, 'gate_proj_bias_ema_rms_reg', False))
-        gate_proj_bias_start_layer = int(getattr(config, 'gate_proj_bias_start_layer', 0))
-        self.use_gate_proj_bias = bool(getattr(config, 'use_gate_proj_bias', False)) and (
-            layer_idx is None or layer_idx >= gate_proj_bias_start_layer
+        self.kappa_bias_ema_rms_reg = bool(getattr(config, 'kappa_bias_ema_rms_reg', False))
+        kappa_bias_start_layer = int(getattr(config, 'kappa_bias_start_layer', 0))
+        self.use_kappa_swiglu = bool(getattr(config, 'use_kappa_swiglu', False)) and (
+            layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
-        self.log_implicit_gate_proj_bias = bool(getattr(config, 'log_implicit_gate_proj_bias', False))
-        self.register_buffer('gate_proj_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
-        self._shared_gate_proj_bias = None
-        self._shared_gate_proj_bias_scale = None
-        self._eval_gate_proj_bias_cache = None
-        self._eval_gate_proj_bias_cache_dtype = None
-        self._eval_gate_proj_bias_cache_device = None
-        self._eval_gate_proj_bias_cache_version = None
-        self._eval_gate_proj_bias_scale_cache = None
-        self._eval_gate_proj_bias_scale_cache_dtype = None
-        self._eval_gate_proj_bias_scale_cache_device = None
-        self._eval_gate_proj_bias_scale_cache_version = None
-        self.gate_proj_bias_ema_rms_reg_keeper = None
-        self.gate_proj_bias_scale_ema_rms_reg_keeper = None
+        self.log_implicit_kappa_bias = bool(getattr(config, 'log_implicit_kappa_bias', False))
+        self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
+        self._shared_kappa_bias = None
+        self._shared_kappa_scale = None
+        self._eval_kappa_bias_cache = None
+        self._eval_kappa_bias_cache_dtype = None
+        self._eval_kappa_bias_cache_device = None
+        self._eval_kappa_bias_cache_version = None
+        self._eval_kappa_scale_cache = None
+        self._eval_kappa_scale_cache_dtype = None
+        self._eval_kappa_scale_cache_device = None
+        self._eval_kappa_scale_cache_version = None
+        self.kappa_bias_ema_rms_reg_keeper = None
+        self.kappa_scale_ema_rms_reg_keeper = None
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
-        self.use_gate_proj_bias_scale = (
-            self.use_gate_proj_bias
-            and self.gate_proj_bias_input in {'top_logits', 'router_probs'}
+        self.use_kappa_scale = (
+            self.use_kappa_swiglu
+            and self.kappa_bias_input in {'top_logits', 'router_probs'}
         )
-        if self.use_gate_proj_bias:
-            gate_proj_bias_shape = self._get_gate_proj_bias_parameter_shape()
-            if self.global_gate_proj_bias_granularity == 'global':
-                self.register_parameter('gate_proj_bias', None)
-                self.register_parameter('gate_proj_bias_scale', None)
+        if self.use_kappa_swiglu:
+            kappa_bias_shape = self._get_kappa_bias_parameter_shape()
+            if self.global_kappa_bias_granularity == 'global':
+                self.register_parameter('kappa_bias', None)
+                self.register_parameter('kappa_scale', None)
             else:
-                self.gate_proj_bias = nn.Parameter(torch.empty(*gate_proj_bias_shape))
-                if self.use_gate_proj_bias_scale:
-                    self.gate_proj_bias_scale = nn.Parameter(torch.empty(*gate_proj_bias_shape))
+                self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
+                if self.use_kappa_scale:
+                    self.kappa_scale = nn.Parameter(torch.empty(*kappa_bias_shape))
                 else:
-                    self.register_parameter('gate_proj_bias_scale', None)
-            self.register_parameter('gate_proj_bias_expert', None)
-            self.register_parameter('gate_proj_bias_intermediate', None)
-            self.register_parameter('gate_proj_bias_residual', None)
-            if self.gate_proj_bias_ema_rms_reg:
+                    self.register_parameter('kappa_scale', None)
+            self.register_parameter('kappa_bias_expert', None)
+            self.register_parameter('kappa_bias_intermediate', None)
+            self.register_parameter('kappa_bias_residual', None)
+            if self.kappa_bias_ema_rms_reg:
                 keeper_kwargs = {
-                    'beta': getattr(config, 'gate_proj_bias_l2_ema_beta', 0.99),
-                    'anchor_start': getattr(config, 'gate_proj_bias_l2_ema_anchor_start', 0.4),
-                    'anchor_end': getattr(config, 'gate_proj_bias_l2_ema_anchor_end', 0.8),
-                    'floor_frac': getattr(config, 'gate_proj_bias_l2_ema_floor_frac', 0.8),
+                    'beta': getattr(config, 'kappa_bias_l2_ema_beta', 0.99),
+                    'anchor_start': getattr(config, 'kappa_bias_l2_ema_anchor_start', 0.4),
+                    'anchor_end': getattr(config, 'kappa_bias_l2_ema_anchor_end', 0.8),
+                    'floor_frac': getattr(config, 'kappa_bias_l2_ema_floor_frac', 0.8),
                 }
-                self.gate_proj_bias_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
-                if self.use_gate_proj_bias_scale:
-                    self.gate_proj_bias_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                self.kappa_bias_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
+                if self.use_kappa_scale:
+                    self.kappa_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
         else:
-            self.register_parameter('gate_proj_bias', None)
-            self.register_parameter('gate_proj_bias_scale', None)
-            self.register_parameter('gate_proj_bias_expert', None)
-            self.register_parameter('gate_proj_bias_intermediate', None)
-            self.register_parameter('gate_proj_bias_residual', None)
-            # disabled_gate_proj_bias: placeholder to satisfy _materialize_gate_proj_bias().
+            self.register_parameter('kappa_bias', None)
+            self.register_parameter('kappa_scale', None)
+            self.register_parameter('kappa_bias_expert', None)
+            self.register_parameter('kappa_bias_intermediate', None)
+            self.register_parameter('kappa_bias_residual', None)
+            # disabled_kappa_bias: placeholder to satisfy _materialize_kappa_bias().
             self.register_buffer(
-                "disabled_gate_proj_bias",
+                "disabled_kappa_bias",
                 torch.zeros(self.n_exp, self.intermediate_size),
                 persistent=False,
             )
         self.register_buffer(
-            "disabled_gate_proj_bias_scale",
+            "disabled_kappa_scale",
             torch.ones(self.n_exp, self.intermediate_size),
             persistent=False,
         )
-        self.register_buffer("initial_gate_proj_bias", None, persistent=False)
+        self.register_buffer("initial_kappa_bias", None, persistent=False)
         self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -1158,204 +1158,204 @@ class Qwen3MLPExperts(nn.Module):
             return gate_out_raw
         return self.act_fn(gate_out_raw)
 
-    def _get_gate_proj_bias_parameter_shape(self):
-        if self.global_gate_proj_bias_granularity == 'per-gate':
+    def _get_kappa_bias_parameter_shape(self):
+        if self.global_kappa_bias_granularity == 'per-gate':
             return (self.n_exp, self.intermediate_size)
-        if self.global_gate_proj_bias_granularity == 'per-expert':
+        if self.global_kappa_bias_granularity == 'per-expert':
             return (self.n_exp,)
-        if self.global_gate_proj_bias_granularity in {'per-layer', 'global'}:
+        if self.global_kappa_bias_granularity in {'per-layer', 'global'}:
             return (1,)
         raise ValueError(
-            f"Unsupported gate proj bias granularity: {self.global_gate_proj_bias_granularity!r}"
+              f"Unsupported kappa bias granularity: {self.global_kappa_bias_granularity!r}"
         )
 
-    def bind_shared_gate_proj_bias(self, gate_proj_bias):
-        if self.global_gate_proj_bias_granularity != 'global':
-            raise ValueError("Shared gate_proj_bias binding is only valid for global granularity")
-        self._shared_gate_proj_bias = gate_proj_bias
+    def bind_shared_kappa_bias(self, kappa_bias):
+        if self.global_kappa_bias_granularity != 'global':
+            raise ValueError("Shared kappa_bias binding is only valid for global granularity")
+        self._shared_kappa_bias = kappa_bias
 
-    def bind_shared_gate_proj_bias_scale(self, gate_proj_bias_scale):
-        if self.global_gate_proj_bias_granularity != 'global':
-            raise ValueError("Shared gate_proj_bias_scale binding is only valid for global granularity")
-        self._shared_gate_proj_bias_scale = gate_proj_bias_scale
+    def bind_shared_kappa_scale(self, kappa_scale):
+        if self.global_kappa_bias_granularity != 'global':
+            raise ValueError("Shared kappa_scale binding is only valid for global granularity")
+        self._shared_kappa_scale = kappa_scale
 
-    def _get_gate_proj_bias_parameter(self):
-        gate_proj_bias = self.gate_proj_bias
-        if gate_proj_bias is not None:
-            return gate_proj_bias
-        return self._shared_gate_proj_bias
+    def _get_kappa_bias_parameter(self):
+        kappa_bias = self.kappa_bias
+        if kappa_bias is not None:
+            return kappa_bias
+        return self._shared_kappa_bias
 
-    def _get_gate_proj_bias_scale_parameter(self):
-        gate_proj_bias_scale = self.gate_proj_bias_scale
-        if gate_proj_bias_scale is not None:
-            return gate_proj_bias_scale
-        return self._shared_gate_proj_bias_scale
+    def _get_kappa_scale_parameter(self):
+        kappa_scale = self.kappa_scale
+        if kappa_scale is not None:
+            return kappa_scale
+        return self._shared_kappa_scale
 
     @torch.no_grad()
-    def snapshot_gate_proj_bias_reference(self):
-        if not self.use_gate_proj_bias:
-            self.initial_gate_proj_bias = None
+    def snapshot_kappa_bias_reference(self):
+        if not self.use_kappa_swiglu:
+            self.initial_kappa_bias = None
             return
-        self.initial_gate_proj_bias = self._materialize_gate_proj_bias().detach().clone()
-        return self.initial_gate_proj_bias
+        self.initial_kappa_bias = self._materialize_kappa_bias().detach().clone()
+        return self.initial_kappa_bias
 
     '''
-    Bias-enabled layers use a dense gate_proj_bias matrix parameter.
+    Bias-enabled layers use a dense kappa_bias matrix parameter.
     Bias-disabled layers return a zero buffer.
     @torch._dynamo.disable keeps Dynamo from tracing across those representation
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
     @torch._dynamo.disable
-    def _materialize_gate_proj_bias(self):
-        if not self.use_gate_proj_bias:
-            return self.disabled_gate_proj_bias.detach().requires_grad_(True)
-        gate_proj_bias = self._get_gate_proj_bias_parameter()
-        if gate_proj_bias is None:
-            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
-        if self.global_gate_proj_bias_granularity == 'per-gate':
-            return gate_proj_bias + 0
-        if self.global_gate_proj_bias_granularity == 'per-expert':
-            return gate_proj_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
-        return gate_proj_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
+    def _materialize_kappa_bias(self):
+        if not self.use_kappa_swiglu:
+            return self.disabled_kappa_bias.detach().requires_grad_(True)
+        kappa_bias = self._get_kappa_bias_parameter()
+        if kappa_bias is None:
+            raise RuntimeError("kappa_bias was enabled but no parameter was bound")
+        if self.global_kappa_bias_granularity == 'per-gate':
+            return kappa_bias + 0
+        if self.global_kappa_bias_granularity == 'per-expert':
+            return kappa_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
+        return kappa_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
     @torch._dynamo.disable
-    def _materialize_gate_proj_bias_for_eval(self, target_dtype, target_device):
-        if not self.use_gate_proj_bias:
-            return self.disabled_gate_proj_bias.to(device=target_device, dtype=target_dtype)
-        gate_proj_bias = self._get_gate_proj_bias_parameter()
-        if gate_proj_bias is None:
-            raise RuntimeError("gate_proj_bias was enabled but no parameter was bound")
-        version = gate_proj_bias._version
+    def _materialize_kappa_bias_for_eval(self, target_dtype, target_device):
+        if not self.use_kappa_swiglu:
+            return self.disabled_kappa_bias.to(device=target_device, dtype=target_dtype)
+        kappa_bias = self._get_kappa_bias_parameter()
+        if kappa_bias is None:
+            raise RuntimeError("kappa_bias was enabled but no parameter was bound")
+        version = kappa_bias._version
         if (
-            self._eval_gate_proj_bias_cache is not None
-            and self._eval_gate_proj_bias_cache_dtype == target_dtype
-            and self._eval_gate_proj_bias_cache_device == target_device
-            and self._eval_gate_proj_bias_cache_version == version
+            self._eval_kappa_bias_cache is not None
+            and self._eval_kappa_bias_cache_dtype == target_dtype
+            and self._eval_kappa_bias_cache_device == target_device
+            and self._eval_kappa_bias_cache_version == version
         ):
-            return self._eval_gate_proj_bias_cache
-        materialized = self._materialize_gate_proj_bias().to(device=target_device, dtype=target_dtype)
-        self._eval_gate_proj_bias_cache = materialized
-        self._eval_gate_proj_bias_cache_dtype = target_dtype
-        self._eval_gate_proj_bias_cache_device = target_device
-        self._eval_gate_proj_bias_cache_version = version
+            return self._eval_kappa_bias_cache
+        materialized = self._materialize_kappa_bias().to(device=target_device, dtype=target_dtype)
+        self._eval_kappa_bias_cache = materialized
+        self._eval_kappa_bias_cache_dtype = target_dtype
+        self._eval_kappa_bias_cache_device = target_device
+        self._eval_kappa_bias_cache_version = version
         return materialized
 
     @torch._dynamo.disable
-    def _materialize_gate_proj_bias_scale(self):
-        if not self.use_gate_proj_bias_scale:
-            return self.disabled_gate_proj_bias_scale.detach().requires_grad_(True)
-        gate_proj_bias_scale = self._get_gate_proj_bias_scale_parameter()
-        if gate_proj_bias_scale is None:
-            raise RuntimeError("gate_proj_bias_scale was enabled but no parameter was bound")
-        if self.global_gate_proj_bias_granularity == 'per-gate':
-            return gate_proj_bias_scale + 0
-        if self.global_gate_proj_bias_granularity == 'per-expert':
-            return gate_proj_bias_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
-        return gate_proj_bias_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
+    def _materialize_kappa_scale(self):
+        if not self.use_kappa_scale:
+            return self.disabled_kappa_scale.detach().requires_grad_(True)
+        kappa_scale = self._get_kappa_scale_parameter()
+        if kappa_scale is None:
+            raise RuntimeError("kappa_scale was enabled but no parameter was bound")
+        if self.global_kappa_bias_granularity == 'per-gate':
+            return kappa_scale + 0
+        if self.global_kappa_bias_granularity == 'per-expert':
+            return kappa_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
+        return kappa_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
     @torch._dynamo.disable
-    def _materialize_gate_proj_bias_scale_for_eval(self, target_dtype, target_device):
-        if not self.use_gate_proj_bias_scale:
-            return self.disabled_gate_proj_bias_scale.to(device=target_device, dtype=target_dtype)
-        gate_proj_bias_scale = self._get_gate_proj_bias_scale_parameter()
-        if gate_proj_bias_scale is None:
-            raise RuntimeError("gate_proj_bias_scale was enabled but no parameter was bound")
-        version = gate_proj_bias_scale._version
+    def _materialize_kappa_scale_for_eval(self, target_dtype, target_device):
+        if not self.use_kappa_scale:
+            return self.disabled_kappa_scale.to(device=target_device, dtype=target_dtype)
+        kappa_scale = self._get_kappa_scale_parameter()
+        if kappa_scale is None:
+            raise RuntimeError("kappa_scale was enabled but no parameter was bound")
+        version = kappa_scale._version
         if (
-            self._eval_gate_proj_bias_scale_cache is not None
-            and self._eval_gate_proj_bias_scale_cache_dtype == target_dtype
-            and self._eval_gate_proj_bias_scale_cache_device == target_device
-            and self._eval_gate_proj_bias_scale_cache_version == version
+            self._eval_kappa_scale_cache is not None
+            and self._eval_kappa_scale_cache_dtype == target_dtype
+            and self._eval_kappa_scale_cache_device == target_device
+            and self._eval_kappa_scale_cache_version == version
         ):
-            return self._eval_gate_proj_bias_scale_cache
-        materialized = self._materialize_gate_proj_bias_scale().to(device=target_device, dtype=target_dtype)
-        self._eval_gate_proj_bias_scale_cache = materialized
-        self._eval_gate_proj_bias_scale_cache_dtype = target_dtype
-        self._eval_gate_proj_bias_scale_cache_device = target_device
-        self._eval_gate_proj_bias_scale_cache_version = version
+            return self._eval_kappa_scale_cache
+        materialized = self._materialize_kappa_scale().to(device=target_device, dtype=target_dtype)
+        self._eval_kappa_scale_cache = materialized
+        self._eval_kappa_scale_cache_dtype = target_dtype
+        self._eval_kappa_scale_cache_device = target_device
+        self._eval_kappa_scale_cache_version = version
         return materialized
 
-    def _compute_gate_slope_scales(self, gate_proj_bias, selected_router_scores, softness=1.0):
-        target_dtype = torch.float32 if self.training else gate_proj_bias.dtype
-        gate_proj_bias = gate_proj_bias.to(dtype=target_dtype).unsqueeze(1)
+    def _compute_kappa_slope_scales(self, kappa_bias, selected_router_scores, softness=1.0):
+        target_dtype = torch.float32 if self.training else kappa_bias.dtype
+        kappa_bias = kappa_bias.to(dtype=target_dtype).unsqueeze(1)
         selected_router_scores = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
-        gate_slope_max_scale = self.gate_slope_max_scale.to(device=gate_proj_bias.device, dtype=target_dtype)
-        softness_t = torch.as_tensor(softness, device=gate_proj_bias.device, dtype=target_dtype)
-        if self.gate_proj_bias_input in {'top_logits', 'router_probs'}:
+        kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
+        softness_t = torch.as_tensor(softness, device=kappa_bias.device, dtype=target_dtype)
+        if self.kappa_bias_input in {'top_logits', 'router_probs'}:
             if self.training:
-                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale().to(dtype=target_dtype)
+                kappa_scale = self._materialize_kappa_scale().to(dtype=target_dtype)
             else:
-                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale_for_eval(target_dtype, gate_proj_bias.device)
-            gate_proj_bias_scale = gate_proj_bias_scale.unsqueeze(1)
-            transformed_scores = gate_proj_bias_scale * selected_router_scores + gate_proj_bias
+                kappa_scale = self._materialize_kappa_scale_for_eval(target_dtype, kappa_bias.device)
+            kappa_scale = kappa_scale.unsqueeze(1)
+            transformed_scores = kappa_scale * selected_router_scores + kappa_bias
             log_kappa = 2 * transformed_scores
         else:
-            # Otherwise, gate_proj_bias_input == 'constant', and 
-            # selected_router_scores is MOELayer.gate_proj_bias_input_constant.
-            log_kappa = 2 * gate_proj_bias * selected_router_scores
-        return torch.exp(torch.log(gate_slope_max_scale) * torch.tanh(log_kappa / softness_t))
+            # Otherwise, kappa_bias_input == 'constant', and 
+            # selected_router_scores is MOELayer.kappa_bias_input_constant.
+            log_kappa = 2 * kappa_bias * selected_router_scores
+        return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa / softness_t))
 
-    def set_gate_proj_bias_ema_rms_reg_step(self, step):
-        self.gate_proj_bias_ema_rms_reg_step.fill_(int(step))
+    def set_kappa_bias_ema_rms_reg_step(self, step):
+        self.kappa_bias_ema_rms_reg_step.fill_(int(step))
 
-    def set_gate_slope_max_scale(self, gate_slope_max_scale):
-        self.gate_slope_max_scale.fill_(float(gate_slope_max_scale))
+    def set_kappa_slope_max_scale(self, kappa_slope_max_scale):
+        self.kappa_slope_max_scale.fill_(float(kappa_slope_max_scale))
 
-    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
-        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
-        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+    def set_kappa_bias_ema_rms_reg_total_iterations(self, total_iterations):
+        if self.kappa_bias_ema_rms_reg_keeper is not None:
+            self.kappa_bias_ema_rms_reg_keeper.set_total_iterations(total_iterations)
+        if self.kappa_scale_ema_rms_reg_keeper is not None:
+            self.kappa_scale_ema_rms_reg_keeper.set_total_iterations(total_iterations)
 
-    def _gate_proj_bias_debug_source(self, suffix):
+    def _kappa_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
         layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
-        granularity = self.global_gate_proj_bias_granularity
+        granularity = self.global_kappa_bias_granularity
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
-    def _accumulate_gate_proj_bias_l2_losses(self, gate_proj_bias):
-        gate_proj_bias = gate_proj_bias.float()
+    def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
+        kappa_bias = kappa_bias.float()
         MANAGER.add(
-            "gate_proj_bias_l2_loss",
-            gate_proj_bias.square().mean(),
+            "kappa_bias_l2_loss",
+            kappa_bias.square().mean(),
         )
-        if self.gate_proj_bias_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_ema_rms_reg_keeper.update(
-                gate_proj_bias,
-                int(self.gate_proj_bias_ema_rms_reg_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+        if self.kappa_bias_ema_rms_reg_keeper is not None:
+            self.kappa_bias_ema_rms_reg_keeper.update(
+                kappa_bias,
+                int(self.kappa_bias_ema_rms_reg_step.item()),
+                source=self._kappa_bias_debug_source("kappa_bias"),
             )
             MANAGER.add(
-                "gate_proj_bias_ema_rms_reg_loss",
-                self.gate_proj_bias_ema_rms_reg_keeper.loss(
-                    gate_proj_bias,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias"),
+                "kappa_bias_ema_rms_reg_loss",
+                self.kappa_bias_ema_rms_reg_keeper.loss(
+                    kappa_bias,
+                    source=self._kappa_bias_debug_source("kappa_bias"),
                 ),
             )
 
     @torch._dynamo.disable
-    def _accumulate_gate_proj_bias_scale_l2_losses(self, gate_proj_bias_scale):
-        gate_proj_bias_scale = gate_proj_bias_scale.float()
+    def _accumulate_kappa_scale_l2_losses(self, kappa_scale):
+        kappa_scale = kappa_scale.float()
         MANAGER.add(
-            "gate_proj_bias_scale_l2_loss",
-            gate_proj_bias_scale.square().mean(),
+            "kappa_scale_l2_loss",
+            kappa_scale.square().mean(),
         )
-        if self.gate_proj_bias_scale_ema_rms_reg_keeper is not None:
-            self.gate_proj_bias_scale_ema_rms_reg_keeper.update(
-                gate_proj_bias_scale,
-                int(self.gate_proj_bias_ema_rms_reg_step.item()),
-                source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+        if self.kappa_scale_ema_rms_reg_keeper is not None:
+            self.kappa_scale_ema_rms_reg_keeper.update(
+                kappa_scale,
+                int(self.kappa_bias_ema_rms_reg_step.item()),
+                source=self._kappa_bias_debug_source("kappa_scale"),
             )
             MANAGER.add(
-                "gate_proj_bias_scale_ema_rms_reg_loss",
-                self.gate_proj_bias_scale_ema_rms_reg_keeper.loss(
-                    gate_proj_bias_scale,
-                    source=self._gate_proj_bias_debug_source("gate_proj_bias_scale"),
+                "kappa_scale_ema_rms_reg_loss",
+                self.kappa_scale_ema_rms_reg_keeper.loss(
+                    kappa_scale,
+                    source=self._kappa_bias_debug_source("kappa_scale"),
                 ),
             )
 
-    def _apply_gate_slope_scaled_activation(self, gate_out_raw, slope_scales):
+    def _apply_kappa_slope_scaled_activation(self, gate_out_raw, slope_scales):
         slope_scales = slope_scales.to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_scales)
 
@@ -1388,10 +1388,10 @@ class Qwen3MLPExperts(nn.Module):
             }
 
     @torch._dynamo.disable
-    def _update_gate_slope_scale_stats(self, slope_scales, selected_router_scores):
+    def _update_kappa_slope_scale_stats(self, slope_scales, selected_router_scores):
         if (
             not MANAGER.collect_load_balancing_stats
-            or not self.use_gate_proj_bias
+            or not self.use_kappa_swiglu
             or selected_router_scores is None
         ):
             return
@@ -1411,12 +1411,12 @@ class Qwen3MLPExperts(nn.Module):
         slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
-        MANAGER.add("gate_proj_bias_shift_abs_mean", slope_scale_mean.detach())
+        MANAGER.add("kappa_bias_shift_abs_mean", slope_scale_mean.detach())
         # slope_scales: [n_exp, capacity, intermediate_size]
         slope_scales_flat = slope_scales.reshape(slope_scales.size(0), -1)
         active_slope_mask_flat = active_mask.unsqueeze(-1).expand_as(slope_scales).reshape(slope_scales.size(0), -1)
         MANAGER.add(
-            "gate_proj_bias_shift_abs_top5p_mean",
+            "kappa_bias_shift_abs_top5p_mean",
             _mean_extreme_percentile_per_row(
                 slope_scales_flat,
                 active_slope_mask_flat,
@@ -1425,7 +1425,7 @@ class Qwen3MLPExperts(nn.Module):
             ).detach(),
         )
         MANAGER.add(
-            "gate_proj_bias_shift_abs_bottom5p_mean",
+            "kappa_bias_shift_abs_bottom5p_mean",
             _mean_extreme_percentile_per_row(
                 slope_scales_flat,
                 active_slope_mask_flat,
@@ -1438,13 +1438,13 @@ class Qwen3MLPExperts(nn.Module):
         normalized_slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts_sqrt
         ).sum() / total_active_tokens_sqrt
-        MANAGER.add("gate_proj_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
+        MANAGER.add("kappa_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
 
     @torch._dynamo.disable
-    def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
+    def _update_implicit_kappa_bias_stats(self, x, router_weight, selected_router_scores):
         if (
             not MANAGER.collect_load_balancing_stats
-            or not self.log_implicit_gate_proj_bias
+            or not self.log_implicit_kappa_bias
             or selected_router_scores is None
             or router_weight is None
         ):
@@ -1474,7 +1474,7 @@ class Qwen3MLPExperts(nn.Module):
         exp_gate_parallel_coeff = (self.gate_proj.detach().float() * router_weight.unsqueeze(-1)).sum(dim=1)
         input_parallel = (x * router_weight.unsqueeze(1)).sum(dim=2)
         MANAGER.add(
-            "implicit_gate_proj_bias_top5p_mean",
+            "implicit_kappa_bias_top5p_mean",
             _mean_extreme_outer_product_percentile_per_row(
                 input_parallel,
                 exp_gate_parallel_coeff,
@@ -1484,7 +1484,7 @@ class Qwen3MLPExperts(nn.Module):
             ).detach(),
         )
         MANAGER.add(
-            "implicit_gate_proj_bias_bottom5p_mean",
+            "implicit_kappa_bias_bottom5p_mean",
             _mean_extreme_outer_product_percentile_per_row(
                 input_parallel,
                 exp_gate_parallel_coeff,
@@ -1500,34 +1500,34 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        if selected_router_scores is not None and self.use_gate_proj_bias:
+        if selected_router_scores is not None and self.use_kappa_swiglu:
             if self.training:
-                gate_proj_bias = self._materialize_gate_proj_bias()
+                kappa_bias = self._materialize_kappa_bias()
             else:
-                gate_proj_bias = self._materialize_gate_proj_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
+                kappa_bias = self._materialize_kappa_bias_for_eval(gate_out_raw.dtype, gate_out_raw.device)
             scaled_selected_router_scores = scale_grad(
                 selected_router_scores,
                 self.router_confidence_gate_bias_grad_scale,
             )
-            slope_scales = self._compute_gate_slope_scales(
-                gate_proj_bias,
+            slope_scales = self._compute_kappa_slope_scales(
+                kappa_bias,
                 scaled_selected_router_scores,
             )
             if self.training:
-                self._accumulate_gate_proj_bias_l2_losses(gate_proj_bias)
-            if self.training and self.use_gate_proj_bias_scale:
-                gate_proj_bias_scale = self._materialize_gate_proj_bias_scale()
-                self._accumulate_gate_proj_bias_scale_l2_losses(gate_proj_bias_scale)
+                self._accumulate_kappa_bias_l2_losses(kappa_bias)
+            if self.training and self.use_kappa_scale:
+                kappa_scale = self._materialize_kappa_scale()
+                self._accumulate_kappa_scale_l2_losses(kappa_scale)
             # slope_scales: [n_exp, capacity, intermediate_size]
-            self._update_gate_slope_scale_stats(slope_scales, selected_router_scores)
-            gate_out_acts = self._apply_gate_slope_scaled_activation(
+            self._update_kappa_slope_scale_stats(slope_scales, selected_router_scores)
+            gate_out_acts = self._apply_kappa_slope_scaled_activation(
                 gate_out_raw,
                 slope_scales,
             )
         else:
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
         if selected_router_scores is not None:
-            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
+            self._update_implicit_kappa_bias_stats(x, router_weight, selected_router_scores)
         self._update_gate_stats(gate_out_acts)
 
         fc_out = torch.bmm(x, self.c_fc)
@@ -1554,8 +1554,8 @@ class MOELayer(nn.Module):
         self.n_exp = config.n_exp
         self.top_k = config.moe_top_k
         self.use_aux_loss = config.use_aux_loss
-        self.gate_proj_bias_input = getattr(config, 'gate_proj_bias_input', 'router_probs')
-        self.gate_proj_bias_input_constant = getattr(config, 'gate_proj_bias_input_constant', None)
+        self.kappa_bias_input = getattr(config, 'kappa_bias_input', 'router_probs')
+        self.kappa_bias_input_constant = getattr(config, 'kappa_bias_input_constant', None)
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1587,20 +1587,20 @@ class MOELayer(nn.Module):
         return output_flat
 
     def _select_gate_confidence(self, top_k_scores, router_probs):
-        if self.gate_proj_bias_input == 'top_logits':
+        if self.kappa_bias_input == 'top_logits':
             # top_logits are usually 3~4. * 0.15 -> 0.45~0.6. 
             # Similar as the default "constant" setting of 0.5.
             return top_k_scores * 0.15
-        if self.gate_proj_bias_input == 'router_probs':
+        if self.kappa_bias_input == 'router_probs':
             return router_probs
-        if self.gate_proj_bias_input == 'constant':
-            if self.gate_proj_bias_input_constant is None:
+        if self.kappa_bias_input == 'constant':
+            if self.kappa_bias_input_constant is None:
                 raise RuntimeError(
-                    "gate_proj_bias_input_constant must be set when gate_proj_bias_input='constant'"
+                    "kappa_bias_input_constant must be set when kappa_bias_input='constant'"
                 )
-            return torch.full_like(router_probs, self.gate_proj_bias_input_constant)
+            return torch.full_like(router_probs, self.kappa_bias_input_constant)
         raise ValueError(
-            f"Unsupported gate_proj_bias_input: {self.gate_proj_bias_input!r}"
+            f"Unsupported kappa_bias_input: {self.kappa_bias_input!r}"
         )
 
     def forward(self, x: torch.Tensor):
@@ -1722,9 +1722,9 @@ class GPT(nn.Module):
             "wte": nn.Embedding(padded_vocab_size, config.n_embd),
             "h": blocks,
         })
-        self.register_parameter("global_gate_proj_bias", None)
-        self.register_parameter("global_gate_proj_bias_scale", None)
-        self._configure_gate_proj_bias_sharing()
+        self.register_parameter("global_kappa_bias", None)
+        self.register_parameter("global_kappa_scale", None)
+        self._configure_kappa_bias_sharing()
 
         self.lm_head = nn.Linear(config.n_embd, padded_vocab_size, bias=False)
         # Per-layer learnable scalars (inspired by modded-nanogpt)
@@ -1748,8 +1748,8 @@ class GPT(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
-    def _configure_gate_proj_bias_sharing(self):
-        if getattr(self.config, 'global_gate_proj_bias_granularity', 'per-gate') != 'global':
+    def _configure_kappa_bias_sharing(self):
+        if getattr(self.config, 'global_kappa_bias_granularity', 'per-gate') != 'global':
             return
         bias_enabled_modules = []
         bias_scale_enabled_modules = []
@@ -1757,67 +1757,67 @@ class GPT(nn.Module):
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
-                if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
+                if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
                     bias_enabled_modules.append(experts)
-                    if experts.use_gate_proj_bias_scale:
+                    if experts.use_kappa_scale:
                         bias_scale_enabled_modules.append(experts)
-            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_gate_proj_bias', mlp.use_gate_proj_bias):
+            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
                 bias_enabled_modules.append(mlp)
         if not bias_enabled_modules:
             return
-        self.global_gate_proj_bias = nn.Parameter(torch.empty(1))
+        self.global_kappa_bias = nn.Parameter(torch.empty(1))
         for module in bias_enabled_modules:
-            module.bind_shared_gate_proj_bias(self.global_gate_proj_bias)
+            module.bind_shared_kappa_bias(self.global_kappa_bias)
         if bias_scale_enabled_modules:
-            self.global_gate_proj_bias_scale = nn.Parameter(torch.empty(1))
+            self.global_kappa_scale = nn.Parameter(torch.empty(1))
             for module in bias_scale_enabled_modules:
-                module.bind_shared_gate_proj_bias_scale(self.global_gate_proj_bias_scale)
+                module.bind_shared_kappa_scale(self.global_kappa_scale)
 
-    def compute_gate_proj_slope_magnitude_losses(self):
+    def compute_kappa_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
         for name in (
-            'gate_proj_bias_l2_loss',
-            'gate_proj_bias_scale_l2_loss',
-            'gate_proj_bias_ema_rms_reg_loss',
-            'gate_proj_bias_scale_ema_rms_reg_loss',
+            'kappa_bias_l2_loss',
+            'kappa_scale_l2_loss',
+            'kappa_bias_ema_rms_reg_loss',
+            'kappa_scale_ema_rms_reg_loss',
         ):
             value = MANAGER.aggregate(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
             MANAGER.reset(name)
         return losses
 
-    def set_gate_proj_bias_ema_rms_reg_step(self, step):
+    def set_kappa_bias_ema_rms_reg_step(self, step):
         step = int(step)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                mlp.set_gate_proj_bias_ema_rms_reg_step(step)
+                mlp.set_kappa_bias_ema_rms_reg_step(step)
                 continue
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts):
-                experts.set_gate_proj_bias_ema_rms_reg_step(step)
+                experts.set_kappa_bias_ema_rms_reg_step(step)
 
-    def set_gate_proj_bias_ema_rms_reg_total_iterations(self, total_iterations):
+    def set_kappa_bias_ema_rms_reg_total_iterations(self, total_iterations):
         total_iterations = int(total_iterations)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, Qwen3MLP):
-                mlp.set_gate_proj_bias_ema_rms_reg_total_iterations(total_iterations)
+                mlp.set_kappa_bias_ema_rms_reg_total_iterations(total_iterations)
                 continue
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts):
-                experts.set_gate_proj_bias_ema_rms_reg_total_iterations(total_iterations)
+                experts.set_kappa_bias_ema_rms_reg_total_iterations(total_iterations)
 
-    def set_gate_slope_max_scales(self, moe_gate_slope_max_scale=None, dense_gate_slope_max_scale=None):
+    def set_kappa_slope_max_scales(self, moe_kappa_slope_max_scale=None, dense_kappa_slope_max_scale=None):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
-            if isinstance(mlp, Qwen3MLP) and dense_gate_slope_max_scale is not None:
-                mlp.set_gate_slope_max_scale(dense_gate_slope_max_scale)
+            if isinstance(mlp, Qwen3MLP) and dense_kappa_slope_max_scale is not None:
+                mlp.set_kappa_slope_max_scale(dense_kappa_slope_max_scale)
                 continue
             experts = getattr(mlp, 'experts', None)
-            if isinstance(experts, Qwen3MLPExperts) and moe_gate_slope_max_scale is not None:
-                experts.set_gate_slope_max_scale(moe_gate_slope_max_scale)
+            if isinstance(experts, Qwen3MLPExperts) and moe_kappa_slope_max_scale is not None:
+                experts.set_kappa_slope_max_scale(moe_kappa_slope_max_scale)
 
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
@@ -1829,16 +1829,16 @@ class GPT(nn.Module):
                     experts.router_confidence_gate_bias_grad_scale.fill_(grad_scale)
 
     @torch.no_grad()
-    def refresh_gate_proj_bias_references(self):
+    def refresh_kappa_bias_references(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts):
-                    experts.snapshot_gate_proj_bias_reference()
+                    experts.snapshot_kappa_bias_reference()
 
-    def _should_refresh_gate_proj_bias_references(self):
-        return bool(getattr(self.config, 'refresh_gate_proj_bias_references', False))
+    def _should_refresh_kappa_bias_references(self):
+        return bool(getattr(self.config, 'refresh_kappa_bias_references', False))
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
         if strict:
@@ -1846,14 +1846,14 @@ class GPT(nn.Module):
             for name, param in self.state_dict().items():
                 # Keep the model’s current value for these parameters 
                 # if they are missing in the checkpoint, to avoid loading errors 
-                # when changing gate_proj_bias configuration.
+                # when changing kappa_bias configuration.
                 if ('ema_rms_reg_keeper' in name or 'l2_target_keeper' in name) and name not in state_dict:
                     state_dict[name] = param.clone()
-                elif 'gate_proj_bias_scale' in name and name not in state_dict:
+                elif 'kappa_scale' in name and name not in state_dict:
                     state_dict[name] = param.clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
-        if self._should_refresh_gate_proj_bias_references():
-            self.refresh_gate_proj_bias_references()
+        if self._should_refresh_kappa_bias_references():
+            self.refresh_kappa_bias_references()
         return load_result
 
     @torch.no_grad()
@@ -1889,9 +1889,9 @@ class GPT(nn.Module):
                 torch.nn.init.uniform_(block.mlp.gate_proj.weight, -s, s)
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
-                gate_proj_bias = getattr(block.mlp, 'gate_proj_bias', None)
-                if gate_proj_bias is not None:
-                    torch.nn.init.zeros_(gate_proj_bias)
+                kappa_bias = getattr(block.mlp, 'kappa_bias', None)
+                if kappa_bias is not None:
+                    torch.nn.init.zeros_(kappa_bias)
             elif isinstance(block.mlp, MLP):
                 torch.nn.init.uniform_(block.mlp.c_fc.weight, -s, s)
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
@@ -1905,18 +1905,18 @@ class GPT(nn.Module):
                     # Ordinary MLPExperts doesn't have gate_proj.
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
                     torch.nn.init.zeros_(experts.c_proj)
-        if self.global_gate_proj_bias is not None:
-            torch.nn.init.zeros_(self.global_gate_proj_bias)
-        if self.global_gate_proj_bias_scale is not None:
-            torch.nn.init.zeros_(self.global_gate_proj_bias_scale)
+        if self.global_kappa_bias is not None:
+            torch.nn.init.zeros_(self.global_kappa_bias)
+        if self.global_kappa_scale is not None:
+            torch.nn.init.zeros_(self.global_kappa_scale)
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
-                if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias is not None:
-                    torch.nn.init.zeros_(experts.gate_proj_bias)
-                if isinstance(experts, Qwen3MLPExperts) and experts.gate_proj_bias_scale is not None:
-                    torch.nn.init.zeros_(experts.gate_proj_bias_scale)
+                if isinstance(experts, Qwen3MLPExperts) and experts.kappa_bias is not None:
+                    torch.nn.init.zeros_(experts.kappa_bias)
+                if isinstance(experts, Qwen3MLPExperts) and experts.kappa_scale is not None:
+                    torch.nn.init.zeros_(experts.kappa_scale)
             
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
@@ -1946,8 +1946,8 @@ class GPT(nn.Module):
             for ve in self.value_embeds.values():
                 ve.to(dtype=torch.bfloat16)
 
-        if self._should_refresh_gate_proj_bias_references():
-            self.refresh_gate_proj_bias_references()
+        if self._should_refresh_kappa_bias_references():
+            self.refresh_kappa_bias_references()
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         # TODO: bump base theta more? e.g. 100K is more common more recently
@@ -2102,10 +2102,10 @@ class GPT(nn.Module):
                         weight_decay=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
                         matrix_optimizer='aurora',
-                        gate_proj_bias_lr_final_scale=1.0,
-                        gate_proj_bias_lr_max_scale=1.0,
-                        gate_proj_bias_delay_start_iterations=0,
-                        gate_proj_bias_lr_warmup_iterations=1000):
+                        kappa_bias_lr_final_scale=1.0,
+                        kappa_bias_lr_max_scale=1.0,
+                        kappa_bias_delay_start_iterations=0,
+                        kappa_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
@@ -2114,7 +2114,7 @@ class GPT(nn.Module):
         dense_nonmatrix_params = []
         moe_matrix_params = []
         moe_nonmatrix_params = []
-        gate_proj_bias_params = []
+        kappa_bias_params = []
         seen_param_ids = set()
         param_names = {}
 
@@ -2138,14 +2138,14 @@ class GPT(nn.Module):
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
                 full_name = f'transformer.h.{block_idx}.{name}'
-                if name.startswith('mlp.experts.gate_proj_bias') or name.startswith('mlp.gate_proj_bias'):
-                    append_param(gate_proj_bias_params, param, full_name)
+                if name.startswith('mlp.experts.kappa_bias') or name.startswith('mlp.kappa_bias'):
+                    append_param(kappa_bias_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
                 else:
                     append_param(target_matrix_params, param, full_name)
-        append_param(gate_proj_bias_params, self.global_gate_proj_bias, 'global_gate_proj_bias')
-        append_param(gate_proj_bias_params, self.global_gate_proj_bias_scale, 'global_gate_proj_bias_scale')
+        append_param(kappa_bias_params, self.global_kappa_bias, 'global_kappa_bias')
+        append_param(kappa_bias_params, self.global_kappa_scale, 'global_kappa_scale')
         value_embeds_params = []
         for param in self.value_embeds.parameters():
             append_param(value_embeds_params, param)
@@ -2162,7 +2162,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
-            len(gate_proj_bias_params) +
+            len(kappa_bias_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -2188,15 +2188,15 @@ class GPT(nn.Module):
         param_groups.append(
             dict(
                 kind='adamw',
-                name='gate_proj_bias',
-                params=gate_proj_bias_params,
-                debug_param_names=[param_names[id(p)] for p in gate_proj_bias_params],
+                name='kappa_bias',
+                params=kappa_bias_params,
+                debug_param_names=[param_names[id(p)] for p in kappa_bias_params],
                 lr=0.0,
                 base_lr=embedding_lr * dmodel_lr_scale,
-                lr_scale_end=gate_proj_bias_lr_final_scale,
-                lr_scale_max=gate_proj_bias_lr_max_scale,
-                lr_scale_nolearn_iterations=gate_proj_bias_delay_start_iterations,
-                lr_scale_warmup_iterations=gate_proj_bias_lr_warmup_iterations,
+                lr_scale_end=kappa_bias_lr_final_scale,
+                lr_scale_max=kappa_bias_lr_max_scale,
+                lr_scale_nolearn_iterations=kappa_bias_delay_start_iterations,
+                lr_scale_warmup_iterations=kappa_bias_lr_warmup_iterations,
                 betas=adam_betas,
                 eps=1e-10,
                 weight_decay=0.0,
@@ -2285,17 +2285,17 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
-                   'gate_proj_bias_l2_loss': 0,
-                   'gate_proj_bias_scale_l2_loss': 0,
-                   'gate_proj_bias_ema_rms_reg_loss': 0,
-                   'gate_proj_bias_scale_ema_rms_reg_loss': 0,
+                   'kappa_bias_l2_loss': 0,
+                   'kappa_scale_l2_loss': 0,
+                   'kappa_bias_ema_rms_reg_loss': 0,
+                   'kappa_scale_ema_rms_reg_loss': 0,
                    'gate_grad_scale_mean': None,
-                   'gate_proj_bias_shift_abs_top5p_mean': 0,
-                   'gate_proj_bias_shift_abs_bottom5p_mean': 0,
-                   'gate_proj_bias_shift_abs_mean': 0,
-                   'gate_proj_bias_shift_abs_mean_normalized': 0,
-                   'implicit_gate_proj_bias_top5p_mean': 0,
-                   'implicit_gate_proj_bias_bottom5p_mean': 0,
+                   'kappa_bias_shift_abs_top5p_mean': 0,
+                   'kappa_bias_shift_abs_bottom5p_mean': 0,
+                   'kappa_bias_shift_abs_mean': 0,
+                   'kappa_bias_shift_abs_mean_normalized': 0,
+                   'implicit_kappa_bias_top5p_mean': 0,
+                   'implicit_kappa_bias_bottom5p_mean': 0,
                    'routed_token_router_weight_cosine_mean': 0,
                    'routed_token_router_weight_cosine_top5p_mean': 0,
                    'routed_token_router_weight_cosine_bottom5p_mean': 0,
@@ -2322,48 +2322,48 @@ class GPT(nn.Module):
             else None
         )
         MANAGER.reset("gate_grad_scale_mean")
-        gate_proj_bias_shift_abs_top5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_top5p_mean")
-        losses['gate_proj_bias_shift_abs_top5p_mean'] = (
-            gate_proj_bias_shift_abs_top5p_mean.detach()
-            if gate_proj_bias_shift_abs_top5p_mean is not None
+        kappa_bias_shift_abs_top5p_mean = MANAGER.aggregate("kappa_bias_shift_abs_top5p_mean")
+        losses['kappa_bias_shift_abs_top5p_mean'] = (
+            kappa_bias_shift_abs_top5p_mean.detach()
+            if kappa_bias_shift_abs_top5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("gate_proj_bias_shift_abs_top5p_mean")
-        gate_proj_bias_shift_abs_bottom5p_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_bottom5p_mean")
-        losses['gate_proj_bias_shift_abs_bottom5p_mean'] = (
-            gate_proj_bias_shift_abs_bottom5p_mean.detach()
-            if gate_proj_bias_shift_abs_bottom5p_mean is not None
+        MANAGER.reset("kappa_bias_shift_abs_top5p_mean")
+        kappa_bias_shift_abs_bottom5p_mean = MANAGER.aggregate("kappa_bias_shift_abs_bottom5p_mean")
+        losses['kappa_bias_shift_abs_bottom5p_mean'] = (
+            kappa_bias_shift_abs_bottom5p_mean.detach()
+            if kappa_bias_shift_abs_bottom5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("gate_proj_bias_shift_abs_bottom5p_mean")
-        gate_proj_bias_shift_abs_mean = MANAGER.aggregate("gate_proj_bias_shift_abs_mean")
-        losses['gate_proj_bias_shift_abs_mean'] = (
-            gate_proj_bias_shift_abs_mean.detach()
-            if gate_proj_bias_shift_abs_mean is not None
+        MANAGER.reset("kappa_bias_shift_abs_bottom5p_mean")
+        kappa_bias_shift_abs_mean = MANAGER.aggregate("kappa_bias_shift_abs_mean")
+        losses['kappa_bias_shift_abs_mean'] = (
+            kappa_bias_shift_abs_mean.detach()
+            if kappa_bias_shift_abs_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("gate_proj_bias_shift_abs_mean")
-        gate_proj_bias_shift_abs_mean_normalized = MANAGER.aggregate("gate_proj_bias_shift_abs_mean_normalized")
-        losses['gate_proj_bias_shift_abs_mean_normalized'] = (
-            gate_proj_bias_shift_abs_mean_normalized.detach()
-            if gate_proj_bias_shift_abs_mean_normalized is not None
+        MANAGER.reset("kappa_bias_shift_abs_mean")
+        kappa_bias_shift_abs_mean_normalized = MANAGER.aggregate("kappa_bias_shift_abs_mean_normalized")
+        losses['kappa_bias_shift_abs_mean_normalized'] = (
+            kappa_bias_shift_abs_mean_normalized.detach()
+            if kappa_bias_shift_abs_mean_normalized is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("gate_proj_bias_shift_abs_mean_normalized")
-        implicit_gate_proj_bias_top5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_top5p_mean")
-        losses['implicit_gate_proj_bias_top5p_mean'] = (
-            implicit_gate_proj_bias_top5p_mean.detach()
-            if implicit_gate_proj_bias_top5p_mean is not None
+        MANAGER.reset("kappa_bias_shift_abs_mean_normalized")
+        implicit_kappa_bias_top5p_mean = MANAGER.aggregate("implicit_kappa_bias_top5p_mean")
+        losses['implicit_kappa_bias_top5p_mean'] = (
+            implicit_kappa_bias_top5p_mean.detach()
+            if implicit_kappa_bias_top5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("implicit_gate_proj_bias_top5p_mean")
-        implicit_gate_proj_bias_bottom5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_bottom5p_mean")
-        losses['implicit_gate_proj_bias_bottom5p_mean'] = (
-            implicit_gate_proj_bias_bottom5p_mean.detach()
-            if implicit_gate_proj_bias_bottom5p_mean is not None
+        MANAGER.reset("implicit_kappa_bias_top5p_mean")
+        implicit_kappa_bias_bottom5p_mean = MANAGER.aggregate("implicit_kappa_bias_bottom5p_mean")
+        losses['implicit_kappa_bias_bottom5p_mean'] = (
+            implicit_kappa_bias_bottom5p_mean.detach()
+            if implicit_kappa_bias_bottom5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("implicit_gate_proj_bias_bottom5p_mean")
+        MANAGER.reset("implicit_kappa_bias_bottom5p_mean")
         routed_token_router_weight_cosine_mean = MANAGER.aggregate("routed_token_router_weight_cosine_mean")
         losses['routed_token_router_weight_cosine_mean'] = (
             routed_token_router_weight_cosine_mean.detach()
@@ -2385,53 +2385,53 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("routed_token_router_weight_cosine_bottom5p_mean")
-        gate_proj_bias_layer_indices = []
-        implicit_gate_proj_bias_layer_indices = []
+        kappa_bias_layer_indices = []
+        implicit_kappa_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
             experts = getattr(mlp, 'experts', None)
-            if isinstance(experts, Qwen3MLPExperts) and experts.use_gate_proj_bias:
-                gate_proj_bias_layer_indices.append(layer_idx)
-            if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_gate_proj_bias:
-                implicit_gate_proj_bias_layer_indices.append(layer_idx)
-            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_gate_proj_bias', mlp.use_gate_proj_bias):
-                gate_proj_bias_layer_indices.append(layer_idx)
-        gate_proj_bias_layer_to_stats_idx = {
-            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(gate_proj_bias_layer_indices)
+            if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
+                kappa_bias_layer_indices.append(layer_idx)
+            if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_kappa_bias:
+                implicit_kappa_bias_layer_indices.append(layer_idx)
+            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
+                kappa_bias_layer_indices.append(layer_idx)
+        kappa_bias_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_bias_layer_indices)
         }
-        implicit_gate_proj_bias_layer_to_stats_idx = {
-            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
+        implicit_kappa_bias_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_kappa_bias_layer_indices)
         }
-        gate_proj_bias_shift_abs_top5p_mean = losses['gate_proj_bias_shift_abs_top5p_mean']
-        gate_proj_bias_shift_abs_bottom5p_mean = losses['gate_proj_bias_shift_abs_bottom5p_mean']
-        gate_proj_bias_shift_abs_top5p_count = (
-            gate_proj_bias_shift_abs_top5p_mean.shape[0]
-            if gate_proj_bias_shift_abs_top5p_mean.ndim > 0
+        kappa_bias_shift_abs_top5p_mean = losses['kappa_bias_shift_abs_top5p_mean']
+        kappa_bias_shift_abs_bottom5p_mean = losses['kappa_bias_shift_abs_bottom5p_mean']
+        kappa_bias_shift_abs_top5p_count = (
+            kappa_bias_shift_abs_top5p_mean.shape[0]
+            if kappa_bias_shift_abs_top5p_mean.ndim > 0
             else 0
         )
-        gate_proj_bias_shift_abs_bottom5p_count = (
-            gate_proj_bias_shift_abs_bottom5p_mean.shape[0]
-            if gate_proj_bias_shift_abs_bottom5p_mean.ndim > 0
+        kappa_bias_shift_abs_bottom5p_count = (
+            kappa_bias_shift_abs_bottom5p_mean.shape[0]
+            if kappa_bias_shift_abs_bottom5p_mean.ndim > 0
             else 0
         )
-        gate_proj_bias_shift_abs_mean_count = (
-            gate_proj_bias_shift_abs_mean.shape[0]
-            if gate_proj_bias_shift_abs_mean is not None and gate_proj_bias_shift_abs_mean.ndim > 0
+        kappa_bias_shift_abs_mean_count = (
+            kappa_bias_shift_abs_mean.shape[0]
+            if kappa_bias_shift_abs_mean is not None and kappa_bias_shift_abs_mean.ndim > 0
             else 0
         )
-        gate_proj_bias_shift_abs_mean_normalized_count = (
-            gate_proj_bias_shift_abs_mean_normalized.shape[0]
-            if gate_proj_bias_shift_abs_mean_normalized is not None and gate_proj_bias_shift_abs_mean_normalized.ndim > 0
+        kappa_bias_shift_abs_mean_normalized_count = (
+            kappa_bias_shift_abs_mean_normalized.shape[0]
+            if kappa_bias_shift_abs_mean_normalized is not None and kappa_bias_shift_abs_mean_normalized.ndim > 0
             else 0
         )
-        implicit_gate_proj_bias_top5p_count = (
-            losses['implicit_gate_proj_bias_top5p_mean'].shape[0]
-            if losses['implicit_gate_proj_bias_top5p_mean'].ndim > 0
+        implicit_kappa_bias_top5p_count = (
+            losses['implicit_kappa_bias_top5p_mean'].shape[0]
+            if losses['implicit_kappa_bias_top5p_mean'].ndim > 0
             else 0
         )
-        implicit_gate_proj_bias_bottom5p_count = (
-            losses['implicit_gate_proj_bias_bottom5p_mean'].shape[0]
-            if losses['implicit_gate_proj_bias_bottom5p_mean'].ndim > 0
+        implicit_kappa_bias_bottom5p_count = (
+            losses['implicit_kappa_bias_bottom5p_mean'].shape[0]
+            if losses['implicit_kappa_bias_bottom5p_mean'].ndim > 0
             else 0
         )
         routed_token_router_weight_cosine_mean_count = (
@@ -2449,31 +2449,31 @@ class GPT(nn.Module):
             if losses['routed_token_router_weight_cosine_bottom5p_mean'].ndim > 0
             else 0
         )
-        for layer_idx, gate_proj_bias_stats_idx in gate_proj_bias_layer_to_stats_idx.items():
-            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_count:
-                losses[f'gate_proj_bias_shift_abs_mean_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_mean[gate_proj_bias_stats_idx].item()
+        for layer_idx, kappa_bias_stats_idx in kappa_bias_layer_to_stats_idx.items():
+            if kappa_bias_stats_idx < kappa_bias_shift_abs_mean_count:
+                losses[f'kappa_bias_shift_abs_mean_{layer_idx}'] = (
+                    kappa_bias_shift_abs_mean[kappa_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_mean_normalized_count:
-                losses[f'gate_proj_bias_shift_abs_mean_normalized_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_mean_normalized[gate_proj_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_bias_shift_abs_mean_normalized_count:
+                losses[f'kappa_bias_shift_abs_mean_normalized_{layer_idx}'] = (
+                    kappa_bias_shift_abs_mean_normalized[kappa_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_top5p_count:
-                losses[f'gate_proj_bias_shift_abs_top5p_mean_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_top5p_mean[gate_proj_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_bias_shift_abs_top5p_count:
+                losses[f'kappa_bias_shift_abs_top5p_mean_{layer_idx}'] = (
+                    kappa_bias_shift_abs_top5p_mean[kappa_bias_stats_idx].item()
                 )
-            if gate_proj_bias_stats_idx < gate_proj_bias_shift_abs_bottom5p_count:
-                losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
-                    gate_proj_bias_shift_abs_bottom5p_mean[gate_proj_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_bias_shift_abs_bottom5p_count:
+                losses[f'kappa_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
+                    kappa_bias_shift_abs_bottom5p_mean[kappa_bias_stats_idx].item()
                 )
-        for layer_idx, implicit_stats_idx in implicit_gate_proj_bias_layer_to_stats_idx.items():
-            if implicit_stats_idx < implicit_gate_proj_bias_top5p_count:
-                losses[f'implicit_gate_proj_bias_top5p_mean_{layer_idx}'] = (
-                    losses['implicit_gate_proj_bias_top5p_mean'][implicit_stats_idx].item()
+        for layer_idx, implicit_stats_idx in implicit_kappa_bias_layer_to_stats_idx.items():
+            if implicit_stats_idx < implicit_kappa_bias_top5p_count:
+                losses[f'implicit_kappa_bias_top5p_mean_{layer_idx}'] = (
+                    losses['implicit_kappa_bias_top5p_mean'][implicit_stats_idx].item()
                 )
-            if implicit_stats_idx < implicit_gate_proj_bias_bottom5p_count:
-                losses[f'implicit_gate_proj_bias_bottom5p_mean_{layer_idx}'] = (
-                    losses['implicit_gate_proj_bias_bottom5p_mean'][implicit_stats_idx].item()
+            if implicit_stats_idx < implicit_kappa_bias_bottom5p_count:
+                losses[f'implicit_kappa_bias_bottom5p_mean_{layer_idx}'] = (
+                    losses['implicit_kappa_bias_bottom5p_mean'][implicit_stats_idx].item()
                 )
             if implicit_stats_idx < routed_token_router_weight_cosine_mean_count:
                 losses[f'routed_token_router_weight_cosine_mean_{layer_idx}'] = (
@@ -2518,8 +2518,8 @@ class GPT(nn.Module):
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
 
-            # Updates losses['gate_proj_bias_l2_loss'] and losses['gate_proj_bias_scale_l2_loss'].
-            losses.update(self.compute_gate_proj_slope_magnitude_losses())
+            # Updates losses['kappa_bias_l2_loss'] and losses['kappa_scale_l2_loss'].
+            losses.update(self.compute_kappa_slope_magnitude_losses())
         else:
             return logits
 

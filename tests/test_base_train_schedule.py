@@ -27,7 +27,7 @@ def test_get_annealed_loss_weight_drops_to_floor_in_first_500_steps_then_stays_t
     assert get_annealed_loss_weight(0.002, 900, final_weight=0.001) == 0.001
 
 
-def test_gate_proj_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final_floor():
+def test_kappa_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final_floor():
     get_two_stage_annealed_loss_weight = load_function_from_script("get_two_stage_annealed_loss_weight")
 
     assert get_two_stage_annealed_loss_weight(1.0, 0, total_iterations=10) == 1.0
@@ -36,7 +36,7 @@ def test_gate_proj_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final
     assert get_two_stage_annealed_loss_weight(1.0, 10, total_iterations=10) == 0.01
 
 
-def test_gate_proj_bias_l2_two_stage_schedule_can_increase_during_stage_2():
+def test_kappa_bias_l2_two_stage_schedule_can_increase_during_stage_2():
     get_two_stage_annealed_loss_weight = load_function_from_script("get_two_stage_annealed_loss_weight")
 
     assert get_two_stage_annealed_loss_weight(
@@ -64,23 +64,23 @@ def test_gate_proj_bias_l2_two_stage_schedule_can_increase_during_stage_2():
     ) == 0.4
 
 
-def test_gate_slope_max_scale_anneals_from_one_to_target_during_initial_fraction():
-    get_gate_slope_max_scale = load_function_from_script("get_gate_slope_max_scale")
+def test_kappa_slope_max_scale_anneals_from_one_to_target_during_initial_fraction():
+    get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
 
-    assert get_gate_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1) == 1.0
-    assert get_gate_slope_max_scale(3.0, 5, total_iterations=100, warmup_iteration_frac=0.1) == 2.0
-    assert get_gate_slope_max_scale(3.0, 10, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
-    assert get_gate_slope_max_scale(3.0, 50, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
+    assert get_kappa_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1) == 1.0
+    assert get_kappa_slope_max_scale(3.0, 5, total_iterations=100, warmup_iteration_frac=0.1) == 2.0
+    assert get_kappa_slope_max_scale(3.0, 10, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
+    assert get_kappa_slope_max_scale(3.0, 50, total_iterations=100, warmup_iteration_frac=0.1) == 3.0
 
 
-def test_gate_slope_max_scale_stays_at_one_during_delay_then_anneals():
-    get_gate_slope_max_scale = load_function_from_script("get_gate_slope_max_scale")
+def test_kappa_slope_max_scale_stays_at_one_during_delay_then_anneals():
+    get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
 
-    assert get_gate_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
-    assert get_gate_slope_max_scale(3.0, 19, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
-    assert get_gate_slope_max_scale(3.0, 20, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
-    assert get_gate_slope_max_scale(3.0, 25, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 2.0
-    assert get_gate_slope_max_scale(3.0, 30, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 3.0
+    assert get_kappa_slope_max_scale(3.0, 0, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_kappa_slope_max_scale(3.0, 19, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_kappa_slope_max_scale(3.0, 20, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 1.0
+    assert get_kappa_slope_max_scale(3.0, 25, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 2.0
+    assert get_kappa_slope_max_scale(3.0, 30, total_iterations=100, warmup_iteration_frac=0.1, delay_iterations=20) == 3.0
 
 
 def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
@@ -126,7 +126,7 @@ def test_get_compile_rebuild_plan_defers_one_time_rebuild_until_after_eager_step
     assert get_compile_rebuild_plan(True, False, True, True) == (False, False)
 
 
-def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
+def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     source = BASE_TRAIN.read_text()
 
     assert 'parser.add_argument("--aux-loss-weight", type=float, default=1e-3' in source
@@ -137,12 +137,12 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'args.aux_loss_weight * args.aux_loss_weight_init_scale' in source
     assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
-    assert '--use-gate-proj-bias-as-lr-scaler' not in source
-    assert 'parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs=' in source
-    assert 'gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg' in source
-    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_step(step)' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
-    assert '--gate-proj-bias-l2-loss-final-frac", type=float, default=0.02' in source
+    assert '--use-kappa-swiglu-as-lr-scaler' not in source
+    assert 'parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs=' in source
+    assert 'kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg' in source
+    assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
+    assert 'parser.add_argument("--kappa-bias-l2-loss-stage1-frac", type=float, default=0.1' in source
+    assert '--kappa-bias-l2-loss-final-frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
     assert 'parser.add_argument("--continue-to-chat-sft", action="store_true"' in source
     assert 'parser.add_argument("--continue-to-chat-sft-args", type=str, default=""' in source
@@ -153,37 +153,37 @@ def test_gate_proj_bias_l2_default_schedule_uses_half_run_and_two_stage_floors()
     assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
 
 
-def test_gate_proj_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
+def test_kappa_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     source = BASE_TRAIN.read_text()
 
-    assert 'parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs=' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.8' in source
-    assert 'parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.8' in source
-    assert 'gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg' in source
-    assert 'gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta' in source
-    assert 'gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start' in source
-    assert 'gate_proj_bias_l2_ema_anchor_end=args.gate_proj_bias_l2_ema_anchor_end' in source
-    assert 'gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac' in source
-    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)' in source
-    assert 'orig_model.set_gate_proj_bias_ema_rms_reg_step(step)' in source
+    assert 'parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs=' in source
+    assert 'parser.add_argument("--kappa-bias-l2-ema-beta", type=float, default=0.99' in source
+    assert 'parser.add_argument("--kappa-bias-l2-ema-anchor-start", type=float, default=0.4' in source
+    assert 'parser.add_argument("--kappa-bias-l2-ema-anchor-end", type=float, default=0.8' in source
+    assert 'parser.add_argument("--kappa-bias-l2-ema-floor-frac", type=float, default=0.8' in source
+    assert 'kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg' in source
+    assert 'kappa_bias_l2_ema_beta=args.kappa_bias_l2_ema_beta' in source
+    assert 'kappa_bias_l2_ema_anchor_start=args.kappa_bias_l2_ema_anchor_start' in source
+    assert 'kappa_bias_l2_ema_anchor_end=args.kappa_bias_l2_ema_anchor_end' in source
+    assert 'kappa_bias_l2_ema_floor_frac=args.kappa_bias_l2_ema_floor_frac' in source
+    assert 'orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)' in source
+    assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
 
 
-def test_gate_slope_max_scale_anneal_cli_is_wired_into_step_updates():
+def test_kappa_slope_max_scale_anneal_cli_is_wired_into_step_updates():
     source = BASE_TRAIN.read_text()
 
-    assert '"--gate-slope-max-scale-warmup-iteration-frac"' in source
-    assert '"--gate-slope-max-scale-annealing-iteration-frac"' not in source
-    assert 'dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.1' in source
-    assert 'def get_gate_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):' in source
-    assert 'moe_gate_slope_max_scale = get_gate_slope_max_scale(' in source
-    assert 'dense_gate_slope_max_scale = get_gate_slope_max_scale(' in source
-    assert 'warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac' in source
-    assert 'delay_iterations=gate_proj_bias_delay_start_iterations' in source
-    assert 'orig_model.set_gate_slope_max_scales(' in source
-    assert 'log_data["train/moe_gate_slope_max_scale"] = moe_gate_slope_max_scale' in source
-    assert 'log_data["train/dense_gate_slope_max_scale"] = dense_gate_slope_max_scale' in source
+    assert '"--kappa-slope-max-scale-warmup-iteration-frac"' in source
+    assert '"--kappa-slope-max-scale-annealing-iteration-frac"' not in source
+    assert 'dest="kappa_slope_max_scale_warmup_iteration_frac", type=float, default=0.1' in source
+    assert 'def get_kappa_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):' in source
+    assert 'moe_kappa_slope_max_scale = get_kappa_slope_max_scale(' in source
+    assert 'dense_kappa_slope_max_scale = get_kappa_slope_max_scale(' in source
+    assert 'warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac' in source
+    assert 'delay_iterations=kappa_bias_delay_start_iterations' in source
+    assert 'orig_model.set_kappa_slope_max_scales(' in source
+    assert 'log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale' in source
+    assert 'log_data["train/dense_kappa_slope_max_scale"] = dense_kappa_slope_max_scale' in source
 
 
 def test_nonfinite_grad_debug_guard_is_wired_before_optimizer_step():

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_exp_gate_proj_bias, _infer_use_qwen3_dense_mlp, _override_exp_gate_proj_bias_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_exp_kappa_bias, _infer_use_qwen3_dense_mlp, _override_exp_kappa_bias_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -288,76 +288,76 @@ def test_infer_use_qwen3_dense_mlp_keeps_gated_dense_mlp_when_gate_proj_exists()
     assert model_config_kwargs["use_qwen3_dense_mlp"] is True
 
 
-def test_override_disabled_exp_gate_proj_bias_keeps_loadable_zero_bias_tensors():
+def test_override_disabled_exp_kappa_bias_keeps_loadable_zero_bias_tensors():
     model_data = {
-        "transformer.h.0.mlp.experts.gate_proj_bias": torch.randn(4, 8),
-        "transformer.h.1.mlp.experts.gate_proj_bias": torch.randn(4, 8),
+        "transformer.h.0.mlp.experts.kappa_bias": torch.randn(4, 8),
+        "transformer.h.1.mlp.experts.kappa_bias": torch.randn(4, 8),
         "transformer.h.1.mlp.experts.gate_proj": torch.randn(4, 8, 16),
     }
-    model_kwargs = {"use_gate_proj_bias": False, "eval_capacity": 1.5}
+    model_kwargs = {"use_kappa_swiglu": False, "eval_capacity": 1.5}
 
-    sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
+    sanitized_kwargs = _override_exp_kappa_bias_values(model_data, model_kwargs)
 
-    assert "use_gate_proj_bias" not in sanitized_kwargs
+    assert "use_kappa_swiglu" not in sanitized_kwargs
     assert sanitized_kwargs["eval_capacity"] == 1.5
-    assert torch.count_nonzero(model_data["transformer.h.0.mlp.experts.gate_proj_bias"]) == 0
-    assert torch.count_nonzero(model_data["transformer.h.1.mlp.experts.gate_proj_bias"]) == 0
+    assert torch.count_nonzero(model_data["transformer.h.0.mlp.experts.kappa_bias"]) == 0
+    assert torch.count_nonzero(model_data["transformer.h.1.mlp.experts.kappa_bias"]) == 0
 
 
-def test_patch_missing_config_keys_renames_legacy_use_exp_gate_proj_bias():
-    model_config_kwargs = {"use_exp_gate_proj_bias": True}
+def test_patch_missing_config_keys_renames_legacy_use_exp_kappa_bias():
+    model_config_kwargs = {"use_exp_kappa_bias": True}
 
     _patch_missing_config_keys(model_config_kwargs)
 
-    assert model_config_kwargs["use_gate_proj_bias"] is True
-    assert "use_exp_gate_proj_bias" not in model_config_kwargs
+    assert model_config_kwargs["use_kappa_swiglu"] is True
+    assert "use_exp_kappa_bias" not in model_config_kwargs
 
 
-def test_override_gate_proj_bias_fill_value_sets_constant_bias_tensors():
+def test_override_kappa_bias_fill_value_sets_constant_bias_tensors():
     model_data = {
-        "transformer.h.0.mlp.experts.gate_proj_bias": torch.randn(4, 8),
-        "transformer.h.1.mlp.experts.gate_proj_bias": torch.randn(4, 8),
+        "transformer.h.0.mlp.experts.kappa_bias": torch.randn(4, 8),
+        "transformer.h.1.mlp.experts.kappa_bias": torch.randn(4, 8),
     }
-    model_kwargs = {"gate_proj_bias_fill_value": 0.4, "eval_capacity": 1.5}
+    model_kwargs = {"kappa_bias_fill_value": 0.4, "eval_capacity": 1.5}
 
-    sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
+    sanitized_kwargs = _override_exp_kappa_bias_values(model_data, model_kwargs)
 
-    assert "gate_proj_bias_fill_value" not in sanitized_kwargs
+    assert "kappa_bias_fill_value" not in sanitized_kwargs
     assert sanitized_kwargs["eval_capacity"] == 1.5
-    assert torch.all(model_data["transformer.h.0.mlp.experts.gate_proj_bias"] == 0.4)
-    assert torch.all(model_data["transformer.h.1.mlp.experts.gate_proj_bias"] == 0.4)
+    assert torch.all(model_data["transformer.h.0.mlp.experts.kappa_bias"] == 0.4)
+    assert torch.all(model_data["transformer.h.1.mlp.experts.kappa_bias"] == 0.4)
 
 
-def test_infer_exp_gate_proj_bias_detects_rank1_residual_checkpoint_layout():
+def test_infer_exp_kappa_bias_detects_rank1_residual_checkpoint_layout():
     model_config_kwargs = {
         "n_layer": 2,
         "n_exp": 2,
     }
     model_data = {
-        "transformer.h.1.mlp.experts.gate_proj_bias_expert": torch.ones(2),
-        "transformer.h.1.mlp.experts.gate_proj_bias_intermediate": torch.zeros(16),
-        "transformer.h.1.mlp.experts.gate_proj_bias_residual": torch.zeros(2, 16),
+        "transformer.h.1.mlp.experts.kappa_bias_expert": torch.ones(2),
+        "transformer.h.1.mlp.experts.kappa_bias_intermediate": torch.zeros(16),
+        "transformer.h.1.mlp.experts.kappa_bias_residual": torch.zeros(2, 16),
     }
 
-    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
+    _infer_exp_kappa_bias(model_data, model_config_kwargs)
 
-    assert model_config_kwargs["use_gate_proj_bias"] is True
-    assert model_config_kwargs["gate_proj_bias_start_layer"] == 1
+    assert model_config_kwargs["use_kappa_swiglu"] is True
+    assert model_config_kwargs["kappa_bias_start_layer"] == 1
 
 
-def test_override_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
+def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
     fill_value = 0.4
     model_data = {
         "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
-        "transformer.h.0.mlp.experts.gate_proj_bias_expert": torch.randn(2),
-        "transformer.h.0.mlp.experts.gate_proj_bias_intermediate": torch.randn(16),
-        "transformer.h.0.mlp.experts.gate_proj_bias_residual": torch.randn(2, 16),
+        "transformer.h.0.mlp.experts.kappa_bias_expert": torch.randn(2),
+        "transformer.h.0.mlp.experts.kappa_bias_intermediate": torch.randn(16),
+        "transformer.h.0.mlp.experts.kappa_bias_residual": torch.randn(2, 16),
     }
     model_kwargs = {
-        "gate_proj_bias_fill_value": fill_value,
+        "kappa_bias_fill_value": fill_value,
     }
 
-    sanitized_kwargs = _override_exp_gate_proj_bias_values(model_data, model_kwargs)
+    sanitized_kwargs = _override_exp_kappa_bias_values(model_data, model_kwargs)
     model_config_kwargs = {
         "n_layer": 1,
         "moe_start_layer": 0,
@@ -366,69 +366,69 @@ def test_override_gate_proj_bias_fill_value_keeps_rank1_residual_checkpoint_load
         "n_embd": 4,
     }
     model_config_kwargs.update(sanitized_kwargs)
-    _infer_exp_gate_proj_bias(model_data, model_config_kwargs)
+    _infer_exp_kappa_bias(model_data, model_config_kwargs)
     config = GPTConfig(**model_config_kwargs)
 
     _patch_missing_keys(model_data, config)
 
     torch.testing.assert_close(
-        model_data["transformer.h.0.mlp.experts.gate_proj_bias"],
+        model_data["transformer.h.0.mlp.experts.kappa_bias"],
         torch.full((2, 16), fill_value),
     )
 
 
-def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_factors():
+def test_patch_missing_keys_converts_full_kappa_bias_to_rank1_factors():
     config = GPTConfig(
         n_layer=1,
         moe_start_layer=0,
         moe_layer_stride=1,
         n_exp=2,
         n_embd=4,
-        use_gate_proj_bias=True,
+        use_kappa_swiglu=True,
     )
     full_bias = torch.randn(2, 16)
     model_data = {
         "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
-        "transformer.h.0.mlp.experts.gate_proj_bias": full_bias.clone(),
+        "transformer.h.0.mlp.experts.kappa_bias": full_bias.clone(),
     }
 
     _patch_missing_keys(model_data, config)
 
-    assert "transformer.h.0.mlp.experts.gate_proj_bias" not in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_bias_expert" in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_bias_intermediate" in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias" not in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias_expert" in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias_intermediate" in model_data
     reconstructed = (
-        model_data["transformer.h.0.mlp.experts.gate_proj_bias_expert"].unsqueeze(1)
-        * model_data["transformer.h.0.mlp.experts.gate_proj_bias_intermediate"].unsqueeze(0)
+        model_data["transformer.h.0.mlp.experts.kappa_bias_expert"].unsqueeze(1)
+        * model_data["transformer.h.0.mlp.experts.kappa_bias_intermediate"].unsqueeze(0)
     )
     assert reconstructed.shape == full_bias.shape
 
 
-def test_patch_missing_keys_converts_full_gate_proj_bias_to_rank1_residual_factors():
+def test_patch_missing_keys_converts_full_kappa_bias_to_rank1_residual_factors():
     config = GPTConfig(
         n_layer=1,
         moe_start_layer=0,
         moe_layer_stride=1,
         n_exp=2,
         n_embd=4,
-        use_gate_proj_bias=True,
+        use_kappa_swiglu=True,
     )
     full_bias = torch.randn(2, 16)
     model_data = {
         "transformer.h.0.mlp.experts.gate_proj": torch.randn(2, 4, 16),
-        "transformer.h.0.mlp.experts.gate_proj_bias": full_bias.clone(),
+        "transformer.h.0.mlp.experts.kappa_bias": full_bias.clone(),
     }
 
     _patch_missing_keys(model_data, config)
 
-    assert "transformer.h.0.mlp.experts.gate_proj_bias" not in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_bias_expert" in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_bias_intermediate" in model_data
-    assert "transformer.h.0.mlp.experts.gate_proj_bias_residual" in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias" not in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias_expert" in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias_intermediate" in model_data
+    assert "transformer.h.0.mlp.experts.kappa_bias_residual" in model_data
     reconstructed = (
-        model_data["transformer.h.0.mlp.experts.gate_proj_bias_expert"].unsqueeze(1)
-        * model_data["transformer.h.0.mlp.experts.gate_proj_bias_intermediate"].unsqueeze(0)
-        + model_data["transformer.h.0.mlp.experts.gate_proj_bias_residual"]
+        model_data["transformer.h.0.mlp.experts.kappa_bias_expert"].unsqueeze(1)
+        * model_data["transformer.h.0.mlp.experts.kappa_bias_intermediate"].unsqueeze(0)
+        + model_data["transformer.h.0.mlp.experts.kappa_bias_residual"]
     )
     torch.testing.assert_close(reconstructed, full_bias)
 

@@ -218,61 +218,61 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=AUX_LOSS_WEIGHT_DEFAULT, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
 parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
-parser.add_argument("--use-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--gate-proj-bias-input", dest="gate_proj_bias_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
-                    help="router confidence signal used by gate_proj_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--gate-proj-bias-input-constant", dest="gate_proj_bias_input_constant", type=float, default=0.5,
-                    help="constant confidence value to use when --gate-proj-bias-input=constant")
-parser.add_argument("--moe-gate-slope-max-scale", type=float, default=3.0,
-                    help="maximum slope scale used by MoE gate_proj_bias modulation")
-parser.add_argument("--dense-gate-slope-max-scale", type=float, default=2.0,
-                    help="maximum slope scale used by dense gate_proj_bias modulation")
-parser.add_argument("--gate-slope-max-scale-warmup-iteration-frac",
-                    dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
-                    help="fraction of total iterations used to warm gate slope max scales from 1.0 to --moe-gate-slope-max-scale / --dense-gate-slope-max-scale after the initial delay window")
-parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gate_proj_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply the constant gate_proj_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
-parser.add_argument("--global-gate-proj-bias-granularity", type=str, default="per-gate",
+parser.add_argument("--kappa-bias-input", dest="kappa_bias_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
+                    help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
+parser.add_argument("--kappa-bias-input-constant", dest="kappa_bias_input_constant", type=float, default=0.5,
+                    help="constant confidence value to use when --kappa-bias-input=constant")
+parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
+                    help="maximum slope scale used by MoE kappa_bias modulation")
+parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
+                    help="maximum slope scale used by dense kappa_bias modulation")
+parser.add_argument("--kappa-slope-max-scale-warmup-iteration-frac",
+                    dest="kappa_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
+                    help="fraction of total iterations used to warm gate slope max scales from 1.0 to --moe-kappa-slope-max-scale / --dense-kappa-slope-max-scale after the initial delay window")
+parser.add_argument("--constant-kappa-bias-dense-layers", dest="constant_kappa_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
+                    help="apply the constant kappa_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
+parser.add_argument("--global-kappa-bias-granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
-                    help="sharing granularity for MoE gate_proj_bias: per-gate (default), per-expert, per-layer, or global")
-parser.add_argument("--gate-proj-bias-start-layer", type=int, default=2,
-                    help="first transformer layer index where gate_proj_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-gate-proj-bias-dense-layers)")
-parser.add_argument("--log-implicit-gate-proj-bias", type=str2bool, nargs='?', const=True, default=False,
-                    help="log the implicit gate proj bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-gate-proj-bias")
-parser.add_argument("--gate-proj-bias-lr-max-scale", type=float, default=0.4,
-                    help="peak LR scale factor for gate_proj_bias params after warming from 0 before annealing to --gate-proj-bias-lr-final-scale")
-# With slope scaling always enabled, --gate-proj-bias-lr-final-scale
-# defaults to half of --gate-proj-bias-lr-max-scale, which is 0.2 by default.
-parser.add_argument("--gate-proj-bias-lr-final-scale", type=float, default=0.2,
-                    help="final LR scale factor for gate_proj_bias params after warming from 0 to 1")
-parser.add_argument("--gate-proj-bias-delay-start-min-iterations", "--gate-proj-bias-delay-start-iterations",
-                    dest="gate_proj_bias_delay_start_min_iterations", type=int, default=200,
-                    help="number of initial iterations to keep gate_proj_bias LR at 0 before warmup and annealing")
-parser.add_argument("--gate-proj-bias-delay-start-iteration-frac", type=float, default=0.05,
-                    help="fractional delay for gate_proj_bias LR start; the effective delay is max(--gate-proj-bias-delay-start-min-iterations, ceil(total_iterations * this value))")
-parser.add_argument("--gate-proj-bias-lr-warmup-iterations", type=int, default=1000,
-                    help="number of iterations to linearly ramp gate_proj_bias LR scale from 0 to --gate-proj-bias-lr-max-scale before annealing to --gate-proj-bias-lr-final-scale")
-parser.add_argument("--gate-proj-bias-l2-loss-weight", type=float, default=1e-2,
-                    help="L2 weight on gate_proj_bias and gate_proj_bias_scale values")
-parser.add_argument("--gate-proj-bias-ema-rms-reg", type=str2bool, nargs='?', const=True, default=False,
-                    help="enable an extra anchored EMA RMS floor regularizer for gate_proj_bias and gate_proj_bias_scale on top of the ordinary L2 loss")
-parser.add_argument("--gate-proj-bias-l2-ema-beta", type=float, default=0.99,
-                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --gate-proj-bias-ema-rms-reg")
-parser.add_argument("--gate-proj-bias-l2-ema-anchor-start", type=float, default=0.4,
+                    help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
+parser.add_argument("--kappa-bias-start-layer", type=int, default=2,
+                    help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-bias-dense-layers)")
+parser.add_argument("--log-implicit-kappa-bias", type=str2bool, nargs='?', const=True, default=False,
+                        help="log the implicit kappa bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-kappa-swiglu")
+parser.add_argument("--kappa-bias-lr-max-scale", type=float, default=0.4,
+                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-bias-lr-final-scale")
+# With slope scaling always enabled, --kappa-bias-lr-final-scale
+# defaults to half of --kappa-bias-lr-max-scale, which is 0.2 by default.
+parser.add_argument("--kappa-bias-lr-final-scale", type=float, default=0.2,
+                    help="final LR scale factor for kappa_bias params after warming from 0 to 1")
+parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
+                    dest="kappa_bias_delay_start_min_iterations", type=int, default=200,
+                    help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
+parser.add_argument("--kappa-bias-delay-start-iteration-frac", type=float, default=0.05,
+                    help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-bias-delay-start-min-iterations, ceil(total_iterations * this value))")
+parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=1000,
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
+parser.add_argument("--kappa-bias-l2-loss-weight", type=float, default=1e-2,
+                    help="L2 weight on kappa_bias and kappa_scale values")
+parser.add_argument("--kappa-bias-ema-rms-reg", type=str2bool, nargs='?', const=True, default=False,
+                    help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
+parser.add_argument("--kappa-bias-l2-ema-beta", type=float, default=0.99,
+                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --kappa-bias-ema-rms-reg")
+parser.add_argument("--kappa-bias-l2-ema-anchor-start", type=float, default=0.4,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer starts updating its target")
-parser.add_argument("--gate-proj-bias-l2-ema-anchor-end", type=float, default=0.5,
+parser.add_argument("--kappa-bias-l2-ema-anchor-end", type=float, default=0.5,
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
-parser.add_argument("--gate-proj-bias-l2-ema-floor-frac", type=float, default=0.9,
-                    help="floor fraction applied to the anchored EMA RMS target when --gate-proj-bias-ema-rms-reg is enabled")
-parser.add_argument("--gate-proj-bias-scale-l2-loss-weight-scale", type=float, default=2.0,
-                    help="multiplier applied to --gate-proj-bias-l2-loss-weight when weighting gate_proj_bias_scale L2 loss")
-parser.add_argument("--gate-proj-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) gate_proj_bias L2 loss from 1.0 to --gate-proj-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
+parser.add_argument("--kappa-bias-l2-ema-floor-frac", type=float, default=0.9,
+                    help="floor fraction applied to the anchored EMA RMS target when --kappa-bias-ema-rms-reg is enabled")
+parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=2.0,
+                    help="multiplier applied to --kappa-bias-l2-loss-weight when weighting kappa_scale L2 loss")
+parser.add_argument("--kappa-bias-l2-loss-anneal-iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-bias-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
-# push the gate_proj_bias values towards 0 so that the slopes 
+# push the kappa_bias values towards 0 so that the slopes 
 # are pushed towards 1.
-parser.add_argument("--gate-proj-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--gate-proj-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) gate_proj_bias L2 base weight to reach at the end of training during stage 2 (can be above --gate-proj-bias-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--kappa-bias-l2-loss-stage1-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--kappa-bias-l2-loss-final-frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-bias-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -353,7 +353,7 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 
-if args.use_gate_proj_bias and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
+if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
     args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
 
 if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
@@ -368,34 +368,34 @@ if args.compile and not args.rebuild_compile_after_eval and not args.rebuild_com
         "This avoids the recompile pause after CORE/sample, but resumed training may hang again."
     )
 
-if args.gate_proj_bias_delay_start_min_iterations < 0:
-    raise ValueError("--gate-proj-bias-delay-start-min-iterations must be >= 0")
-if args.gate_proj_bias_delay_start_iteration_frac < 0:
-    raise ValueError("--gate-proj-bias-delay-start-iteration-frac must be >= 0")
-if not (0.0 <= args.gate_slope_max_scale_warmup_iteration_frac <= 1.0):
-    raise ValueError("--gate-slope-max-scale-warmup-iteration-frac must satisfy 0 <= frac <= 1")
+if args.kappa_bias_delay_start_min_iterations < 0:
+    raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
+if args.kappa_bias_delay_start_iteration_frac < 0:
+    raise ValueError("--kappa-bias-delay-start-iteration-frac must be >= 0")
+if not (0.0 <= args.kappa_slope_max_scale_warmup_iteration_frac <= 1.0):
+    raise ValueError("--kappa-slope-max-scale-warmup-iteration-frac must satisfy 0 <= frac <= 1")
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
     raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
-if not (0.0 <= args.gate_proj_bias_l2_ema_beta < 1.0):
-    raise ValueError("--gate-proj-bias-l2-ema-beta must satisfy 0 <= beta < 1")
-if not (0.0 <= args.gate_proj_bias_l2_ema_anchor_start <= 1.0):
-    raise ValueError("--gate-proj-bias-l2-ema-anchor-start must satisfy 0 <= start <= 1")
-if args.gate_proj_bias_l2_ema_anchor_end < args.gate_proj_bias_l2_ema_anchor_start:
+if not (0.0 <= args.kappa_bias_l2_ema_beta < 1.0):
+    raise ValueError("--kappa-bias-l2-ema-beta must satisfy 0 <= beta < 1")
+if not (0.0 <= args.kappa_bias_l2_ema_anchor_start <= 1.0):
+    raise ValueError("--kappa-bias-l2-ema-anchor-start must satisfy 0 <= start <= 1")
+if args.kappa_bias_l2_ema_anchor_end < args.kappa_bias_l2_ema_anchor_start:
     raise ValueError(
-        "--gate-proj-bias-l2-ema-anchor-end must be >= --gate-proj-bias-l2-ema-anchor-start"
+        "--kappa-bias-l2-ema-anchor-end must be >= --kappa-bias-l2-ema-anchor-start"
     )
-if args.gate_proj_bias_l2_ema_anchor_end > 1.0:
-    raise ValueError("--gate-proj-bias-l2-ema-anchor-end must satisfy 0 <= end <= 1")
-if args.gate_proj_bias_l2_ema_floor_frac < 0.0:
-    raise ValueError("--gate-proj-bias-l2-ema-floor-frac must be >= 0")
+if args.kappa_bias_l2_ema_anchor_end > 1.0:
+    raise ValueError("--kappa-bias-l2-ema-anchor-end must satisfy 0 <= end <= 1")
+if args.kappa_bias_l2_ema_floor_frac < 0.0:
+    raise ValueError("--kappa-bias-l2-ema-floor-frac must be >= 0")
 
 '''
-# Aurora and gate-proj-bias interact more stably when the confidence input is
+# Aurora and kappa-bias interact more stably when the confidence input is
 # router_probs instead of top_logits, so force that setting here.
-if args.matrix_optimizer == "aurora" and args.gate_proj_bias_input != "constant":
-    args.gate_proj_bias_input = "router_probs"
+if args.matrix_optimizer == "aurora" and args.kappa_bias_input != "constant":
+    args.kappa_bias_input = "router_probs"
 '''
 
 # num_moe_layers: 
@@ -417,20 +417,20 @@ if args.use_moe_adjusted_scaling_params and effective_moe_layer_count < args.dep
         "Disabling --use-moe-adjusted-scaling-params because the effective number of MoE layers "
         f"({effective_moe_layer_count}) is less than one fifth of depth ({args.depth / 5:.2f})."
     )
-if args.gate_proj_bias_start_layer is None:
+if args.kappa_bias_start_layer is None:
     if args.num_moe_layers != 0:
         # If depth = 4, start layer = 2; if depth = 6, start layer = 3;
         # If depth = 8, start layer = 4; 
         # if depth >= 10, start layer = 5 (capped to avoid missing too many moe layers 
-        # and reducing the benefit of gate_proj_bias).
+        # and reducing the benefit of kappa_bias).
         # moe_start_layer + 2: at most skip the first 2 moe layers, 
         # to avoid missing too many moe layers.
         # If depth = 10 and moe_start_layer = 2, then bias starts at layer 4 instead of 5.
-        args.gate_proj_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
+        args.kappa_bias_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
-        args.gate_proj_bias_start_layer = 0
-if args.gate_proj_bias_start_layer < 0:
-    raise ValueError("--gate-proj-bias-start-layer must be >= 0")
+        args.kappa_bias_start_layer = 0
+if args.kappa_bias_start_layer < 0:
+    raise ValueError("--kappa-bias-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
     raise ValueError("--max-auto-grad-accum-steps must be >= 1 or -1 to disable the cap")
 if args.loss_chunk_tokens == 0 or args.loss_chunk_tokens < -1:
@@ -563,20 +563,20 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        use_gate_proj_bias=args.use_gate_proj_bias,
-        gate_proj_bias_input=args.gate_proj_bias_input,
-        gate_proj_bias_input_constant=args.gate_proj_bias_input_constant,
-        moe_gate_slope_max_scale=args.moe_gate_slope_max_scale,
-        dense_gate_slope_max_scale=args.dense_gate_slope_max_scale,
-        constant_gate_proj_bias_dense_layers=args.constant_gate_proj_bias_dense_layers,
-        global_gate_proj_bias_granularity=args.global_gate_proj_bias_granularity,
-        gate_proj_bias_start_layer=args.gate_proj_bias_start_layer,
-        log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
-        gate_proj_bias_ema_rms_reg=args.gate_proj_bias_ema_rms_reg,
-        gate_proj_bias_l2_ema_beta=args.gate_proj_bias_l2_ema_beta,
-        gate_proj_bias_l2_ema_anchor_start=args.gate_proj_bias_l2_ema_anchor_start,
-        gate_proj_bias_l2_ema_anchor_end=args.gate_proj_bias_l2_ema_anchor_end,
-        gate_proj_bias_l2_ema_floor_frac=args.gate_proj_bias_l2_ema_floor_frac,
+        use_kappa_swiglu=args.use_kappa_swiglu,
+        kappa_bias_input=args.kappa_bias_input,
+        kappa_bias_input_constant=args.kappa_bias_input_constant,
+        moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
+        dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
+        constant_kappa_bias_dense_layers=args.constant_kappa_bias_dense_layers,
+        global_kappa_bias_granularity=args.global_kappa_bias_granularity,
+        kappa_bias_start_layer=args.kappa_bias_start_layer,
+        log_implicit_kappa_bias=args.log_implicit_kappa_bias,
+        kappa_bias_ema_rms_reg=args.kappa_bias_ema_rms_reg,
+        kappa_bias_l2_ema_beta=args.kappa_bias_l2_ema_beta,
+        kappa_bias_l2_ema_anchor_start=args.kappa_bias_l2_ema_anchor_start,
+        kappa_bias_l2_ema_anchor_end=args.kappa_bias_l2_ema_anchor_end,
+        kappa_bias_l2_ema_floor_frac=args.kappa_bias_l2_ema_floor_frac,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -815,18 +815,18 @@ total_tokens = total_batch_size * num_iterations
 print0(f"Total number of training tokens: {total_tokens:,}")
 print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_iterations / target_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
-orig_model.set_gate_proj_bias_ema_rms_reg_total_iterations(num_iterations)
+orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)
 
-gate_proj_bias_delay_start_iterations = max(
-    args.gate_proj_bias_delay_start_min_iterations,
-    math.ceil(num_iterations * args.gate_proj_bias_delay_start_iteration_frac),
+kappa_bias_delay_start_iterations = max(
+    args.kappa_bias_delay_start_min_iterations,
+    math.ceil(num_iterations * args.kappa_bias_delay_start_iteration_frac),
 )
-user_config["effective_gate_proj_bias_delay_start_iterations"] = gate_proj_bias_delay_start_iterations
+user_config["effective_kappa_bias_delay_start_iterations"] = kappa_bias_delay_start_iterations
 print0(
-    "Using gate_proj_bias LR delay start iterations: "
-    f"max({args.gate_proj_bias_delay_start_min_iterations}, "
-    f"ceil({num_iterations} * {args.gate_proj_bias_delay_start_iteration_frac:.6f})) "
-    f"= {gate_proj_bias_delay_start_iterations}"
+    "Using kappa_bias LR delay start iterations: "
+    f"max({args.kappa_bias_delay_start_min_iterations}, "
+    f"ceil({num_iterations} * {args.kappa_bias_delay_start_iteration_frac:.6f})) "
+    f"= {kappa_bias_delay_start_iterations}"
 )
 
 # -----------------------------------------------------------------------------
@@ -890,10 +890,10 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
-    gate_proj_bias_lr_final_scale=args.gate_proj_bias_lr_final_scale,
-    gate_proj_bias_lr_max_scale=args.gate_proj_bias_lr_max_scale,
-    gate_proj_bias_delay_start_iterations=gate_proj_bias_delay_start_iterations,
-    gate_proj_bias_lr_warmup_iterations=args.gate_proj_bias_lr_warmup_iterations,
+    kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
+    kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
+    kappa_bias_delay_start_iterations=kappa_bias_delay_start_iterations,
+    kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
 )
 
 if resuming and load_optimizer_state:
@@ -1001,9 +1001,9 @@ def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup
     return max_scale + (end_scale - max_scale) * decay_progress
 
 
-def get_gate_proj_bias_lr_scale(optimizer, step, num_iterations):
+def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
     for group in optimizer.param_groups:
-        if group.get("name") == "gate_proj_bias" and group.get("kind") == "adamw":
+        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
                 step,
                 num_iterations,
@@ -1015,7 +1015,7 @@ def get_gate_proj_bias_lr_scale(optimizer, step, num_iterations):
     return 1.0
 
 
-def get_gate_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):
+def get_kappa_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):
     import math
 
     target_max_scale = float(target_max_scale)
@@ -1080,13 +1080,13 @@ def average_step_losses(step_losses, grad_accum_steps):
             averaged_losses[key] = value / grad_accum_steps
     return averaged_losses
 
-def get_dense_gate_proj_bias_stat_layer_indices(model):
-    start_layer = max(0, int(getattr(model.config, 'gate_proj_bias_start_layer', 0)))
+def get_dense_kappa_bias_stat_layer_indices(model):
+    start_layer = max(0, int(getattr(model.config, 'kappa_bias_start_layer', 0)))
     return [
         layer_idx
         for layer_idx in range(start_layer, len(model.transformer.h))
         if not hasattr(model.transformer.h[layer_idx].mlp, 'experts')
-        and bool(getattr(model.transformer.h[layer_idx].mlp, 'use_gate_proj_bias', False))
+        and bool(getattr(model.transformer.h[layer_idx].mlp, 'use_kappa_swiglu', False))
     ]
 
 def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):
@@ -1193,14 +1193,14 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(exp_gate_weight).mean(dim=1)
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
-                if experts.use_gate_proj_bias:
-                    exp_gate_proj_bias = experts._materialize_gate_proj_bias()
-                    losses[f'gate_proj_bias_mean_{i}'] = exp_gate_proj_bias.mean().float().item()
-                    losses[f'gate_proj_bias_abs_mean_{i}'] = exp_gate_proj_bias.abs().mean().float().item()
-                if experts.use_gate_proj_bias_scale:
-                    exp_gate_proj_bias_scale = experts._materialize_gate_proj_bias_scale()
-                    losses[f'gate_proj_bias_scale_mean_{i}'] = exp_gate_proj_bias_scale.mean().float().item()
-                    losses[f'gate_proj_bias_scale_abs_mean_{i}'] = exp_gate_proj_bias_scale.abs().mean().float().item()
+                if experts.use_kappa_swiglu:
+                    exp_kappa_bias = experts._materialize_kappa_bias()
+                    losses[f'kappa_bias_mean_{i}'] = exp_kappa_bias.mean().float().item()
+                    losses[f'kappa_bias_abs_mean_{i}'] = exp_kappa_bias.abs().mean().float().item()
+                if experts.use_kappa_scale:
+                    exp_kappa_scale = experts._materialize_kappa_scale()
+                    losses[f'kappa_scale_mean_{i}'] = exp_kappa_scale.mean().float().item()
+                    losses[f'kappa_scale_abs_mean_{i}'] = exp_kappa_scale.abs().mean().float().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -1242,34 +1242,34 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
 
-                    if experts.use_gate_proj_bias:
-                        reduce_dims = tuple(range(1, exp_gate_proj_bias.ndim))
-                        exp_gate_proj_bias_mean = exp_gate_proj_bias.float().mean(dim=reduce_dims)
-                        exp_gate_proj_bias_abs_mean = exp_gate_proj_bias.abs().float().mean(dim=reduce_dims)
-                        exp_gate_proj_bias_positive_mean = mean_by_sign(exp_gate_proj_bias, reduce_dims, sign='positive')
-                        exp_gate_proj_bias_negative_mean = mean_by_sign(exp_gate_proj_bias, reduce_dims, sign='negative')
-                        losses[f'gate_proj_bias_mean_top_{i}'] = exp_gate_proj_bias_mean[top_indices].mean().item()
-                        losses[f'gate_proj_bias_mean_bottom_{i}'] = exp_gate_proj_bias_mean[bottom_indices].mean().item()
-                        losses[f'gate_proj_bias_abs_mean_top_{i}'] = exp_gate_proj_bias_abs_mean[top_indices].mean().item()
-                        losses[f'gate_proj_bias_abs_mean_bottom_{i}'] = exp_gate_proj_bias_abs_mean[bottom_indices].mean().item()
-                        losses[f'gate_proj_bias_positive_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_positive_mean[top_indices])
-                        losses[f'gate_proj_bias_positive_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_positive_mean[bottom_indices])
-                        losses[f'gate_proj_bias_negative_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_negative_mean[top_indices])
-                        losses[f'gate_proj_bias_negative_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_negative_mean[bottom_indices])
-                    if experts.use_gate_proj_bias_scale:
-                        reduce_dims = tuple(range(1, exp_gate_proj_bias_scale.ndim))
-                        exp_gate_proj_bias_scale_mean = exp_gate_proj_bias_scale.float().mean(dim=reduce_dims)
-                        exp_gate_proj_bias_scale_abs_mean = exp_gate_proj_bias_scale.abs().float().mean(dim=reduce_dims)
-                        exp_gate_proj_bias_scale_positive_mean = mean_by_sign(exp_gate_proj_bias_scale, reduce_dims, sign='positive')
-                        exp_gate_proj_bias_scale_negative_mean = mean_by_sign(exp_gate_proj_bias_scale, reduce_dims, sign='negative')
-                        losses[f'gate_proj_bias_scale_mean_top_{i}'] = exp_gate_proj_bias_scale_mean[top_indices].mean().item()
-                        losses[f'gate_proj_bias_scale_mean_bottom_{i}'] = exp_gate_proj_bias_scale_mean[bottom_indices].mean().item()
-                        losses[f'gate_proj_bias_scale_abs_mean_top_{i}'] = exp_gate_proj_bias_scale_abs_mean[top_indices].mean().item()
-                        losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}'] = exp_gate_proj_bias_scale_abs_mean[bottom_indices].mean().item()
-                        losses[f'gate_proj_bias_scale_positive_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_positive_mean[top_indices])
-                        losses[f'gate_proj_bias_scale_positive_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_positive_mean[bottom_indices])
-                        losses[f'gate_proj_bias_scale_negative_mean_top_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_negative_mean[top_indices])
-                        losses[f'gate_proj_bias_scale_negative_mean_bottom_{i}'] = finite_mean_item(exp_gate_proj_bias_scale_negative_mean[bottom_indices])
+                    if experts.use_kappa_swiglu:
+                        reduce_dims = tuple(range(1, exp_kappa_bias.ndim))
+                        exp_kappa_bias_mean = exp_kappa_bias.float().mean(dim=reduce_dims)
+                        exp_kappa_bias_abs_mean = exp_kappa_bias.abs().float().mean(dim=reduce_dims)
+                        exp_kappa_bias_positive_mean = mean_by_sign(exp_kappa_bias, reduce_dims, sign='positive')
+                        exp_kappa_bias_negative_mean = mean_by_sign(exp_kappa_bias, reduce_dims, sign='negative')
+                        losses[f'kappa_bias_mean_top_{i}'] = exp_kappa_bias_mean[top_indices].mean().item()
+                        losses[f'kappa_bias_mean_bottom_{i}'] = exp_kappa_bias_mean[bottom_indices].mean().item()
+                        losses[f'kappa_bias_abs_mean_top_{i}'] = exp_kappa_bias_abs_mean[top_indices].mean().item()
+                        losses[f'kappa_bias_abs_mean_bottom_{i}'] = exp_kappa_bias_abs_mean[bottom_indices].mean().item()
+                        losses[f'kappa_bias_positive_mean_top_{i}'] = finite_mean_item(exp_kappa_bias_positive_mean[top_indices])
+                        losses[f'kappa_bias_positive_mean_bottom_{i}'] = finite_mean_item(exp_kappa_bias_positive_mean[bottom_indices])
+                        losses[f'kappa_bias_negative_mean_top_{i}'] = finite_mean_item(exp_kappa_bias_negative_mean[top_indices])
+                        losses[f'kappa_bias_negative_mean_bottom_{i}'] = finite_mean_item(exp_kappa_bias_negative_mean[bottom_indices])
+                    if experts.use_kappa_scale:
+                        reduce_dims = tuple(range(1, exp_kappa_scale.ndim))
+                        exp_kappa_scale_mean = exp_kappa_scale.float().mean(dim=reduce_dims)
+                        exp_kappa_scale_abs_mean = exp_kappa_scale.abs().float().mean(dim=reduce_dims)
+                        exp_kappa_scale_positive_mean = mean_by_sign(exp_kappa_scale, reduce_dims, sign='positive')
+                        exp_kappa_scale_negative_mean = mean_by_sign(exp_kappa_scale, reduce_dims, sign='negative')
+                        losses[f'kappa_scale_mean_top_{i}'] = exp_kappa_scale_mean[top_indices].mean().item()
+                        losses[f'kappa_scale_mean_bottom_{i}'] = exp_kappa_scale_mean[bottom_indices].mean().item()
+                        losses[f'kappa_scale_abs_mean_top_{i}'] = exp_kappa_scale_abs_mean[top_indices].mean().item()
+                        losses[f'kappa_scale_abs_mean_bottom_{i}'] = exp_kappa_scale_abs_mean[bottom_indices].mean().item()
+                        losses[f'kappa_scale_positive_mean_top_{i}'] = finite_mean_item(exp_kappa_scale_positive_mean[top_indices])
+                        losses[f'kappa_scale_positive_mean_bottom_{i}'] = finite_mean_item(exp_kappa_scale_positive_mean[bottom_indices])
+                        losses[f'kappa_scale_negative_mean_top_{i}'] = finite_mean_item(exp_kappa_scale_negative_mean[top_indices])
+                        losses[f'kappa_scale_negative_mean_bottom_{i}'] = finite_mean_item(exp_kappa_scale_negative_mean[bottom_indices])
 
                     top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
                     bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
@@ -1299,7 +1299,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
 
-    for i in get_dense_gate_proj_bias_stat_layer_indices(model):
+    for i in get_dense_kappa_bias_stat_layer_indices(model):
         layer = model.transformer.h[i]
         mlp = getattr(layer, 'mlp', None)
         if hasattr(mlp, 'experts'):
@@ -1309,10 +1309,10 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             dense_gate_proj_weight = gate_proj_weight.transpose(0, 1).unsqueeze(0)
             gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(dense_gate_proj_weight)
             losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
-        gate_proj_bias = getattr(mlp, 'gate_proj_bias', None)
-        if gate_proj_bias is not None:
-            losses[f'gate_proj_bias_mean_{i}'] = gate_proj_bias.mean().float().item()
-            losses[f'gate_proj_bias_abs_mean_{i}'] = gate_proj_bias.abs().mean().float().item()
+        kappa_bias = getattr(mlp, 'kappa_bias', None)
+        if kappa_bias is not None:
+            losses[f'kappa_bias_mean_{i}'] = kappa_bias.mean().float().item()
+            losses[f'kappa_bias_abs_mean_{i}'] = kappa_bias.abs().mean().float().item()
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
@@ -1388,39 +1388,39 @@ while True:
         num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations,
         final_weight=args.aux_loss_weight,
     )
-    # By default, stage1_iterations = gate_proj_bias_l2_loss_anneal_iterations = -1.
+    # By default, stage1_iterations = kappa_bias_l2_loss_anneal_iterations = -1.
     # In this case, it's set as half of the total iterations in 
     # get_two_stage_annealed_loss_weight().
-    gate_proj_bias_l2_stage1_iterations = args.gate_proj_bias_l2_loss_anneal_iterations
-    gate_proj_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
-        args.gate_proj_bias_l2_loss_weight,
+    kappa_bias_l2_stage1_iterations = args.kappa_bias_l2_loss_anneal_iterations
+    kappa_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
+        args.kappa_bias_l2_loss_weight,
         step,
         total_iterations=num_iterations,
-        stage1_iterations=gate_proj_bias_l2_stage1_iterations,
-        stage1_floor_frac=args.gate_proj_bias_l2_loss_stage1_frac,
-        final_floor_frac=args.gate_proj_bias_l2_loss_final_frac,
+        stage1_iterations=kappa_bias_l2_stage1_iterations,
+        stage1_floor_frac=args.kappa_bias_l2_loss_stage1_frac,
+        final_floor_frac=args.kappa_bias_l2_loss_final_frac,
         nolearn_iterations=0,
     )
-    gate_proj_bias_scale_l2_loss_weight = (
-        gate_proj_bias_l2_loss_weight * args.gate_proj_bias_scale_l2_loss_weight_scale
+    kappa_scale_l2_loss_weight = (
+        kappa_bias_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
     )
-    moe_gate_slope_max_scale = get_gate_slope_max_scale(
-        args.moe_gate_slope_max_scale,
+    moe_kappa_slope_max_scale = get_kappa_slope_max_scale(
+        args.moe_kappa_slope_max_scale,
         step,
         total_iterations=num_iterations,
-        warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac,
-        delay_iterations=gate_proj_bias_delay_start_iterations,
+        warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac,
+        delay_iterations=kappa_bias_delay_start_iterations,
     )
-    dense_gate_slope_max_scale = get_gate_slope_max_scale(
-        args.dense_gate_slope_max_scale,
+    dense_kappa_slope_max_scale = get_kappa_slope_max_scale(
+        args.dense_kappa_slope_max_scale,
         step,
         total_iterations=num_iterations,
-        warmup_iteration_frac=args.gate_slope_max_scale_warmup_iteration_frac,
-        delay_iterations=gate_proj_bias_delay_start_iterations,
+        warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac,
+        delay_iterations=kappa_bias_delay_start_iterations,
     )
-    orig_model.set_gate_slope_max_scales(
-        moe_gate_slope_max_scale=moe_gate_slope_max_scale,
-        dense_gate_slope_max_scale=dense_gate_slope_max_scale,
+    orig_model.set_kappa_slope_max_scales(
+        moe_kappa_slope_max_scale=moe_kappa_slope_max_scale,
+        dense_kappa_slope_max_scale=dense_kappa_slope_max_scale,
     )
 
     # once in a while: evaluate the val bpb (all ranks participate)
@@ -1698,11 +1698,11 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
-            'gate_proj_bias_l2_loss': 0.0,
-            'gate_proj_bias_scale_l2_loss': 0.0,
-            'gate_proj_bias_ema_rms_reg_loss': 0.0,
-            'gate_proj_bias_scale_ema_rms_reg_loss': 0.0,
-            'gate_proj_bias_shift_abs_mean': 0.0,
+            'kappa_bias_l2_loss': 0.0,
+            'kappa_scale_l2_loss': 0.0,
+            'kappa_bias_ema_rms_reg_loss': 0.0,
+            'kappa_scale_ema_rms_reg_loss': 0.0,
+            'kappa_bias_shift_abs_mean': 0.0,
             'drop_rate_per_ks': None,
         }
         train_loss_f = 0.0
@@ -1720,8 +1720,8 @@ while True:
         t0 = time.time()
         step_losses = None
         training_model = model
-        orig_model.set_gate_proj_bias_ema_rms_reg_step(step)
-        gate_proj_bias_lr_scale = get_gate_proj_bias_lr_scale(optimizer, step, num_iterations)
+        orig_model.set_kappa_bias_ema_rms_reg_step(step)
+        kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
             current_training_model = (
                 orig_model
@@ -1746,22 +1746,22 @@ while True:
             if aux_loss is None:
                 aux_loss = 0.0
             loss = loss + aux_loss_weight * aux_loss
-            gate_proj_bias_l2_loss = micro_losses.get("gate_proj_bias_l2_loss")
-            if gate_proj_bias_l2_loss is None:
-                gate_proj_bias_l2_loss = 0.0
-            gate_proj_bias_scale_l2_loss = micro_losses.get("gate_proj_bias_scale_l2_loss")
-            if gate_proj_bias_scale_l2_loss is None:
-                gate_proj_bias_scale_l2_loss = 0.0
-            gate_proj_bias_ema_rms_reg_loss = micro_losses.get("gate_proj_bias_ema_rms_reg_loss")
-            if gate_proj_bias_ema_rms_reg_loss is None:
-                gate_proj_bias_ema_rms_reg_loss = 0.0
-            gate_proj_bias_scale_ema_rms_reg_loss = micro_losses.get("gate_proj_bias_scale_ema_rms_reg_loss")
-            if gate_proj_bias_scale_ema_rms_reg_loss is None:
-                gate_proj_bias_scale_ema_rms_reg_loss = 0.0
-            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_l2_loss
-            loss = loss + gate_proj_bias_scale_l2_loss_weight * gate_proj_bias_scale_l2_loss
-            loss = loss + gate_proj_bias_l2_loss_weight * gate_proj_bias_ema_rms_reg_loss
-            loss = loss + gate_proj_bias_scale_l2_loss_weight * gate_proj_bias_scale_ema_rms_reg_loss
+            kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
+            if kappa_bias_l2_loss is None:
+                kappa_bias_l2_loss = 0.0
+            kappa_scale_l2_loss = micro_losses.get("kappa_scale_l2_loss")
+            if kappa_scale_l2_loss is None:
+                kappa_scale_l2_loss = 0.0
+            kappa_bias_ema_rms_reg_loss = micro_losses.get("kappa_bias_ema_rms_reg_loss")
+            if kappa_bias_ema_rms_reg_loss is None:
+                kappa_bias_ema_rms_reg_loss = 0.0
+            kappa_scale_ema_rms_reg_loss = micro_losses.get("kappa_scale_ema_rms_reg_loss")
+            if kappa_scale_ema_rms_reg_loss is None:
+                kappa_scale_ema_rms_reg_loss = 0.0
+            loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
+            loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
+            loss = loss + kappa_bias_l2_loss_weight * kappa_bias_ema_rms_reg_loss
+            loss = loss + kappa_scale_l2_loss_weight * kappa_scale_ema_rms_reg_loss
             
             loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
@@ -1809,8 +1809,8 @@ while True:
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-                if group.get("name") == "gate_proj_bias" and group['kind'] == 'adamw':
-                    group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * gate_proj_bias_lr_scale
+                if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':
+                    group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
                 else:
                     group["lr"] = group["initial_lr"] * lrm
                 if group['kind'] == 'muon':
@@ -1868,20 +1868,20 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/gate_proj_bias_l2_loss_step": losses['gate_proj_bias_l2_loss'],
-            "train/gate_proj_bias_scale_l2_loss_step": losses['gate_proj_bias_scale_l2_loss'],
-            "train/gate_proj_bias_ema_rms_reg_loss_step": losses['gate_proj_bias_ema_rms_reg_loss'],
-            "train/gate_proj_bias_scale_ema_rms_reg_loss_step": losses['gate_proj_bias_scale_ema_rms_reg_loss'],
-            "train/gate_proj_bias_shift_abs_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean'].mean()),
-            "train/gate_proj_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_top5p_mean'].mean()),
-            "train/gate_proj_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_bottom5p_mean'].mean()),
-            "train/gate_proj_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['gate_proj_bias_shift_abs_mean_normalized'].mean()),
-            "train/implicit_gate_proj_bias_top5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_top5p_mean'].mean()),
-            "train/implicit_gate_proj_bias_bottom5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_bottom5p_mean'].mean()),
+            "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
+            "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
+            "train/kappa_bias_ema_rms_reg_loss_step": losses['kappa_bias_ema_rms_reg_loss'],
+            "train/kappa_scale_ema_rms_reg_loss_step": losses['kappa_scale_ema_rms_reg_loss'],
+            "train/kappa_bias_shift_abs_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean'].mean()),
+            "train/kappa_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_top5p_mean'].mean()),
+            "train/kappa_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_bottom5p_mean'].mean()),
+            "train/kappa_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean_normalized'].mean()),
+            "train/implicit_kappa_bias_top5p_mean_step": scalar_loss_to_item(losses['implicit_kappa_bias_top5p_mean'].mean()),
+            "train/implicit_kappa_bias_bottom5p_mean_step": scalar_loss_to_item(losses['implicit_kappa_bias_bottom5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_mean'].mean()),
             "train/routed_token_router_weight_cosine_top5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_top5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_bottom5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_bottom5p_mean'].mean()),
-            "train/gate_proj_bias_lr_scale": gate_proj_bias_lr_scale,
+            "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "lrm": lrm,
             "dt": dt,
             "tok_per_sec": tok_per_sec,
@@ -1889,10 +1889,10 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
-        log_data["train/gate_proj_bias_l2_loss_weight"] = gate_proj_bias_l2_loss_weight
-        log_data["train/gate_proj_bias_scale_l2_loss_weight"] = gate_proj_bias_scale_l2_loss_weight
-        log_data["train/moe_gate_slope_max_scale"] = moe_gate_slope_max_scale
-        log_data["train/dense_gate_slope_max_scale"] = dense_gate_slope_max_scale
+        log_data["train/kappa_bias_l2_loss_weight"] = kappa_bias_l2_loss_weight
+        log_data["train/kappa_scale_l2_loss_weight"] = kappa_scale_l2_loss_weight
+        log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale
+        log_data["train/dense_kappa_slope_max_scale"] = dense_kappa_slope_max_scale
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
             if drop_rates.shape[1] >= 1:
@@ -1917,58 +1917,58 @@ while True:
                 log_data.update({f"inspect/router_row_norm_{i}": losses[f'router_row_norm_{i}']})
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
-            if f'gate_proj_bias_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_mean_{i}": losses[f'gate_proj_bias_mean_{i}']})
-            if f'gate_proj_bias_abs_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_abs_mean_{i}": losses[f'gate_proj_bias_abs_mean_{i}']})
-            if f'gate_proj_bias_scale_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_mean_{i}": losses[f'gate_proj_bias_scale_mean_{i}']})
-            if f'gate_proj_bias_scale_abs_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_{i}": losses[f'gate_proj_bias_scale_abs_mean_{i}']})
-            if f'gate_proj_bias_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_mean_top_{i}": losses[f'gate_proj_bias_mean_top_{i}']})
-            if f'gate_proj_bias_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_mean_bottom_{i}": losses[f'gate_proj_bias_mean_bottom_{i}']})
-            if f'gate_proj_bias_abs_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_abs_mean_top_{i}": losses[f'gate_proj_bias_abs_mean_top_{i}']})
-            if f'gate_proj_bias_abs_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_abs_mean_bottom_{i}": losses[f'gate_proj_bias_abs_mean_bottom_{i}']})
-            if f'gate_proj_bias_positive_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_positive_mean_top_{i}": losses[f'gate_proj_bias_positive_mean_top_{i}']})
-            if f'gate_proj_bias_positive_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_positive_mean_bottom_{i}": losses[f'gate_proj_bias_positive_mean_bottom_{i}']})
-            if f'gate_proj_bias_negative_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_negative_mean_top_{i}": losses[f'gate_proj_bias_negative_mean_top_{i}']})
-            if f'gate_proj_bias_negative_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_negative_mean_bottom_{i}": losses[f'gate_proj_bias_negative_mean_bottom_{i}']})
-            if f'gate_proj_bias_scale_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_mean_top_{i}": losses[f'gate_proj_bias_scale_mean_top_{i}']})
-            if f'gate_proj_bias_scale_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_mean_bottom_{i}": losses[f'gate_proj_bias_scale_mean_bottom_{i}']})
-            if f'gate_proj_bias_scale_abs_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_top_{i}": losses[f'gate_proj_bias_scale_abs_mean_top_{i}']})
-            if f'gate_proj_bias_scale_abs_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_abs_mean_bottom_{i}": losses[f'gate_proj_bias_scale_abs_mean_bottom_{i}']})
-            if f'gate_proj_bias_scale_positive_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_positive_mean_top_{i}": losses[f'gate_proj_bias_scale_positive_mean_top_{i}']})
-            if f'gate_proj_bias_scale_positive_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_positive_mean_bottom_{i}": losses[f'gate_proj_bias_scale_positive_mean_bottom_{i}']})
-            if f'gate_proj_bias_scale_negative_mean_top_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_negative_mean_top_{i}": losses[f'gate_proj_bias_scale_negative_mean_top_{i}']})
-            if f'gate_proj_bias_scale_negative_mean_bottom_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_scale_negative_mean_bottom_{i}": losses[f'gate_proj_bias_scale_negative_mean_bottom_{i}']})
-            if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_top5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_top5p_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_bottom5p_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_bottom5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_mean_normalized_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
-            if f'implicit_gate_proj_bias_top5p_mean_{i}' in losses:
-                log_data.update({f"inspect/implicit_gate_proj_bias_top5p_mean_{i}": losses[f'implicit_gate_proj_bias_top5p_mean_{i}']})
-            if f'implicit_gate_proj_bias_bottom5p_mean_{i}' in losses:
-                log_data.update({f"inspect/implicit_gate_proj_bias_bottom5p_mean_{i}": losses[f'implicit_gate_proj_bias_bottom5p_mean_{i}']})
+            if f'kappa_bias_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_mean_{i}": losses[f'kappa_bias_mean_{i}']})
+            if f'kappa_bias_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_abs_mean_{i}": losses[f'kappa_bias_abs_mean_{i}']})
+            if f'kappa_scale_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_mean_{i}": losses[f'kappa_scale_mean_{i}']})
+            if f'kappa_scale_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_abs_mean_{i}": losses[f'kappa_scale_abs_mean_{i}']})
+            if f'kappa_bias_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_mean_top_{i}": losses[f'kappa_bias_mean_top_{i}']})
+            if f'kappa_bias_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_mean_bottom_{i}": losses[f'kappa_bias_mean_bottom_{i}']})
+            if f'kappa_bias_abs_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_abs_mean_top_{i}": losses[f'kappa_bias_abs_mean_top_{i}']})
+            if f'kappa_bias_abs_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_abs_mean_bottom_{i}": losses[f'kappa_bias_abs_mean_bottom_{i}']})
+            if f'kappa_bias_positive_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_positive_mean_top_{i}": losses[f'kappa_bias_positive_mean_top_{i}']})
+            if f'kappa_bias_positive_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_positive_mean_bottom_{i}": losses[f'kappa_bias_positive_mean_bottom_{i}']})
+            if f'kappa_bias_negative_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_negative_mean_top_{i}": losses[f'kappa_bias_negative_mean_top_{i}']})
+            if f'kappa_bias_negative_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_negative_mean_bottom_{i}": losses[f'kappa_bias_negative_mean_bottom_{i}']})
+            if f'kappa_scale_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_mean_top_{i}": losses[f'kappa_scale_mean_top_{i}']})
+            if f'kappa_scale_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_mean_bottom_{i}": losses[f'kappa_scale_mean_bottom_{i}']})
+            if f'kappa_scale_abs_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_abs_mean_top_{i}": losses[f'kappa_scale_abs_mean_top_{i}']})
+            if f'kappa_scale_abs_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_abs_mean_bottom_{i}": losses[f'kappa_scale_abs_mean_bottom_{i}']})
+            if f'kappa_scale_positive_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_positive_mean_top_{i}": losses[f'kappa_scale_positive_mean_top_{i}']})
+            if f'kappa_scale_positive_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_positive_mean_bottom_{i}": losses[f'kappa_scale_positive_mean_bottom_{i}']})
+            if f'kappa_scale_negative_mean_top_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_negative_mean_top_{i}": losses[f'kappa_scale_negative_mean_top_{i}']})
+            if f'kappa_scale_negative_mean_bottom_{i}' in losses:
+                log_data.update({f"inspect/kappa_scale_negative_mean_bottom_{i}": losses[f'kappa_scale_negative_mean_bottom_{i}']})
+            if f'kappa_bias_shift_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_mean_{i}": losses[f'kappa_bias_shift_abs_mean_{i}']})
+            if f'kappa_bias_shift_abs_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_top5p_mean_{i}": losses[f'kappa_bias_shift_abs_top5p_mean_{i}']})
+            if f'kappa_bias_shift_abs_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_bottom5p_mean_{i}": losses[f'kappa_bias_shift_abs_bottom5p_mean_{i}']})
+            if f'kappa_bias_shift_abs_mean_normalized_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_mean_normalized_{i}": losses[f'kappa_bias_shift_abs_mean_normalized_{i}']})
+            if f'implicit_kappa_bias_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/implicit_kappa_bias_top5p_mean_{i}": losses[f'implicit_kappa_bias_top5p_mean_{i}']})
+            if f'implicit_kappa_bias_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/implicit_kappa_bias_bottom5p_mean_{i}": losses[f'implicit_kappa_bias_bottom5p_mean_{i}']})
             if f'routed_token_router_weight_cosine_mean_{i}' in losses:
                 log_data.update({f"inspect/routed_token_router_weight_cosine_mean_{i}": losses[f'routed_token_router_weight_cosine_mean_{i}']})
             if f'routed_token_router_weight_cosine_top5p_mean_{i}' in losses:
@@ -2012,21 +2012,21 @@ while True:
             if f'selected_scores_bottom_{i}' in losses:
                 log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
 
-        for i in get_dense_gate_proj_bias_stat_layer_indices(orig_model):
+        for i in get_dense_kappa_bias_stat_layer_indices(orig_model):
             if f'gate_proj_row_mean_component_ratio_{i}' in losses:
                 log_data.update({f"inspect/gate_proj_row_mean_component_ratio_{i}": losses[f'gate_proj_row_mean_component_ratio_{i}']})
-            if f'gate_proj_bias_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_mean_{i}": losses[f'gate_proj_bias_mean_{i}']})
-            if f'gate_proj_bias_abs_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_abs_mean_{i}": losses[f'gate_proj_bias_abs_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_{i}": losses[f'gate_proj_bias_shift_abs_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_top5p_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_top5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_top5p_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_bottom5p_mean_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_bottom5p_mean_{i}": losses[f'gate_proj_bias_shift_abs_bottom5p_mean_{i}']})
-            if f'gate_proj_bias_shift_abs_mean_normalized_{i}' in losses:
-                log_data.update({f"inspect/gate_proj_bias_shift_abs_mean_normalized_{i}": losses[f'gate_proj_bias_shift_abs_mean_normalized_{i}']})
+            if f'kappa_bias_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_mean_{i}": losses[f'kappa_bias_mean_{i}']})
+            if f'kappa_bias_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_abs_mean_{i}": losses[f'kappa_bias_abs_mean_{i}']})
+            if f'kappa_bias_shift_abs_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_mean_{i}": losses[f'kappa_bias_shift_abs_mean_{i}']})
+            if f'kappa_bias_shift_abs_top5p_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_top5p_mean_{i}": losses[f'kappa_bias_shift_abs_top5p_mean_{i}']})
+            if f'kappa_bias_shift_abs_bottom5p_mean_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_bottom5p_mean_{i}": losses[f'kappa_bias_shift_abs_bottom5p_mean_{i}']})
+            if f'kappa_bias_shift_abs_mean_normalized_{i}' in losses:
+                log_data.update({f"inspect/kappa_bias_shift_abs_mean_normalized_{i}": losses[f'kappa_bias_shift_abs_mean_normalized_{i}']})
                         
         wandb_run.log(drop_none_log_values(log_data), step=step)
 
