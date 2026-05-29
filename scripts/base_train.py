@@ -229,7 +229,7 @@ parser.add_argument("--moe-gate-slope-max-scale", type=float, default=3.0,
 parser.add_argument("--dense-gate-slope-max-scale", type=float, default=2.0,
                     help="maximum slope scale used by dense gate_proj_bias modulation")
 parser.add_argument("--gate-slope-max-scale-warmup-iteration-frac",
-                    dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.1,
+                    dest="gate_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
                     help="fraction of total iterations used to warm gate slope max scales from 1.0 to --moe-gate-slope-max-scale / --dense-gate-slope-max-scale after the initial delay window")
 parser.add_argument("--constant-gate-proj-bias-dense-layers", dest="constant_gate_proj_bias_dense_layers", type=str2bool, nargs='?', const=True, default=False,
                     help="apply the constant gate_proj_bias path to every dense transformer MLP layer, even when MoE layers use top_logits or router_probs")
