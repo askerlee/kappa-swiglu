@@ -200,6 +200,12 @@ if __name__ == "__main__":
         default=None,
         help='Override all expert kappa_bias tensors in the loaded checkpoint with this constant value',
     )
+    parser.add_argument(
+        '--kappa-scale-fill-value',
+        type=float,
+        default=None,
+        help='Override all kappa_scale tensors in the loaded checkpoint with this constant value',
+    )
     parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type for evaluation: cuda|cpu|mps. empty => autodetect')
     args = parser.parse_args()
 
@@ -215,6 +221,7 @@ if __name__ == "__main__":
         model_tag=args.model_tag,
         step=args.step,
         kappa_bias_fill_value=args.kappa_bias_fill_value,
+        kappa_scale_fill_value=args.kappa_scale_fill_value,
     )
     engine = Engine(model, tokenizer)
 

@@ -200,8 +200,17 @@ def main():
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
+    parser.add_argument(
+        '--use-kappa-swiglu',
+        action=argparse.BooleanOptionalAction,
+        dest='use_kappa_swiglu',
+        default=None,
+        help='Override the checkpoint config for expert kappa_bias on nanochat checkpoints',
+    )
     parser.add_argument('--kappa-bias-fill-value', type=float, default=None,
                         help='Override all expert kappa_bias tensors in the loaded checkpoint with this constant value')
+    parser.add_argument('--kappa-scale-fill-value', type=float, default=None,
+                        help='Override all kappa_scale tensors in the loaded checkpoint with this constant value')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     args = parser.parse_args()
 
@@ -235,7 +244,9 @@ def main():
             model_tag=args.model_tag,
             step=args.step,
             eval_capacity=args.eval_capacity,
+            use_kappa_swiglu=args.use_kappa_swiglu,
             kappa_bias_fill_value=args.kappa_bias_fill_value,
+            kappa_scale_fill_value=args.kappa_scale_fill_value,
         )
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
@@ -245,10 +256,18 @@ def main():
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
             model_slug = f"{model_slug}_ecap{args.eval_capacity:g}"
             print0(f"Overriding eval_capacity to {args.eval_capacity:g}")
+        if args.use_kappa_swiglu is not None:
+            model_name = f"{model_name}, use_kappa_swiglu={args.use_kappa_swiglu}"
+            model_slug = f"{model_slug}_swiglu{int(args.use_kappa_swiglu)}"
+            print0(f"Overriding use_kappa_swiglu to {args.use_kappa_swiglu}")
         if args.kappa_bias_fill_value is not None:
             model_name = f"{model_name}, kappa_bias_fill_value={args.kappa_bias_fill_value:g}"
             model_slug = f"{model_slug}_gpbias{args.kappa_bias_fill_value:g}"
             print0(f"Overriding expert kappa_bias to {args.kappa_bias_fill_value:g}")
+        if args.kappa_scale_fill_value is not None:
+            model_name = f"{model_name}, kappa_scale_fill_value={args.kappa_scale_fill_value:g}"
+            model_slug = f"{model_slug}_gpscale{args.kappa_scale_fill_value:g}"
+            print0(f"Overriding kappa_scale to {args.kappa_scale_fill_value:g}")
 
     print0(f"Evaluating model: {model_name}")
     print0(f"Eval modes: {', '.join(sorted(eval_modes))}")

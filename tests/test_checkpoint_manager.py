@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_exp_kappa_bias, _infer_use_qwen3_dense_mlp, _override_exp_kappa_bias_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_exp_kappa_bias, _infer_use_qwen3_dense_mlp, _override_exp_kappa_bias_values, _override_kappa_scale_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -326,6 +326,23 @@ def test_override_kappa_bias_fill_value_sets_constant_bias_tensors():
     assert sanitized_kwargs["eval_capacity"] == 1.5
     assert torch.all(model_data["transformer.h.0.mlp.experts.kappa_bias"] == 0.4)
     assert torch.all(model_data["transformer.h.1.mlp.experts.kappa_bias"] == 0.4)
+
+
+def test_override_kappa_scale_fill_value_sets_constant_scale_tensors():
+    model_data = {
+        "transformer.h.0.mlp.experts.kappa_scale": torch.randn(4, 8),
+        "transformer.h.1.mlp.kappa_scale": torch.randn(8),
+        "global_kappa_scale": torch.randn(1),
+    }
+    model_kwargs = {"kappa_scale_fill_value": 0.25, "eval_capacity": 1.5}
+
+    sanitized_kwargs = _override_kappa_scale_values(model_data, model_kwargs)
+
+    assert "kappa_scale_fill_value" not in sanitized_kwargs
+    assert sanitized_kwargs["eval_capacity"] == 1.5
+    assert torch.all(model_data["transformer.h.0.mlp.experts.kappa_scale"] == 0.25)
+    assert torch.all(model_data["transformer.h.1.mlp.kappa_scale"] == 0.25)
+    assert torch.all(model_data["global_kappa_scale"] == 0.25)
 
 
 def test_infer_exp_kappa_bias_detects_rank1_residual_checkpoint_layout():

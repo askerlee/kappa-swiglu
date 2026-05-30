@@ -148,6 +148,32 @@ def _override_exp_kappa_bias_values(model_data, model_kwargs):
     return model_kwargs
 
 
+def _override_kappa_scale_values(model_data, model_kwargs):
+    """Apply caller overrides to checkpoint kappa_scale tensors before loading."""
+    kappa_scale_pattern = re.compile(r"^transformer\.h\.\d+\.mlp(?:\.experts)?\.kappa_scale$")
+    global_kappa_scale_pattern = re.compile(r"^global_kappa_scale$")
+    kappa_scale_keys = [key for key in model_data if kappa_scale_pattern.match(key)]
+    global_kappa_scale_keys = [key for key in model_data if global_kappa_scale_pattern.match(key)]
+    if not kappa_scale_keys and not global_kappa_scale_keys:
+        return model_kwargs
+
+    model_kwargs = dict(model_kwargs)
+    kappa_scale_fill_value = model_kwargs.pop("kappa_scale_fill_value", None)
+    if kappa_scale_fill_value is None:
+        return model_kwargs
+
+    kappa_scale_fill_value = float(kappa_scale_fill_value)
+    for key in kappa_scale_keys:
+        model_data[key] = torch.full_like(model_data[key], kappa_scale_fill_value)
+    for key in global_kappa_scale_keys:
+        model_data[key] = torch.full_like(model_data[key], kappa_scale_fill_value)
+    log0(
+        "Preserving checkpoint kappa_scale parameters for loading and filling them "
+        f"with {kappa_scale_fill_value:g}"
+    )
+    return model_kwargs
+
+
 def _kappa_bias_enabled_for_layer(model_config, layer_idx):
     return bool(getattr(model_config, "use_kappa_swiglu", False)) and (
         layer_idx >= int(getattr(model_config, "kappa_bias_start_layer", 0))
@@ -724,6 +750,7 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     kwargs = _override_exp_kappa_bias_values(model_data, kwargs)
+    kwargs = _override_kappa_scale_values(model_data, kwargs)
     model_config_kwargs = meta_data["model_config"]
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})

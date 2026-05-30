@@ -23,6 +23,7 @@ from nanochat.core_eval import evaluate_task_detailed
 
 EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"
 BOOLQ_RANDOM_BASELINE = 0.62
+BOOLQ_YES_RATE_PRIOR = 0.62
 
 
 class ModelWrapper:
@@ -83,6 +84,30 @@ def normalize_boolq_answer(text):
     if normalized.startswith("no"):
         return False
     raise ValueError(f"Unsupported BoolQ answer label: {text!r}")
+
+
+def compute_predicted_yes_rate(margins, tau):
+    """Compute the fraction of examples predicted as yes for a given tau."""
+    return sum(entry['margin'] > tau for entry in margins) / len(margins)
+
+
+def compute_prior_matching_tau(margins, target_yes_rate):
+    """Choose tau so the predicted yes rate matches the requested prior as closely as possible."""
+    if not 0.0 <= target_yes_rate <= 1.0:
+        raise ValueError(f"target_yes_rate must be in [0, 1], got {target_yes_rate!r}")
+
+    sorted_margins = sorted(entry['margin'] for entry in margins)
+    num_examples = len(sorted_margins)
+    num_yes_predictions = int(round(target_yes_rate * num_examples))
+
+    if num_yes_predictions <= 0:
+        return sorted_margins[-1]
+    if num_yes_predictions >= num_examples:
+        return sorted_margins[0] - 1e-12
+
+    lower = sorted_margins[num_examples - num_yes_predictions - 1]
+    upper = sorted_margins[num_examples - num_yes_predictions]
+    return 0.5 * (lower + upper)
 
 
 def compute_boolq_confusion_counts(details, data, tau=0.0):
@@ -204,10 +229,22 @@ def build_parser():
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--max-examples', type=int, default=-1, help='Max BoolQ examples to evaluate (-1 = all)')
     parser.add_argument('--tau', type=float, default=0.0, help='Predict yes when margin logp_yes - logp_no is greater than tau')
+    parser.add_argument(
+        '--tau-mode',
+        type=str,
+        choices=('manual', 'prior-match'),
+        default='manual',
+        help='How to choose tau: manual uses --tau, prior-match picks tau to match --target-yes-rate',
+    )
+    parser.add_argument(
+        '--target-yes-rate',
+        type=float,
+        default=BOOLQ_YES_RATE_PRIOR,
+        help='Target predicted yes rate for --tau-mode=prior-match',
+    )
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument(
         '--use-kappa-swiglu',
-        '--use-exp-kappa-bias',
         action=argparse.BooleanOptionalAction,
         dest='use_kappa_swiglu',
         default=None,
@@ -218,6 +255,12 @@ def build_parser():
         type=float,
         default=None,
         help='Override all expert kappa_bias tensors in the loaded checkpoint with this constant value',
+    )
+    parser.add_argument(
+        '--kappa-scale-fill-value',
+        type=float,
+        default=None,
+        help='Override all kappa_scale tensors in the loaded checkpoint with this constant value',
     )
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps (empty = autodetect)')
     return parser
@@ -247,12 +290,15 @@ def main():
             eval_capacity=args.eval_capacity,
             use_kappa_swiglu=args.use_kappa_swiglu,
             kappa_bias_fill_value=args.kappa_bias_fill_value,
+            kappa_scale_fill_value=args.kappa_scale_fill_value,
         )
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"
         if args.kappa_bias_fill_value is not None:
             model_name = f"{model_name}, kappa_bias_fill_value={args.kappa_bias_fill_value:g}"
+        if args.kappa_scale_fill_value is not None:
+            model_name = f"{model_name}, kappa_scale_fill_value={args.kappa_scale_fill_value:g}"
 
     data, task_meta = load_boolq_data(args.max_examples)
     print0(f"Evaluating model on BoolQ: {model_name}")
@@ -261,11 +307,17 @@ def main():
     with autocast_ctx:
         results = evaluate_task_detailed(model, tokenizer, data, device, task_meta)
 
-    confusion = compute_boolq_confusion_counts(results['details'], data, tau=args.tau)
-    calibrated_accuracy = compute_calibrated_boolq_accuracy(results['details'], data, tau=args.tau)
+    margins = compute_boolq_margins(results['details'], data)
+    tau = args.tau
+    if args.tau_mode == 'prior-match':
+        tau = compute_prior_matching_tau(margins, args.target_yes_rate)
+
+    confusion = compute_boolq_confusion_counts(results['details'], data, tau=tau)
+    calibrated_accuracy = compute_calibrated_boolq_accuracy(results['details'], data, tau=tau)
     centered_score = compute_centered_boolq_score(results['accuracy'])
     calibrated_centered_score = compute_centered_boolq_score(calibrated_accuracy)
-    average_margin = compute_average_boolq_margin(results['details'], data)
+    average_margin = sum(entry['margin'] for entry in margins) / len(margins)
+    predicted_yes_rate = compute_predicted_yes_rate(margins, tau)
     class_conditional_margins = compute_class_conditional_boolq_margin_means(results['details'], data)
     total = sum(confusion.values())
     if ddp_rank == 0:
@@ -273,7 +325,11 @@ def main():
         print(f"Calibrated accuracy: {calibrated_accuracy:.6f}")
         print(f"Centered score: {centered_score:.6f}")
         print(f"Calibrated centered score: {calibrated_centered_score:.6f}")
-        print(f"tau: {args.tau:.6f}")
+        print(f"tau_mode: {args.tau_mode}")
+        if args.tau_mode == 'prior-match':
+            print(f"target_yes_rate: {args.target_yes_rate:.6f}")
+        print(f"tau: {tau:.6f}")
+        print(f"predicted_yes_rate: {predicted_yes_rate:.6f}")
         print(f"Average margin (logp_yes - logp_no): {average_margin:.6f}")
         print(f"mean_margin_yes_examples: {class_conditional_margins['mean_margin_yes_examples']:.6f}")
         print(f"mean_margin_no_examples: {class_conditional_margins['mean_margin_no_examples']:.6f}")

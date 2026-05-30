@@ -446,6 +446,12 @@ def parse_args():
         default=None,
         help="override all expert kappa_bias tensors in the loaded checkpoint with this constant value",
     )
+    parser.add_argument(
+        "--kappa-scale-fill-value",
+        type=float,
+        default=None,
+        help="override all kappa_scale tensors in the loaded checkpoint with this constant value",
+    )
     parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
     parser.add_argument(
         "--compile",
@@ -473,6 +479,7 @@ def main():
         step=args.step,
         eval_capacity=args.eval_capacity,
         kappa_bias_fill_value=args.kappa_bias_fill_value,
+        kappa_scale_fill_value=args.kappa_scale_fill_value,
     )
     model.eval()
 
