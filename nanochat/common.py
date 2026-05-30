@@ -67,6 +67,12 @@ def setup_default_logging():
 setup_default_logging()
 logger = logging.getLogger(__name__)
 
+
+def _available_cpu_count():
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
 def get_base_dir():
     # co-locate nanochat intermediates with other cached data in ~/.cache (by default)
     if os.environ.get("NANOCHAT_BASE_DIR"):
@@ -196,16 +202,79 @@ def compute_init(device_type="cuda", seed=42): # cuda|cpu|mps
 
     # Distributed setup: Distributed Data Parallel (DDP), optional, and requires CUDA
     is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    dist_initialized = False
     if is_ddp_requested and device_type == "cuda":
         device = torch.device("cuda", ddp_local_rank)
         torch.cuda.set_device(device)  # make "cuda" default to this device
         dist.init_process_group(backend="nccl", device_id=device)
         dist.barrier()
+        dist_initialized = True
     else:
         device = torch.device(device_type) # mps|cpu
 
+    # Cap PyTorch CPU thread pool so that all ranks together don't oversubscribe the host.
+    # PyTorch defaults to os.cpu_count() threads per process, which means world_size * cpu_count
+    # threads compete for cpu_count cores when running under torchrun.
+    if is_ddp_requested and ddp_world_size > 1:
+        total_cpu = _available_cpu_count()
+        threads_per_rank = max(1, total_cpu // ddp_world_size)
+        torch.set_num_threads(threads_per_rank)
+        try:
+            torch.set_num_interop_threads(max(1, threads_per_rank // 2))
+        except RuntimeError:
+            pass  # interop threads already started; intra-op cap is sufficient
+        if device.type == "cuda" and total_cpu <= ddp_world_size:
+            logger.warning(
+                "CUDA torchrun sees only %s CPU affinity cores for world_size=%s; "
+                "that is likely a scheduler cpuset bottleneck and can severely slow multi-GPU inference/training. "
+                "Request more CPUs for the torchrun task, e.g. Slurm --cpus-per-task >= world_size * desired_threads_per_rank.",
+                total_cpu,
+                ddp_world_size,
+            )
+
+    if os.environ.get("NANOCHAT_DIST_DEBUG", "").lower() not in {"", "0", "false", "no"}:
+        affinity_cpus = _available_cpu_count()
+        if device.type == "cuda":
+            props = torch.cuda.get_device_properties(device)
+            logger.info(
+                "DDP debug: host=%s rank=%s local_rank=%s world_size=%s device=%s name=%s capability=%s visible=%s affinity_cpus=%s threads=%s interop=%s",
+                os.uname().nodename,
+                ddp_rank,
+                ddp_local_rank,
+                ddp_world_size,
+                device,
+                props.name,
+                f"{props.major}.{props.minor}",
+                os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"),
+                affinity_cpus,
+                torch.get_num_threads(),
+                torch.get_num_interop_threads(),
+            )
+        else:
+            logger.info(
+                "DDP debug: host=%s rank=%s local_rank=%s world_size=%s device=%s affinity_cpus=%s threads=%s interop=%s",
+                os.uname().nodename,
+                ddp_rank,
+                ddp_local_rank,
+                ddp_world_size,
+                device,
+                affinity_cpus,
+                torch.get_num_threads(),
+                torch.get_num_interop_threads(),
+            )
+
     if ddp_rank == 0:
-        logger.info(f"Distributed world size: {ddp_world_size}")
+        if dist_initialized:
+            logger.info(f"Distributed world size: {ddp_world_size}")
+        elif is_ddp_requested:
+            logger.warning(
+                "torchrun requested world size %s, but distributed CUDA execution was not initialized; "
+                "running on device=%s with independent processes instead.",
+                ddp_world_size,
+                device.type,
+            )
+        else:
+            logger.info(f"Distributed world size: {ddp_world_size}")
 
     return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size, device
 

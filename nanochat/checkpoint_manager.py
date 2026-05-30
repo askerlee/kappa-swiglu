@@ -141,7 +141,10 @@ def _override_kappa_bias_values(model_data, model_kwargs):
     )
     return model_kwargs
 
-
+# disable_kappa_swiglu_sentinel is set in _override_kappa_bias_values().
+# The call order is: _override_kappa_bias_values() -> _override_kappa_scale_values(), 
+# so if use_kappa_swiglu is overriden to False, disable_kappa_swiglu_sentinel is already
+# present in model_kwargs.
 def _override_kappa_scale_values(model_data, model_kwargs):
     """Apply caller overrides to checkpoint kappa_scale tensors before loading."""
     disable_kappa_swiglu_sentinel = "__disable_kappa_swiglu_checkpoint_override__"
