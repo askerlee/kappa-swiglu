@@ -24,8 +24,6 @@ def log0(message):
 
 def _patch_missing_config_keys(model_config_kwargs):
     """Add default values for new config keys missing in old checkpoints."""
-    if "use_kappa_swiglu" not in model_config_kwargs and "use_exp_kappa_bias" in model_config_kwargs:
-        model_config_kwargs["use_kappa_swiglu"] = model_config_kwargs.pop("use_exp_kappa_bias")
     # Old models were trained with full context (no sliding window)
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
@@ -59,12 +57,9 @@ def _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs):
         log0("Patching missing use_qwen3_dense_mlp in model config to False")
 
 
-def _infer_exp_kappa_bias(model_data, model_config_kwargs):
+def _infer_kappa_bias(model_data, model_config_kwargs):
     """Infer expert gate-projection bias config for checkpoints with sparse metadata."""
     if "use_kappa_swiglu" in model_config_kwargs:
-        return
-    if "use_exp_kappa_bias" in model_config_kwargs:
-        model_config_kwargs["use_kappa_swiglu"] = model_config_kwargs.pop("use_exp_kappa_bias")
         return
 
     kappa_bias_layers = []
@@ -94,8 +89,9 @@ def _infer_exp_kappa_bias(model_data, model_config_kwargs):
     )
 
 
-def _override_exp_kappa_bias_values(model_data, model_kwargs):
+def _override_kappa_bias_values(model_data, model_kwargs):
     """Apply caller overrides to checkpoint expert kappa_bias tensors before loading."""
+    disable_kappa_swiglu_sentinel = "__disable_kappa_swiglu_checkpoint_override__"
     kappa_bias_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias$")
     kappa_bias_expert_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias_expert$")
     kappa_bias_intermediate_pattern = re.compile(r"^transformer\.h\.\d+\.mlp\.experts\.kappa_bias_intermediate$")
@@ -108,9 +104,6 @@ def _override_exp_kappa_bias_values(model_data, model_kwargs):
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
-    legacy_use_kappa_swiglu = model_kwargs.pop("use_exp_kappa_bias", None)
-    if legacy_use_kappa_swiglu is not None and "use_kappa_swiglu" not in model_kwargs:
-        model_kwargs["use_kappa_swiglu"] = legacy_use_kappa_swiglu
     kappa_bias_fill_value = model_kwargs.pop("kappa_bias_fill_value", None)
     if kappa_bias_fill_value is not None:
         model_kwargs.pop("use_kappa_swiglu", None)
@@ -133,6 +126,7 @@ def _override_exp_kappa_bias_values(model_data, model_kwargs):
         return model_kwargs
 
     model_kwargs.pop("use_kappa_swiglu", None)
+    model_kwargs[disable_kappa_swiglu_sentinel] = True
     for key in kappa_bias_keys:
         model_data[key] = torch.zeros_like(model_data[key])
     for key in kappa_bias_expert_keys:
@@ -150,6 +144,7 @@ def _override_exp_kappa_bias_values(model_data, model_kwargs):
 
 def _override_kappa_scale_values(model_data, model_kwargs):
     """Apply caller overrides to checkpoint kappa_scale tensors before loading."""
+    disable_kappa_swiglu_sentinel = "__disable_kappa_swiglu_checkpoint_override__"
     kappa_scale_pattern = re.compile(r"^transformer\.h\.\d+\.mlp(?:\.experts)?\.kappa_scale$")
     global_kappa_scale_pattern = re.compile(r"^global_kappa_scale$")
     kappa_scale_keys = [key for key in model_data if kappa_scale_pattern.match(key)]
@@ -158,19 +153,28 @@ def _override_kappa_scale_values(model_data, model_kwargs):
         return model_kwargs
 
     model_kwargs = dict(model_kwargs)
+    disable_kappa_swiglu = bool(model_kwargs.pop(disable_kappa_swiglu_sentinel, False))
     kappa_scale_fill_value = model_kwargs.pop("kappa_scale_fill_value", None)
     if kappa_scale_fill_value is None:
-        return model_kwargs
+        if not disable_kappa_swiglu:
+            return model_kwargs
+        kappa_scale_fill_value = 0.0
 
     kappa_scale_fill_value = float(kappa_scale_fill_value)
     for key in kappa_scale_keys:
         model_data[key] = torch.full_like(model_data[key], kappa_scale_fill_value)
     for key in global_kappa_scale_keys:
         model_data[key] = torch.full_like(model_data[key], kappa_scale_fill_value)
-    log0(
-        "Preserving checkpoint kappa_scale parameters for loading and filling them "
-        f"with {kappa_scale_fill_value:g}"
-    )
+    if disable_kappa_swiglu and kappa_scale_fill_value == 0.0:
+        log0(
+            "Preserving checkpoint kappa_scale parameters for loading and zeroing them "
+            "because use_kappa_swiglu was overridden to False"
+        )
+    else:
+        log0(
+            "Preserving checkpoint kappa_scale parameters for loading and filling them "
+            f"with {kappa_scale_fill_value:g}"
+        )
     return model_kwargs
 
 
@@ -749,14 +753,14 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
         }
     # Hack: fix torch compile issue, which prepends all keys with _orig_mod.
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
-    kwargs = _override_exp_kappa_bias_values(model_data, kwargs)
+    kwargs = _override_kappa_bias_values(model_data, kwargs)
     kwargs = _override_kappa_scale_values(model_data, kwargs)
     model_config_kwargs = meta_data["model_config"]
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)
     _infer_use_qwen3_dense_mlp(model_data, model_config_kwargs)
-    _infer_exp_kappa_bias(model_data, model_config_kwargs)
+    _infer_kappa_bias(model_data, model_config_kwargs)
     log0(f"Building model with config: {model_config_kwargs}")
     model_config = GPTConfig(**model_config_kwargs)
     _patch_missing_keys(model_data, model_config)
