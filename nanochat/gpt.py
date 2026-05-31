@@ -920,7 +920,7 @@ class Qwen3MLP(nn.Module):
             device=kappa_bias.device,
             dtype=target_dtype,
         )
-        log_kappa = 2 * kappa_bias * input_constant
+        log_kappa = kappa_bias * input_constant
         return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa))
 
     @torch._dynamo.disable
@@ -1387,7 +1387,6 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
-        slope_work.mul_(2.0)
         slope_work.tanh_()
         slope_work.mul_(log_kappa_slope_max_scale)
         slope_work.exp_()
@@ -1753,11 +1752,12 @@ class MOELayer(nn.Module):
 
     def _select_gate_confidence(self, top_k_scores, router_probs):
         if self.kappa_input == 'top_logits':
-            # top_logits are usually 3~4. * 0.15 -> 0.45~0.6. 
-            # Similar as the default "constant" setting of 0.5.
-            return top_k_scores * 0.15
+            # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
+            # Similar as the default "constant" setting of 1.
+            return top_k_scores * 0.3
         if self.kappa_input == 'router_probs':
-            return router_probs
+            # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
+            return router_probs * 2
         if self.kappa_input == 'constant':
             if self.kappa_input_constant is None:
                 raise RuntimeError(

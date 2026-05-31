@@ -232,37 +232,6 @@ def compute_init(device_type="cuda", seed=42): # cuda|cpu|mps
                 ddp_world_size,
             )
 
-    if os.environ.get("NANOCHAT_DIST_DEBUG", "").lower() not in {"", "0", "false", "no"}:
-        affinity_cpus = _available_cpu_count()
-        if device.type == "cuda":
-            props = torch.cuda.get_device_properties(device)
-            logger.info(
-                "DDP debug: host=%s rank=%s local_rank=%s world_size=%s device=%s name=%s capability=%s visible=%s affinity_cpus=%s threads=%s interop=%s",
-                os.uname().nodename,
-                ddp_rank,
-                ddp_local_rank,
-                ddp_world_size,
-                device,
-                props.name,
-                f"{props.major}.{props.minor}",
-                os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"),
-                affinity_cpus,
-                torch.get_num_threads(),
-                torch.get_num_interop_threads(),
-            )
-        else:
-            logger.info(
-                "DDP debug: host=%s rank=%s local_rank=%s world_size=%s device=%s affinity_cpus=%s threads=%s interop=%s",
-                os.uname().nodename,
-                ddp_rank,
-                ddp_local_rank,
-                ddp_world_size,
-                device,
-                affinity_cpus,
-                torch.get_num_threads(),
-                torch.get_num_interop_threads(),
-            )
-
     if ddp_rank == 0:
         if dist_initialized:
             logger.info(f"Distributed world size: {ddp_world_size}")

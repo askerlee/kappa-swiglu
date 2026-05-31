@@ -25,7 +25,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
-        kappa_input_constant: float = 0.5,
+        kappa_input_constant: float = 1.0,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,

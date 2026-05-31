@@ -276,13 +276,13 @@ def test_config_allows_constant_dense_kappa_bias_with_router_probs_for_moe_layer
         n_embd=4,
         use_kappa_swiglu=True,
         kappa_input="router_probs",
-        kappa_input_constant=0.5,
+        kappa_input_constant=1.0,
         constant_kappa_bias_dense_layers=True,
         debug=False,
     )
 
     assert config.kappa_input == "router_probs"
-    assert config.kappa_input_constant == pytest.approx(0.5)
+    assert config.kappa_input_constant == pytest.approx(1.0)
     assert config.constant_kappa_bias_dense_layers is True
 
 
@@ -292,7 +292,7 @@ def test_dense_qwen3_mlp_enables_constant_kappa_bias_when_requested():
         n_embd=4,
         use_kappa_swiglu=True,
         kappa_input="router_probs",
-        kappa_input_constant=0.5,
+        kappa_input_constant=1.0,
         constant_kappa_bias_dense_layers=True,
         debug=False,
     )
@@ -313,7 +313,7 @@ def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
         n_embd=4,
         use_kappa_swiglu=True,
         kappa_input="router_probs",
-        kappa_input_constant=0.5,
+        kappa_input_constant=1.0,
         constant_kappa_bias_dense_layers=True,
         kappa_bias_start_layer=2,
         debug=False,

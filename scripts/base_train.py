@@ -222,7 +222,7 @@ parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, 
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
-parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=0.5,
+parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
