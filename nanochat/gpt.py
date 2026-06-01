@@ -1711,6 +1711,11 @@ class MOELayer(nn.Module):
             self._expert_router_scores_cache_dtype = target_dtype
             self._expert_router_scores_cache_device = target_device
             self._expert_router_scores_cache_capacity = exp_capacity
+        else:
+            # The cache becomes graph-connected after the indexed writes below.
+            # Reuse must start from a detached tensor so the next micro-step does
+            # not try to continue the previous autograd graph through this buffer.
+            self._expert_router_scores_cache = self._expert_router_scores_cache.detach()
         self._expert_router_scores_cache.zero_()
         return self._expert_router_scores_cache
 
@@ -1734,6 +1739,11 @@ class MOELayer(nn.Module):
             self._expert_inputs_cache_dtype = target_dtype
             self._expert_inputs_cache_device = target_device
             self._expert_inputs_cache_capacity = exp_capacity
+        else:
+            # See _get_expert_router_scores_buffer: the cached dispatch tensor can
+            # retain autograd history from the previous forward unless we detach it
+            # before overwriting it for the next micro-step.
+            self._expert_inputs_cache = self._expert_inputs_cache.detach()
         self._expert_inputs_cache.zero_()
         return self._expert_inputs_cache
 
