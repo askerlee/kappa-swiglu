@@ -170,6 +170,13 @@ def test_kappa_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
 
 
+def test_normalize_top_logits_cli_is_wired_into_config():
+    source = BASE_TRAIN.read_text()
+
+    assert 'parser.add_argument("--normalize-top-logits", dest="normalize_top_logits", type=str2bool, nargs=' in source
+    assert 'normalize_top_logits=args.normalize_top_logits' in source
+
+
 def test_kappa_slope_max_scale_anneal_cli_is_wired_into_step_updates():
     source = BASE_TRAIN.read_text()
 

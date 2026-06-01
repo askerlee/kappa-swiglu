@@ -224,6 +224,8 @@ parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
+parser.add_argument("--normalize-top-logits", dest="normalize_top_logits", type=str2bool, nargs='?', const=True, default=False,
+                    help="when --kappa-input=top_logits, divide selected router logits by token and selected-router weight magnitudes before feeding kappa_bias")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
 parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
@@ -565,6 +567,7 @@ def build_model_meta(depth):
         use_kappa_swiglu=args.use_kappa_swiglu,
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
+        normalize_top_logits=args.normalize_top_logits,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,

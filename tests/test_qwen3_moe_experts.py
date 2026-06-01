@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
+from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
 from nanochat.manager import MOEManager
 
 
@@ -443,6 +443,57 @@ def test_kappa_input_defaults_and_overrides_from_config():
 
     assert default_config.kappa_input == "router_probs"
     assert override_config.kappa_input == "router_probs"
+    assert default_config.normalize_top_logits is False
+    assert override_config.normalize_top_logits is False
+
+
+def test_moe_select_gate_confidence_can_normalize_top_logits():
+    config = GPTConfig(
+        n_exp=3,
+        n_embd=4,
+        moe_top_k=2,
+        kappa_input="top_logits",
+        normalize_top_logits=True,
+        debug=False,
+    )
+    moe_layer = MOELayer(config, layer_idx=0)
+
+    x_flat = torch.tensor([
+        [3.0, 4.0, 0.0, 0.0],
+        [0.0, 0.0, 5.0, 12.0],
+    ])
+    top_k_scores = torch.tensor([
+        [15.0, 40.0],
+        [130.0, 26.0],
+    ])
+    router_probs = torch.tensor([
+        [0.7, 0.3],
+        [0.8, 0.2],
+    ])
+    top_k_indices = torch.tensor([
+        [0, 1],
+        [1, 2],
+    ])
+
+    with torch.no_grad():
+        moe_layer.router.w_g.weight.copy_(torch.tensor([
+            [3.0, 4.0, 0.0, 0.0],
+            [6.0, 8.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.0],
+        ]))
+
+    actual = moe_layer._select_gate_confidence(
+        top_k_scores,
+        router_probs,
+        x_flat=x_flat,
+        top_k_indices=top_k_indices,
+    )
+
+    token_magnitudes = x_flat.norm(dim=-1, keepdim=True)
+    router_weight_magnitudes = moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1)
+    expected = (top_k_scores * 0.3) / (token_magnitudes * router_weight_magnitudes)
+
+    torch.testing.assert_close(actual, expected)
 
 def test_kappa_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(

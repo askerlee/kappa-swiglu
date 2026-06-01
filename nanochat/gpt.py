@@ -1668,6 +1668,7 @@ class MOELayer(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
+        self.normalize_top_logits = bool(getattr(config, 'normalize_top_logits', False))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
         self._expert_inputs_cache_device = None
@@ -1750,11 +1751,21 @@ class MOELayer(nn.Module):
         self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
-    def _select_gate_confidence(self, top_k_scores, router_probs):
+    def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
         if self.kappa_input == 'top_logits':
             # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
             # Similar as the default "constant" setting of 1.
-            return top_k_scores * 0.3
+            top_logits = top_k_scores * 0.3
+            if not self.normalize_top_logits:
+                return top_logits
+            if x_flat is None or top_k_indices is None:
+                raise RuntimeError(
+                    "x_flat and top_k_indices are required when normalize_top_logits is enabled"
+                )
+            token_magnitudes = x_flat.float().norm(dim=-1, keepdim=True)
+            router_weight_magnitudes = self.router.w_g.weight[top_k_indices].float().norm(dim=-1)
+            normalizer = (token_magnitudes * router_weight_magnitudes).clamp_min(1e-12)
+            return top_logits / normalizer.to(dtype=top_logits.dtype)
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
             return router_probs * 2
@@ -1797,7 +1808,12 @@ class MOELayer(nn.Module):
             x_flat.device,
             x_flat.size(1),
         )
-        selected_gate_confidence = self._select_gate_confidence(top_k_scores, router_probs)
+        selected_gate_confidence = self._select_gate_confidence(
+            top_k_scores,
+            router_probs,
+            x_flat=x_flat,
+            top_k_indices=top_k_indices,
+        )
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
             expert_router_scores = self._get_expert_router_scores_buffer(
