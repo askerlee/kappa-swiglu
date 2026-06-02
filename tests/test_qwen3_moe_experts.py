@@ -507,7 +507,41 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
     )
 
     router_weight_magnitudes = moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1)
-    expected = (top_k_scores * 2.0) / router_weight_magnitudes.sqrt()
+    smoothed_router_weight_magnitudes = torch.sqrt(router_weight_magnitudes.square() + 1e-12)
+    expected = (top_k_scores * 2.0) / (math.sqrt(config.n_embd) * smoothed_router_weight_magnitudes.sqrt())
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        moe_top_k=1,
+        kappa_input="top_logits",
+        top_logit_norm_exponent=0.5,
+        debug=False,
+    )
+    moe_layer = MOELayer(config, layer_idx=0)
+
+    top_k_scores = torch.tensor([[1.0]], dtype=torch.float32)
+    router_probs = torch.tensor([[1.0]], dtype=torch.float32)
+    top_k_indices = torch.tensor([[0]])
+
+    with torch.no_grad():
+        moe_layer.router.w_g.weight.zero_()
+
+    actual = moe_layer._select_gate_confidence(
+        top_k_scores,
+        router_probs,
+        x_flat=torch.zeros(1, config.n_embd),
+        top_k_indices=top_k_indices,
+    )
+
+    assert torch.isfinite(actual).all()
+    expected = top_k_scores.new_tensor([
+        [2.0 / (math.sqrt(config.n_embd) * (1e-12 ** 0.25))]
+    ])
 
     torch.testing.assert_close(actual, expected)
 

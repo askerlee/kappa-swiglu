@@ -1805,6 +1805,7 @@ class MOELayer(nn.Module):
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
         self.top_logit_norm_exponent = float(getattr(config, 'top_logit_norm_exponent', 0.0))
+        self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
         self._expert_inputs_cache_device = None
@@ -1917,7 +1918,17 @@ class MOELayer(nn.Module):
                 dtype=torch.float32,
             )
             router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
-            normalizer = router_weight_magnitudes.pow(self.top_logit_norm_exponent).clamp_min(1e-12)
+            # Witout the top_logit_norm_eps term, if router_weight_magnitudes is
+            # close to zero, and top_logit_norm_exponent = 0.5, then
+            # the grad w.r.t. router_weight_magnitudes will be huge.
+            smoothed_router_weight_magnitudes = torch.sqrt(
+                router_weight_magnitudes.square() + self.top_logit_norm_eps
+            )
+            # Router inputs are RMS-normalized, so each token has L2 norm sqrt(hidden_dim).
+            token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
+            normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
+                self.top_logit_norm_exponent
+            )
             # top_k_scores after normalization should be in a similar range as router_probs.
             # i.e., around 0.5. So we * 2 -> 1.0.
             # Partial normalization damps router-weight magnitude effects without
