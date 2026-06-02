@@ -1771,8 +1771,20 @@ class MOELayer(nn.Module):
                 raise RuntimeError(
                     "x_flat and top_k_indices are required when normalize_top_logits is enabled"
                 )
-            token_magnitudes = x_flat.float().norm(dim=-1, keepdim=True)
-            router_weight_magnitudes = self.router.w_g.weight[top_k_indices].float().norm(dim=-1)
+            token_magnitudes = torch.linalg.vector_norm(
+                x_flat,
+                ord=2,
+                dim=-1,
+                keepdim=True,
+                dtype=torch.float32,
+            )
+            router_weight_magnitudes_all = torch.linalg.vector_norm(
+                self.router.w_g.weight,
+                ord=2,
+                dim=-1,
+                dtype=torch.float32,
+            )
+            router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
             normalizer = (token_magnitudes * router_weight_magnitudes).clamp_min(1e-12)
             # top_k_scores after normalization should be in a similar range as router_probs?
             # i.e., around 0.5. So we * 2 -> 1.0.
