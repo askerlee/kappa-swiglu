@@ -910,10 +910,10 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_bias_l2_loss_step": scalar_loss_to_item(losses['kappa_bias_l2_loss']),
-            "train/kappa_bias_shift_abs_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean'].mean()),
-            "train/kappa_bias_shift_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_top5p_mean'].mean()),
-            "train/kappa_bias_shift_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_bottom5p_mean'].mean()),
-            "train/kappa_bias_shift_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_bias_shift_abs_mean_normalized'].mean()),
+            "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
+            "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
+            "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
+            "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
             "train/kappa_bias_l2_loss_weight": args.kappa_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
@@ -963,12 +963,12 @@ while True:
                 log_data[f"inspect/kappa_bias_negative_mean_top_{i}"] = losses[f'kappa_bias_negative_mean_top_{i}']
             if f'kappa_bias_negative_mean_bottom_{i}' in losses:
                 log_data[f"inspect/kappa_bias_negative_mean_bottom_{i}"] = losses[f'kappa_bias_negative_mean_bottom_{i}']
-            if f'kappa_bias_shift_abs_mean_{i}' in losses:
-                log_data[f"inspect/kappa_bias_shift_abs_mean_{i}"] = losses[f'kappa_bias_shift_abs_mean_{i}']
-            if f'kappa_bias_shift_abs_top5p_mean_{i}' in losses:
-                log_data[f"inspect/kappa_bias_shift_abs_top5p_mean_{i}"] = losses[f'kappa_bias_shift_abs_top5p_mean_{i}']
-            if f'kappa_bias_shift_abs_bottom5p_mean_{i}' in losses:
-                log_data[f"inspect/kappa_bias_shift_abs_bottom5p_mean_{i}"] = losses[f'kappa_bias_shift_abs_bottom5p_mean_{i}']
+            if f'kappa_slope_scale_abs_mean_{i}' in losses:
+                log_data[f"inspect/kappa_slope_scale_abs_mean_{i}"] = losses[f'kappa_slope_scale_abs_mean_{i}']
+            if f'kappa_slope_scale_abs_top5p_mean_{i}' in losses:
+                log_data[f"inspect/kappa_slope_scale_abs_top5p_mean_{i}"] = losses[f'kappa_slope_scale_abs_top5p_mean_{i}']
+            if f'kappa_slope_scale_abs_bottom5p_mean_{i}' in losses:
+                log_data[f"inspect/kappa_slope_scale_abs_bottom5p_mean_{i}"] = losses[f'kappa_slope_scale_abs_bottom5p_mean_{i}']
             if f'mean_abs_gate_{i}' in losses:
                 log_data[f"inspect/mean_abs_gate_{i}"] = losses[f'mean_abs_gate_{i}']
             if f'active_frac_gate_{i}' in losses:

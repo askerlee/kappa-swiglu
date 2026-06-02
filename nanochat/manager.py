@@ -16,14 +16,14 @@ class MOEManager:
             "kappa_scale_l2_loss": [],
             "kappa_bias_ema_rms_reg_loss": [],
             "kappa_scale_ema_rms_reg_loss": [],
-            "kappa_bias_shift_abs_top5p_mean": [],
-            "kappa_bias_shift_abs_bottom5p_mean": [],
+            "kappa_slope_scale_abs_top5p_mean": [],
+            "kappa_slope_scale_abs_bottom5p_mean": [],
             "gate_grad_scale_mean": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
             "selected_scores": [],
-            "kappa_bias_shift_abs_mean": [],
-            "kappa_bias_shift_abs_mean_normalized": [],
+            "kappa_slope_scale_abs_mean": [],
+            "kappa_slope_scale_abs_mean_normalized": [],
             "implicit_gate_proj_bias_top5p_mean": [],
             "implicit_gate_proj_bias_bottom5p_mean": [],
             "routed_token_router_weight_cosine_mean": [],
@@ -37,16 +37,16 @@ class MOEManager:
         self._expert_utilities_size = 0
         self._selected_scores_buffer = None
         self._selected_scores_size = 0
-        self._kappa_bias_shift_abs_top5p_mean_buffer = None
-        self._kappa_bias_shift_abs_top5p_mean_size = 0
-        self._kappa_bias_shift_abs_bottom5p_mean_buffer = None
-        self._kappa_bias_shift_abs_bottom5p_mean_size = 0
+        self._kappa_slope_scale_abs_top5p_mean_buffer = None
+        self._kappa_slope_scale_abs_top5p_mean_size = 0
+        self._kappa_slope_scale_abs_bottom5p_mean_buffer = None
+        self._kappa_slope_scale_abs_bottom5p_mean_size = 0
         self._gate_grad_scale_mean_buffer = None
         self._gate_grad_scale_mean_size = 0
-        self._kappa_bias_shift_abs_mean_buffer = None
-        self._kappa_bias_shift_abs_mean_size = 0
-        self._kappa_bias_shift_abs_mean_normalized_buffer = None
-        self._kappa_bias_shift_abs_mean_normalized_size = 0
+        self._kappa_slope_scale_abs_mean_buffer = None
+        self._kappa_slope_scale_abs_mean_size = 0
+        self._kappa_slope_scale_abs_mean_normalized_buffer = None
+        self._kappa_slope_scale_abs_mean_normalized_size = 0
         self._implicit_gate_proj_bias_top5p_mean_buffer = None
         self._implicit_gate_proj_bias_top5p_mean_size = 0
         self._implicit_gate_proj_bias_bottom5p_mean_buffer = None
@@ -61,11 +61,11 @@ class MOEManager:
         set(["drop_rate_per_ks", 
              "expert_utilities",
              "selected_scores",
-             "kappa_bias_shift_abs_top5p_mean",
-             "kappa_bias_shift_abs_bottom5p_mean",
+             "kappa_slope_scale_abs_top5p_mean",
+             "kappa_slope_scale_abs_bottom5p_mean",
              "gate_grad_scale_mean",
-             "kappa_bias_shift_abs_mean",
-             "kappa_bias_shift_abs_mean_normalized",
+             "kappa_slope_scale_abs_mean",
+             "kappa_slope_scale_abs_mean_normalized",
              "implicit_gate_proj_bias_top5p_mean",
              "implicit_gate_proj_bias_bottom5p_mean",
              "routed_token_router_weight_cosine_mean",
@@ -82,20 +82,20 @@ class MOEManager:
         if name == "selected_scores":
             self._selected_scores_size = 0
             return
-        if name == "kappa_bias_shift_abs_top5p_mean":
-            self._kappa_bias_shift_abs_top5p_mean_size = 0
+        if name == "kappa_slope_scale_abs_top5p_mean":
+            self._kappa_slope_scale_abs_top5p_mean_size = 0
             return
-        if name == "kappa_bias_shift_abs_bottom5p_mean":
-            self._kappa_bias_shift_abs_bottom5p_mean_size = 0
+        if name == "kappa_slope_scale_abs_bottom5p_mean":
+            self._kappa_slope_scale_abs_bottom5p_mean_size = 0
             return
         if name == "gate_grad_scale_mean":
             self._gate_grad_scale_mean_size = 0
             return
-        if name == "kappa_bias_shift_abs_mean":
-            self._kappa_bias_shift_abs_mean_size = 0
+        if name == "kappa_slope_scale_abs_mean":
+            self._kappa_slope_scale_abs_mean_size = 0
             return
-        if name == "kappa_bias_shift_abs_mean_normalized":
-            self._kappa_bias_shift_abs_mean_normalized_size = 0
+        if name == "kappa_slope_scale_abs_mean_normalized":
+            self._kappa_slope_scale_abs_mean_normalized_size = 0
             return
         if name == "implicit_gate_proj_bias_top5p_mean":
             self._implicit_gate_proj_bias_top5p_mean_size = 0
@@ -156,33 +156,33 @@ class MOEManager:
                 self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
                 self._selected_scores_size = new_size
             return
-        if name == "kappa_bias_shift_abs_top5p_mean":
+        if name == "kappa_slope_scale_abs_top5p_mean":
             with torch.inference_mode(False):
-                if self._kappa_bias_shift_abs_top5p_mean_buffer is None:
-                    self._kappa_bias_shift_abs_top5p_mean_buffer = torch.empty(
+                if self._kappa_slope_scale_abs_top5p_mean_buffer is None:
+                    self._kappa_slope_scale_abs_top5p_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._kappa_bias_shift_abs_top5p_mean_size + 1
-                self._kappa_bias_shift_abs_top5p_mean_buffer[
-                    self._kappa_bias_shift_abs_top5p_mean_size:new_size
+                new_size = self._kappa_slope_scale_abs_top5p_mean_size + 1
+                self._kappa_slope_scale_abs_top5p_mean_buffer[
+                    self._kappa_slope_scale_abs_top5p_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._kappa_bias_shift_abs_top5p_mean_size = new_size
+                self._kappa_slope_scale_abs_top5p_mean_size = new_size
             return
-        if name == "kappa_bias_shift_abs_bottom5p_mean":
+        if name == "kappa_slope_scale_abs_bottom5p_mean":
             with torch.inference_mode(False):
-                if self._kappa_bias_shift_abs_bottom5p_mean_buffer is None:
-                    self._kappa_bias_shift_abs_bottom5p_mean_buffer = torch.empty(
+                if self._kappa_slope_scale_abs_bottom5p_mean_buffer is None:
+                    self._kappa_slope_scale_abs_bottom5p_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._kappa_bias_shift_abs_bottom5p_mean_size + 1
-                self._kappa_bias_shift_abs_bottom5p_mean_buffer[
-                    self._kappa_bias_shift_abs_bottom5p_mean_size:new_size
+                new_size = self._kappa_slope_scale_abs_bottom5p_mean_size + 1
+                self._kappa_slope_scale_abs_bottom5p_mean_buffer[
+                    self._kappa_slope_scale_abs_bottom5p_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._kappa_bias_shift_abs_bottom5p_mean_size = new_size
+                self._kappa_slope_scale_abs_bottom5p_mean_size = new_size
             return
         if name == "gate_grad_scale_mean":
             with torch.inference_mode(False):
@@ -196,33 +196,33 @@ class MOEManager:
                 self._gate_grad_scale_mean_buffer[self._gate_grad_scale_mean_size:new_size].copy_(value)
                 self._gate_grad_scale_mean_size = new_size
             return
-        if name == "kappa_bias_shift_abs_mean":
+        if name == "kappa_slope_scale_abs_mean":
             with torch.inference_mode(False):
-                if self._kappa_bias_shift_abs_mean_buffer is None:
-                    self._kappa_bias_shift_abs_mean_buffer = torch.empty(
+                if self._kappa_slope_scale_abs_mean_buffer is None:
+                    self._kappa_slope_scale_abs_mean_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._kappa_bias_shift_abs_mean_size + 1
-                self._kappa_bias_shift_abs_mean_buffer[
-                    self._kappa_bias_shift_abs_mean_size:new_size
+                new_size = self._kappa_slope_scale_abs_mean_size + 1
+                self._kappa_slope_scale_abs_mean_buffer[
+                    self._kappa_slope_scale_abs_mean_size:new_size
                 ].copy_(value.reshape(1))
-                self._kappa_bias_shift_abs_mean_size = new_size
+                self._kappa_slope_scale_abs_mean_size = new_size
             return
-        if name == "kappa_bias_shift_abs_mean_normalized":
+        if name == "kappa_slope_scale_abs_mean_normalized":
             with torch.inference_mode(False):
-                if self._kappa_bias_shift_abs_mean_normalized_buffer is None:
-                    self._kappa_bias_shift_abs_mean_normalized_buffer = torch.empty(
+                if self._kappa_slope_scale_abs_mean_normalized_buffer is None:
+                    self._kappa_slope_scale_abs_mean_normalized_buffer = torch.empty(
                         (self._tensor_var_capacity,),
                         device=value.device,
                         dtype=value.dtype,
                     )
-                new_size = self._kappa_bias_shift_abs_mean_normalized_size + 1
-                self._kappa_bias_shift_abs_mean_normalized_buffer[
-                    self._kappa_bias_shift_abs_mean_normalized_size:new_size
+                new_size = self._kappa_slope_scale_abs_mean_normalized_size + 1
+                self._kappa_slope_scale_abs_mean_normalized_buffer[
+                    self._kappa_slope_scale_abs_mean_normalized_size:new_size
                 ].copy_(value.reshape(1))
-                self._kappa_bias_shift_abs_mean_normalized_size = new_size
+                self._kappa_slope_scale_abs_mean_normalized_size = new_size
             return
         if name == "implicit_gate_proj_bias_top5p_mean":
             with torch.inference_mode(False):
@@ -317,24 +317,24 @@ class MOEManager:
                 return None
             values = self._selected_scores_buffer[:self._selected_scores_size]
             return values
-        elif name == "kappa_bias_shift_abs_top5p_mean":
+        elif name == "kappa_slope_scale_abs_top5p_mean":
             if (
-                self._kappa_bias_shift_abs_top5p_mean_buffer is None
-                or self._kappa_bias_shift_abs_top5p_mean_size == 0
+                self._kappa_slope_scale_abs_top5p_mean_buffer is None
+                or self._kappa_slope_scale_abs_top5p_mean_size == 0
             ):
                 return None
-            values = self._kappa_bias_shift_abs_top5p_mean_buffer[
-                :self._kappa_bias_shift_abs_top5p_mean_size
+            values = self._kappa_slope_scale_abs_top5p_mean_buffer[
+                :self._kappa_slope_scale_abs_top5p_mean_size
             ]
             return values
-        elif name == "kappa_bias_shift_abs_bottom5p_mean":
+        elif name == "kappa_slope_scale_abs_bottom5p_mean":
             if (
-                self._kappa_bias_shift_abs_bottom5p_mean_buffer is None
-                or self._kappa_bias_shift_abs_bottom5p_mean_size == 0
+                self._kappa_slope_scale_abs_bottom5p_mean_buffer is None
+                or self._kappa_slope_scale_abs_bottom5p_mean_size == 0
             ):
                 return None
-            values = self._kappa_bias_shift_abs_bottom5p_mean_buffer[
-                :self._kappa_bias_shift_abs_bottom5p_mean_size
+            values = self._kappa_slope_scale_abs_bottom5p_mean_buffer[
+                :self._kappa_slope_scale_abs_bottom5p_mean_size
             ]
             return values
         elif name == "gate_grad_scale_mean":
@@ -342,19 +342,19 @@ class MOEManager:
                 return None
             values = self._gate_grad_scale_mean_buffer[:self._gate_grad_scale_mean_size]
             return values
-        elif name == "kappa_bias_shift_abs_mean":
-            if self._kappa_bias_shift_abs_mean_buffer is None or self._kappa_bias_shift_abs_mean_size == 0:
+        elif name == "kappa_slope_scale_abs_mean":
+            if self._kappa_slope_scale_abs_mean_buffer is None or self._kappa_slope_scale_abs_mean_size == 0:
                 return None
-            values = self._kappa_bias_shift_abs_mean_buffer[:self._kappa_bias_shift_abs_mean_size]
+            values = self._kappa_slope_scale_abs_mean_buffer[:self._kappa_slope_scale_abs_mean_size]
             return values
-        elif name == "kappa_bias_shift_abs_mean_normalized":
+        elif name == "kappa_slope_scale_abs_mean_normalized":
             if (
-                self._kappa_bias_shift_abs_mean_normalized_buffer is None
-                or self._kappa_bias_shift_abs_mean_normalized_size == 0
+                self._kappa_slope_scale_abs_mean_normalized_buffer is None
+                or self._kappa_slope_scale_abs_mean_normalized_size == 0
             ):
                 return None
-            values = self._kappa_bias_shift_abs_mean_normalized_buffer[
-                :self._kappa_bias_shift_abs_mean_normalized_size
+            values = self._kappa_slope_scale_abs_mean_normalized_buffer[
+                :self._kappa_slope_scale_abs_mean_normalized_size
             ]
             return values
         elif name == "implicit_gate_proj_bias_top5p_mean":

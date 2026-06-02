@@ -1007,9 +1007,9 @@ class Qwen3MLP(nn.Module):
         flat_slope_scales = slope_scales.reshape(1, -1)
         flat_mask = torch.ones_like(flat_slope_scales, dtype=torch.bool)
         slope_scale_mean = slope_scales.mean()
-        MANAGER.add("kappa_bias_shift_abs_mean", slope_scale_mean)
+        MANAGER.add("kappa_slope_scale_abs_mean", slope_scale_mean)
         MANAGER.add(
-            "kappa_bias_shift_abs_top5p_mean",
+            "kappa_slope_scale_abs_top5p_mean",
             _mean_extreme_percentile_per_row(
                 flat_slope_scales,
                 flat_mask,
@@ -1018,7 +1018,7 @@ class Qwen3MLP(nn.Module):
             ).squeeze(0),
         )
         MANAGER.add(
-            "kappa_bias_shift_abs_bottom5p_mean",
+            "kappa_slope_scale_abs_bottom5p_mean",
             _mean_extreme_percentile_per_row(
                 flat_slope_scales,
                 flat_mask,
@@ -1026,7 +1026,7 @@ class Qwen3MLP(nn.Module):
                 largest=False,
             ).squeeze(0),
         )
-        MANAGER.add("kappa_bias_shift_abs_mean_normalized", slope_scale_mean)
+        MANAGER.add("kappa_slope_scale_abs_mean_normalized", slope_scale_mean)
 
     def forward(self, x):
         gate_out_raw = self.gate_proj(x)
@@ -1524,12 +1524,12 @@ class Qwen3MLPExperts(nn.Module):
         slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
-        MANAGER.add("kappa_bias_shift_abs_mean", slope_scale_mean.detach())
+        MANAGER.add("kappa_slope_scale_abs_mean", slope_scale_mean.detach())
         # slope_scales: [n_exp, capacity, intermediate_size]
         slope_scales_flat = slope_scales.reshape(slope_scales.size(0), -1)
         active_slope_mask_flat = active_mask.unsqueeze(-1).expand_as(slope_scales).reshape(slope_scales.size(0), -1)
         MANAGER.add(
-            "kappa_bias_shift_abs_top5p_mean",
+            "kappa_slope_scale_abs_top5p_mean",
             _mean_extreme_percentile_per_row(
                 slope_scales_flat,
                 active_slope_mask_flat,
@@ -1538,7 +1538,7 @@ class Qwen3MLPExperts(nn.Module):
             ).detach(),
         )
         MANAGER.add(
-            "kappa_bias_shift_abs_bottom5p_mean",
+            "kappa_slope_scale_abs_bottom5p_mean",
             _mean_extreme_percentile_per_row(
                 slope_scales_flat,
                 active_slope_mask_flat,
@@ -1551,7 +1551,7 @@ class Qwen3MLPExperts(nn.Module):
         normalized_slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts_sqrt
         ).sum() / total_active_tokens_sqrt
-        MANAGER.add("kappa_bias_shift_abs_mean_normalized", normalized_slope_scale_mean.detach())
+        MANAGER.add("kappa_slope_scale_abs_mean_normalized", normalized_slope_scale_mean.detach())
 
     @torch._dynamo.disable
     def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
@@ -1763,11 +1763,10 @@ class MOELayer(nn.Module):
 
     def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
         if self.kappa_input == 'top_logits':
-            # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
-            # Similar as the default "constant" setting of 1.
-            top_logits = top_k_scores * 0.3
             if not self.normalize_top_logits:
-                return top_logits
+                # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
+                # Similar as the default "constant" setting of 1.
+                return 0.3 * top_k_scores
             if x_flat is None or top_k_indices is None:
                 raise RuntimeError(
                     "x_flat and top_k_indices are required when normalize_top_logits is enabled"
@@ -1775,7 +1774,9 @@ class MOELayer(nn.Module):
             token_magnitudes = x_flat.float().norm(dim=-1, keepdim=True)
             router_weight_magnitudes = self.router.w_g.weight[top_k_indices].float().norm(dim=-1)
             normalizer = (token_magnitudes * router_weight_magnitudes).clamp_min(1e-12)
-            return top_logits / normalizer.to(dtype=top_logits.dtype)
+            # top_k_scores after normalization should be in a similar range as router_probs?
+            # i.e., around 0.5. So we * 2 -> 1.0.
+            return 2 * top_k_scores / normalizer.to(dtype=top_k_scores.dtype)
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
             return router_probs * 2
@@ -2486,10 +2487,10 @@ class GPT(nn.Module):
                    'kappa_bias_ema_rms_reg_loss': 0,
                    'kappa_scale_ema_rms_reg_loss': 0,
                    'gate_grad_scale_mean': None,
-                   'kappa_bias_shift_abs_top5p_mean': 0,
-                   'kappa_bias_shift_abs_bottom5p_mean': 0,
-                   'kappa_bias_shift_abs_mean': 0,
-                   'kappa_bias_shift_abs_mean_normalized': 0,
+                   'kappa_slope_scale_abs_top5p_mean': 0,
+                   'kappa_slope_scale_abs_bottom5p_mean': 0,
+                   'kappa_slope_scale_abs_mean': 0,
+                   'kappa_slope_scale_abs_mean_normalized': 0,
                    'implicit_gate_proj_bias_top5p_mean': 0,
                    'implicit_gate_proj_bias_bottom5p_mean': 0,
                    'routed_token_router_weight_cosine_mean': 0,
@@ -2518,34 +2519,34 @@ class GPT(nn.Module):
             else None
         )
         MANAGER.reset("gate_grad_scale_mean")
-        kappa_bias_shift_abs_top5p_mean = MANAGER.aggregate("kappa_bias_shift_abs_top5p_mean")
-        losses['kappa_bias_shift_abs_top5p_mean'] = (
-            kappa_bias_shift_abs_top5p_mean.detach()
-            if kappa_bias_shift_abs_top5p_mean is not None
+        kappa_slope_scale_abs_top5p_mean = MANAGER.aggregate("kappa_slope_scale_abs_top5p_mean")
+        losses['kappa_slope_scale_abs_top5p_mean'] = (
+            kappa_slope_scale_abs_top5p_mean.detach()
+            if kappa_slope_scale_abs_top5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("kappa_bias_shift_abs_top5p_mean")
-        kappa_bias_shift_abs_bottom5p_mean = MANAGER.aggregate("kappa_bias_shift_abs_bottom5p_mean")
-        losses['kappa_bias_shift_abs_bottom5p_mean'] = (
-            kappa_bias_shift_abs_bottom5p_mean.detach()
-            if kappa_bias_shift_abs_bottom5p_mean is not None
+        MANAGER.reset("kappa_slope_scale_abs_top5p_mean")
+        kappa_slope_scale_abs_bottom5p_mean = MANAGER.aggregate("kappa_slope_scale_abs_bottom5p_mean")
+        losses['kappa_slope_scale_abs_bottom5p_mean'] = (
+            kappa_slope_scale_abs_bottom5p_mean.detach()
+            if kappa_slope_scale_abs_bottom5p_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("kappa_bias_shift_abs_bottom5p_mean")
-        kappa_bias_shift_abs_mean = MANAGER.aggregate("kappa_bias_shift_abs_mean")
-        losses['kappa_bias_shift_abs_mean'] = (
-            kappa_bias_shift_abs_mean.detach()
-            if kappa_bias_shift_abs_mean is not None
+        MANAGER.reset("kappa_slope_scale_abs_bottom5p_mean")
+        kappa_slope_scale_abs_mean = MANAGER.aggregate("kappa_slope_scale_abs_mean")
+        losses['kappa_slope_scale_abs_mean'] = (
+            kappa_slope_scale_abs_mean.detach()
+            if kappa_slope_scale_abs_mean is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("kappa_bias_shift_abs_mean")
-        kappa_bias_shift_abs_mean_normalized = MANAGER.aggregate("kappa_bias_shift_abs_mean_normalized")
-        losses['kappa_bias_shift_abs_mean_normalized'] = (
-            kappa_bias_shift_abs_mean_normalized.detach()
-            if kappa_bias_shift_abs_mean_normalized is not None
+        MANAGER.reset("kappa_slope_scale_abs_mean")
+        kappa_slope_scale_abs_mean_normalized = MANAGER.aggregate("kappa_slope_scale_abs_mean_normalized")
+        losses['kappa_slope_scale_abs_mean_normalized'] = (
+            kappa_slope_scale_abs_mean_normalized.detach()
+            if kappa_slope_scale_abs_mean_normalized is not None
             else torch.zeros((), device=x.device)
         )
-        MANAGER.reset("kappa_bias_shift_abs_mean_normalized")
+        MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
         implicit_gate_proj_bias_top5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_top5p_mean")
         losses['implicit_gate_proj_bias_top5p_mean'] = (
             implicit_gate_proj_bias_top5p_mean.detach()
@@ -2598,26 +2599,26 @@ class GPT(nn.Module):
         implicit_gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
         }
-        kappa_bias_shift_abs_top5p_mean = losses['kappa_bias_shift_abs_top5p_mean']
-        kappa_bias_shift_abs_bottom5p_mean = losses['kappa_bias_shift_abs_bottom5p_mean']
-        kappa_bias_shift_abs_top5p_count = (
-            kappa_bias_shift_abs_top5p_mean.shape[0]
-            if kappa_bias_shift_abs_top5p_mean.ndim > 0
+        kappa_slope_scale_abs_top5p_mean = losses['kappa_slope_scale_abs_top5p_mean']
+        kappa_slope_scale_abs_bottom5p_mean = losses['kappa_slope_scale_abs_bottom5p_mean']
+        kappa_slope_scale_abs_top5p_count = (
+            kappa_slope_scale_abs_top5p_mean.shape[0]
+            if kappa_slope_scale_abs_top5p_mean.ndim > 0
             else 0
         )
-        kappa_bias_shift_abs_bottom5p_count = (
-            kappa_bias_shift_abs_bottom5p_mean.shape[0]
-            if kappa_bias_shift_abs_bottom5p_mean.ndim > 0
+        kappa_slope_scale_abs_bottom5p_count = (
+            kappa_slope_scale_abs_bottom5p_mean.shape[0]
+            if kappa_slope_scale_abs_bottom5p_mean.ndim > 0
             else 0
         )
-        kappa_bias_shift_abs_mean_count = (
-            kappa_bias_shift_abs_mean.shape[0]
-            if kappa_bias_shift_abs_mean is not None and kappa_bias_shift_abs_mean.ndim > 0
+        kappa_slope_scale_abs_mean_count = (
+            kappa_slope_scale_abs_mean.shape[0]
+            if kappa_slope_scale_abs_mean is not None and kappa_slope_scale_abs_mean.ndim > 0
             else 0
         )
-        kappa_bias_shift_abs_mean_normalized_count = (
-            kappa_bias_shift_abs_mean_normalized.shape[0]
-            if kappa_bias_shift_abs_mean_normalized is not None and kappa_bias_shift_abs_mean_normalized.ndim > 0
+        kappa_slope_scale_abs_mean_normalized_count = (
+            kappa_slope_scale_abs_mean_normalized.shape[0]
+            if kappa_slope_scale_abs_mean_normalized is not None and kappa_slope_scale_abs_mean_normalized.ndim > 0
             else 0
         )
         implicit_gate_proj_bias_top5p_count = (
@@ -2646,21 +2647,21 @@ class GPT(nn.Module):
             else 0
         )
         for layer_idx, kappa_bias_stats_idx in kappa_bias_layer_to_stats_idx.items():
-            if kappa_bias_stats_idx < kappa_bias_shift_abs_mean_count:
-                losses[f'kappa_bias_shift_abs_mean_{layer_idx}'] = (
-                    kappa_bias_shift_abs_mean[kappa_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_slope_scale_abs_mean_count:
+                losses[f'kappa_slope_scale_abs_mean_{layer_idx}'] = (
+                    kappa_slope_scale_abs_mean[kappa_bias_stats_idx].item()
                 )
-            if kappa_bias_stats_idx < kappa_bias_shift_abs_mean_normalized_count:
-                losses[f'kappa_bias_shift_abs_mean_normalized_{layer_idx}'] = (
-                    kappa_bias_shift_abs_mean_normalized[kappa_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_slope_scale_abs_mean_normalized_count:
+                losses[f'kappa_slope_scale_abs_mean_normalized_{layer_idx}'] = (
+                    kappa_slope_scale_abs_mean_normalized[kappa_bias_stats_idx].item()
                 )
-            if kappa_bias_stats_idx < kappa_bias_shift_abs_top5p_count:
-                losses[f'kappa_bias_shift_abs_top5p_mean_{layer_idx}'] = (
-                    kappa_bias_shift_abs_top5p_mean[kappa_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_slope_scale_abs_top5p_count:
+                losses[f'kappa_slope_scale_abs_top5p_mean_{layer_idx}'] = (
+                    kappa_slope_scale_abs_top5p_mean[kappa_bias_stats_idx].item()
                 )
-            if kappa_bias_stats_idx < kappa_bias_shift_abs_bottom5p_count:
-                losses[f'kappa_bias_shift_abs_bottom5p_mean_{layer_idx}'] = (
-                    kappa_bias_shift_abs_bottom5p_mean[kappa_bias_stats_idx].item()
+            if kappa_bias_stats_idx < kappa_slope_scale_abs_bottom5p_count:
+                losses[f'kappa_slope_scale_abs_bottom5p_mean_{layer_idx}'] = (
+                    kappa_slope_scale_abs_bottom5p_mean[kappa_bias_stats_idx].item()
                 )
         for layer_idx, implicit_stats_idx in implicit_gate_proj_bias_layer_to_stats_idx.items():
             if implicit_stats_idx < implicit_gate_proj_bias_top5p_count:
