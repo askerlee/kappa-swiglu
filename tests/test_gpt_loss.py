@@ -74,6 +74,29 @@ def test_chunked_cross_entropy_matches_full_mean_loss_gradients():
     assert torch.allclose(chunked_lm_head.weight.grad, full_lm_head.weight.grad, atol=1e-6, rtol=1e-5)
 
 
+def test_chunked_cross_entropy_supports_bf16_hidden_with_fp32_lm_head():
+    torch.manual_seed(3)
+    config = GPTConfig(vocab_size=23)
+    lm_head = nn.Linear(8, 24, bias=False)
+    hidden_states = torch.randn(2, 5, 8, dtype=torch.bfloat16, requires_grad=True)
+    targets = torch.randint(0, config.vocab_size, (2, 5))
+
+    loss = _chunked_cross_entropy(
+        hidden_states,
+        targets,
+        lm_head,
+        config.vocab_size,
+        softcap=15.0,
+        loss_reduction='mean',
+        chunk_tokens=3,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert hidden_states.grad is not None
+    assert lm_head.weight.grad is not None
+
+
 def test_chunked_cross_entropy_matches_full_none_loss():
     torch.manual_seed(1)
     config = GPTConfig(vocab_size=29)

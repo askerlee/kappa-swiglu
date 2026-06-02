@@ -197,7 +197,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             if not bool(chunk_valid_mask.any().item()):
                 continue
 
-            logits = F.linear(chunk_hidden, weight_vocab)
+            logits = F.linear(chunk_hidden, weight_vocab.to(dtype=chunk_hidden.dtype))
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits, softcap)
             logsumexp = torch.logsumexp(logits, dim=-1)
             safe_targets = chunk_targets.clamp_min(0)
@@ -254,7 +254,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             if not bool(chunk_valid_mask.any().item()):
                 continue
 
-            logits_raw = F.linear(chunk_hidden, weight_vocab)
+            logits_raw = F.linear(chunk_hidden, weight_vocab.to(dtype=chunk_hidden.dtype))
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits_raw, softcap)
             grad_logits = torch.softmax(logits, dim=-1)
             safe_targets = chunk_targets.clamp_min(0)
