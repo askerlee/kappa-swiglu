@@ -36,6 +36,44 @@ def test_chunked_cross_entropy_matches_full_mean_loss():
     assert torch.allclose(chunked_loss, full_loss)
 
 
+def test_chunked_cross_entropy_matches_full_mean_loss_gradients():
+    torch.manual_seed(2)
+    config = GPTConfig(vocab_size=31)
+    full_lm_head = nn.Linear(10, 32, bias=False)
+    chunked_lm_head = nn.Linear(10, 32, bias=False)
+    chunked_lm_head.load_state_dict(full_lm_head.state_dict())
+    full_hidden = torch.randn(4, 7, 10, requires_grad=True)
+    chunked_hidden = full_hidden.detach().clone().requires_grad_(True)
+    targets = torch.randint(0, config.vocab_size, (4, 7))
+    targets[0, 2] = -1
+    softcap = 15.0
+
+    full_loss = _full_softcapped_cross_entropy(
+        full_hidden,
+        targets,
+        full_lm_head,
+        config.vocab_size,
+        softcap,
+        'mean',
+    )
+    chunked_loss = _chunked_cross_entropy(
+        chunked_hidden,
+        targets,
+        chunked_lm_head,
+        config.vocab_size,
+        softcap,
+        'mean',
+        chunk_tokens=6,
+    )
+
+    full_loss.backward()
+    chunked_loss.backward()
+
+    assert torch.allclose(chunked_loss, full_loss)
+    assert torch.allclose(chunked_hidden.grad, full_hidden.grad, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(chunked_lm_head.weight.grad, full_lm_head.weight.grad, atol=1e-6, rtol=1e-5)
+
+
 def test_chunked_cross_entropy_matches_full_none_loss():
     torch.manual_seed(1)
     config = GPTConfig(vocab_size=29)
