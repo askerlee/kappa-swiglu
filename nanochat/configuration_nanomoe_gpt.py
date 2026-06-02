@@ -62,6 +62,7 @@ class GPTConfig:
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
         window_pattern: str = "SSSL",
         loss_chunk_tokens: int | None = None,
+        loss_recompute_backward: bool = False,
         debug: bool = False,
         **kwargs,
     ):        
@@ -169,5 +170,6 @@ class GPTConfig:
         self.bilinear_mlp_moe = bool(bilinear_mlp_moe)
         self.window_pattern = window_pattern
         self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
+        self.loss_recompute_backward = bool(loss_recompute_backward)
         self.debug = debug
         

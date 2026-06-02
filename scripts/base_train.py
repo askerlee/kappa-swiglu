@@ -226,6 +226,8 @@ parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--normalize-top-logits", dest="normalize_top_logits", type=str2bool, nargs='?', const=True, default=False,
                     help="when --kappa-input=top_logits, divide selected router logits by token and selected-router weight magnitudes before feeding kappa_bias")
+parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=False,
+                    help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
 parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
@@ -587,6 +589,7 @@ def build_model_meta(depth):
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
         loss_chunk_tokens=resolved_loss_chunk_tokens,
+        loss_recompute_backward=args.loss_recompute_backward,
         debug=args.debug
     )
     with torch.device("meta"):

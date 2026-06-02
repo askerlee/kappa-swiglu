@@ -177,6 +177,13 @@ def test_normalize_top_logits_cli_is_wired_into_config():
     assert 'normalize_top_logits=args.normalize_top_logits' in source
 
 
+def test_loss_recompute_backward_cli_is_wired_into_config():
+    source = BASE_TRAIN.read_text()
+
+    assert 'parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs=' in source
+    assert 'loss_recompute_backward=args.loss_recompute_backward' in source
+
+
 def test_kappa_slope_max_scale_anneal_cli_is_wired_into_step_updates():
     source = BASE_TRAIN.read_text()
 

@@ -181,6 +181,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
         chunk_tokens = int(chunk_tokens)
         targets_flat = targets_flat.reshape(-1)
         weight_vocab = weight[:vocab_size]
+        weight_vocab_for_mm = weight_vocab.to(dtype=hidden_flat.dtype)
         valid_mask = targets_flat.ne(-1)
         valid_tokens = valid_mask.sum()
 
@@ -197,7 +198,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             if not bool(chunk_valid_mask.any().item()):
                 continue
 
-            logits = F.linear(chunk_hidden, weight_vocab.to(dtype=chunk_hidden.dtype))
+            logits = F.linear(chunk_hidden, weight_vocab_for_mm)
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits, softcap)
             logsumexp = torch.logsumexp(logits, dim=-1)
             safe_targets = chunk_targets.clamp_min(0)
@@ -232,6 +233,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
         loss_reduction = ctx.loss_reduction
         chunk_tokens = ctx.chunk_tokens
         weight_vocab = weight[:vocab_size]
+        weight_vocab_for_mm = weight_vocab.to(dtype=hidden_flat.dtype)
 
         grad_hidden = torch.zeros_like(hidden_flat) if ctx.needs_input_grad[0] else None
         grad_weight = torch.zeros_like(weight) if ctx.needs_input_grad[2] else None
@@ -254,7 +256,7 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             if not bool(chunk_valid_mask.any().item()):
                 continue
 
-            logits_raw = F.linear(chunk_hidden, weight_vocab.to(dtype=chunk_hidden.dtype))
+            logits_raw = F.linear(chunk_hidden, weight_vocab_for_mm)
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits_raw, softcap)
             grad_logits = torch.softmax(logits, dim=-1)
             safe_targets = chunk_targets.clamp_min(0)
@@ -276,8 +278,8 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
 
             if grad_hidden is not None:
                 grad_hidden[chunk_start:chunk_end] = torch.mm(
-                    grad_logits.to(dtype=weight_vocab.dtype),
-                    weight_vocab,
+                    grad_logits.to(dtype=weight_vocab_for_mm.dtype),
+                    weight_vocab_for_mm,
                 ).to(dtype=grad_hidden.dtype)
             if grad_weight is not None:
                 grad_weight[:vocab_size].add_(torch.mm(
@@ -312,23 +314,73 @@ def _chunked_cross_entropy(
     softcap: float,
     loss_reduction: str,
     chunk_tokens: int,
+    recompute_backward: bool = False,
 ) -> torch.Tensor:
     """Compute next-token loss without materializing full training logits at once."""
     hidden_flat = hidden_states.reshape(-1, hidden_states.size(-1))
     targets_flat = targets.reshape(-1)
+    valid_tokens = targets_flat.ne(-1).sum()
 
     if loss_reduction not in {'mean', 'sum', 'none'}:
         raise ValueError(f"Unsupported loss_reduction: {loss_reduction}")
 
-    return ChunkedLinearCrossEntropy.apply(
-        hidden_flat,
-        targets_flat,
-        lm_head.weight,
-        vocab_size,
-        softcap,
-        loss_reduction,
-        chunk_tokens,
-    )
+    if recompute_backward:
+        return ChunkedLinearCrossEntropy.apply(
+            hidden_flat,
+            targets_flat,
+            lm_head.weight,
+            vocab_size,
+            softcap,
+            loss_reduction,
+            chunk_tokens,
+        )
+
+    if chunk_tokens >= hidden_flat.size(0):
+        logits = lm_head(hidden_flat)
+        logits = logits[:, :vocab_size]
+        logits = SoftcapInPlace.apply(logits, softcap)
+        if loss_reduction == 'mean':
+            loss_sum = F.cross_entropy(logits, targets_flat, ignore_index=-1, reduction='sum')
+            mean_loss = loss_sum / valid_tokens.clamp_min(1)
+            zero_loss = hidden_flat.sum(dtype=loss_sum.dtype) * 0.0
+            return torch.where(valid_tokens > 0, mean_loss, zero_loss)
+        return F.cross_entropy(logits, targets_flat, ignore_index=-1, reduction=loss_reduction)
+
+    if loss_reduction == 'none':
+        chunk_losses = []
+        for chunk_start in range(0, hidden_flat.size(0), chunk_tokens):
+            chunk_end = min(chunk_start + chunk_tokens, hidden_flat.size(0))
+            chunk_logits = lm_head(hidden_flat[chunk_start:chunk_end])
+            chunk_logits = chunk_logits[:, :vocab_size]
+            chunk_logits = SoftcapInPlace.apply(chunk_logits, softcap)
+            chunk_losses.append(F.cross_entropy(
+                chunk_logits,
+                targets_flat[chunk_start:chunk_end],
+                ignore_index=-1,
+                reduction='none',
+            ))
+        return torch.cat(chunk_losses, dim=0)
+
+    loss_sum = None
+    for chunk_start in range(0, hidden_flat.size(0), chunk_tokens):
+        chunk_end = min(chunk_start + chunk_tokens, hidden_flat.size(0))
+        chunk_logits = lm_head(hidden_flat[chunk_start:chunk_end])
+        chunk_logits = chunk_logits[:, :vocab_size]
+        chunk_logits = SoftcapInPlace.apply(chunk_logits, softcap)
+        chunk_loss = F.cross_entropy(
+            chunk_logits,
+            targets_flat[chunk_start:chunk_end],
+            ignore_index=-1,
+            reduction='sum',
+        )
+        loss_sum = chunk_loss if loss_sum is None else loss_sum + chunk_loss
+
+    if loss_reduction == 'sum':
+        return loss_sum
+
+    mean_loss = loss_sum / valid_tokens.clamp_min(1)
+    zero_loss = hidden_flat.sum(dtype=loss_sum.dtype) * 0.0
+    return torch.where(valid_tokens > 0, mean_loss, zero_loss)
 
 class ReuseMmWithScaledInputGrad(torch.autograd.Function):
     @staticmethod
@@ -2798,6 +2850,7 @@ class GPT(nn.Module):
                 softcap,
                 loss_reduction,
                 _get_loss_chunk_tokens(self.config, x.size(0) * x.size(1)),
+                recompute_backward=bool(getattr(self.config, 'loss_recompute_backward', False)),
             )
             losses['ntp_loss'] = loss.detach()
 
