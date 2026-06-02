@@ -443,8 +443,25 @@ def test_kappa_input_defaults_and_overrides_from_config():
 
     assert default_config.kappa_input == "router_probs"
     assert override_config.kappa_input == "router_probs"
-    assert default_config.normalize_top_logits is False
-    assert override_config.normalize_top_logits is False
+    assert default_config.top_logit_norm_exponent == 0.0
+    assert override_config.top_logit_norm_exponent == 0.0
+
+
+def test_top_logit_norm_exponent_defaults_and_overrides():
+    default_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        debug=False,
+    )
+    explicit_config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        top_logit_norm_exponent=0.5,
+        debug=False,
+    )
+
+    assert default_config.top_logit_norm_exponent == 0.0
+    assert explicit_config.top_logit_norm_exponent == 0.5
 
 
 def test_moe_select_gate_confidence_can_normalize_top_logits():
@@ -453,7 +470,7 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
         n_embd=4,
         moe_top_k=2,
         kappa_input="top_logits",
-        normalize_top_logits=True,
+        top_logit_norm_exponent=0.5,
         debug=False,
     )
     moe_layer = MOELayer(config, layer_idx=0)
@@ -489,9 +506,8 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
         top_k_indices=top_k_indices,
     )
 
-    token_magnitudes = x_flat.norm(dim=-1, keepdim=True)
     router_weight_magnitudes = moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1)
-    expected = (top_k_scores * 2.0) / (token_magnitudes * router_weight_magnitudes)
+    expected = (top_k_scores * 2.0) / router_weight_magnitudes.sqrt()
 
     torch.testing.assert_close(actual, expected)
 

@@ -1804,7 +1804,7 @@ class MOELayer(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
-        self.normalize_top_logits = bool(getattr(config, 'normalize_top_logits', False))
+        self.top_logit_norm_exponent = float(getattr(config, 'top_logit_norm_exponent', 0.0))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
         self._expert_inputs_cache_device = None
@@ -1899,21 +1899,17 @@ class MOELayer(nn.Module):
 
     def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
         if self.kappa_input == 'top_logits':
-            if not self.normalize_top_logits:
+            if self.top_logit_norm_exponent <= 0.0:
+                # No normalization.
                 # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
                 # Similar as the default "constant" setting of 1.
                 return 0.3 * top_k_scores
-            if x_flat is None or top_k_indices is None:
+            if top_k_indices is None:
                 raise RuntimeError(
-                    "x_flat and top_k_indices are required when normalize_top_logits is enabled"
+                    "top_k_indices are required when top_logit_norm_exponent is enabled"
                 )
-            token_magnitudes = torch.linalg.vector_norm(
-                x_flat,
-                ord=2,
-                dim=-1,
-                keepdim=True,
-                dtype=torch.float32,
-            )
+            # For exp32-d10, router_weight_magnitudes_all has (min, max, std)
+            # of (0.24, 0.83, 0.21).
             router_weight_magnitudes_all = torch.linalg.vector_norm(
                 self.router.w_g.weight,
                 ord=2,
@@ -1921,10 +1917,13 @@ class MOELayer(nn.Module):
                 dtype=torch.float32,
             )
             router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
-            normalizer = (token_magnitudes * router_weight_magnitudes).clamp_min(1e-12)
-            # top_k_scores after normalization should be in a similar range as router_probs?
+            normalizer = router_weight_magnitudes.pow(self.top_logit_norm_exponent).clamp_min(1e-12)
+            # top_k_scores after normalization should be in a similar range as router_probs.
             # i.e., around 0.5. So we * 2 -> 1.0.
+            # Partial normalization damps router-weight magnitude effects without
+            # forcing the score all the way to cosine similarity.
             return 2 * top_k_scores / normalizer.to(dtype=top_k_scores.dtype)
+        
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
             return router_probs * 2
