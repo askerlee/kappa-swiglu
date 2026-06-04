@@ -507,7 +507,9 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
     )
 
     router_weight_magnitudes = moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1)
-    smoothed_router_weight_magnitudes = torch.sqrt(router_weight_magnitudes.square() + 1e-12)
+    smoothed_router_weight_magnitudes = torch.sqrt(
+        router_weight_magnitudes.square() + moe_layer.top_logit_norm_eps
+    )
     expected = (top_k_scores * 2.0) / (math.sqrt(config.n_embd) * smoothed_router_weight_magnitudes.sqrt())
 
     torch.testing.assert_close(actual, expected)
@@ -540,7 +542,7 @@ def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
 
     assert torch.isfinite(actual).all()
     expected = top_k_scores.new_tensor([
-        [2.0 / (math.sqrt(config.n_embd) * (1e-12 ** 0.25))]
+        [2.0 / (math.sqrt(config.n_embd) * (moe_layer.top_logit_norm_eps ** 0.25))]
     ])
 
     torch.testing.assert_close(actual, expected)

@@ -39,7 +39,7 @@ import torch
 from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, autodetect_device_type, download_file_with_lock
 from nanochat.tokenizer import HuggingFaceTokenizer, get_token_bytes
 from nanochat.checkpoint_manager import load_model
-from nanochat.core_eval import evaluate_task
+from nanochat.core_eval import evaluate_task, evaluate_task_detailed
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
@@ -95,6 +95,7 @@ def get_hf_token_bytes(tokenizer, device="cpu"):
 # CORE evaluation
 
 EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip"
+BOOLQ_YES_RATE_PRIOR = 0.62
 
 
 def place_eval_bundle(file_path):
@@ -109,7 +110,76 @@ def place_eval_bundle(file_path):
     print0(f"Placed eval_bundle directory at {eval_bundle_dir}")
 
 
-def evaluate_core(model, tokenizer, device, max_per_task=-1):
+def normalize_boolq_answer(text):
+    """Map a BoolQ choice string to True for yes and False for no."""
+    normalized = text.strip().lower().rstrip(".:")
+    if normalized.startswith("yes"):
+        return True
+    if normalized.startswith("no"):
+        return False
+    raise ValueError(f"Unsupported BoolQ answer label: {text!r}")
+
+
+def compute_boolq_margins(details, data):
+    """Compute per-example margins logp_yes - logp_no and gold labels."""
+    margins = []
+    for detail in details:
+        item = data[detail['index']]
+        choice_logps = detail.get('choice_logps')
+        if choice_logps is None:
+            raise ValueError("BoolQ margins require per-choice log probabilities.")
+
+        yes_idx = None
+        no_idx = None
+        for idx, choice in enumerate(item['choices']):
+            if normalize_boolq_answer(choice):
+                yes_idx = idx
+            else:
+                no_idx = idx
+
+        if yes_idx is None or no_idx is None:
+            raise ValueError("Each BoolQ example must contain both a yes and a no choice.")
+
+        margins.append({
+            'margin': choice_logps[yes_idx] - choice_logps[no_idx],
+            'gold_is_yes': normalize_boolq_answer(item['choices'][detail['gold_idx']]),
+        })
+
+    return margins
+
+
+def compute_prior_matching_tau(margins, target_yes_rate):
+    """Choose tau so the predicted yes rate matches the requested prior as closely as possible."""
+    if not 0.0 <= target_yes_rate <= 1.0:
+        raise ValueError(f"target_yes_rate must be in [0, 1], got {target_yes_rate!r}")
+
+    sorted_margins = sorted(entry['margin'] for entry in margins)
+    num_examples = len(sorted_margins)
+    num_yes_predictions = int(round(target_yes_rate * num_examples))
+
+    if num_yes_predictions <= 0:
+        return sorted_margins[-1]
+    if num_yes_predictions >= num_examples:
+        return sorted_margins[0] - 1e-12
+
+    lower = sorted_margins[num_examples - num_yes_predictions - 1]
+    upper = sorted_margins[num_examples - num_yes_predictions]
+    return 0.5 * (lower + upper)
+
+
+def compute_calibrated_boolq_accuracy(details, data, tau):
+    """Compute BoolQ accuracy after applying the calibrated decision rule margin > tau."""
+    margins = compute_boolq_margins(details, data)
+    num_correct = sum((entry['margin'] > tau) == entry['gold_is_yes'] for entry in margins)
+    return num_correct / len(margins)
+
+
+def compute_predicted_yes_rate(margins, tau):
+    """Compute the fraction of BoolQ examples predicted as yes for a given tau."""
+    return sum(entry['margin'] > tau for entry in margins) / len(margins)
+
+
+def evaluate_core(model, tokenizer, device, max_per_task=-1, boolq_tau_mode='manual', boolq_target_yes_rate=BOOLQ_YES_RATE_PRIOR):
     """
     Evaluate a base model on the CORE benchmark.
     Returns dict with results, centered_results, core_metric, and core_metric_no_boolq.
@@ -161,13 +231,28 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
         if max_per_task > 0:
             data = data[:max_per_task]
 
-        accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
+        boolq_tau = None
+        boolq_predicted_yes_rate = None
+        if label.lower() == 'boolq' and boolq_tau_mode == 'prior-match':
+            detailed = evaluate_task_detailed(model, tokenizer, data, device, task_meta)
+            margins = compute_boolq_margins(detailed['details'], data)
+            boolq_tau = compute_prior_matching_tau(margins, boolq_target_yes_rate)
+            boolq_predicted_yes_rate = compute_predicted_yes_rate(margins, boolq_tau)
+            accuracy = compute_calibrated_boolq_accuracy(detailed['details'], data, boolq_tau)
+        else:
+            accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
         results[label] = accuracy
         random_baseline = random_baselines[label]
         centered_result = (accuracy - 0.01 * random_baseline) / (1.0 - 0.01 * random_baseline)
         centered_results[label] = centered_result
         elapsed = time.time() - start_time
-        print0(f"accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {elapsed:.2f}s")
+        summary = f"accuracy: {accuracy:.4f} | centered: {centered_result:.4f}"
+        if boolq_tau is not None:
+            summary = (
+                f"{summary} | tau_mode: {boolq_tau_mode} | tau: {boolq_tau:.6f} "
+                f"| predicted_yes_rate: {boolq_predicted_yes_rate:.4f}"
+            )
+        print0(f"{summary} | time: {elapsed:.2f}s")
 
     core_metric = sum(centered_results.values()) / len(centered_results)
     centered_results_no_boolq = {
@@ -197,6 +282,19 @@ def main():
                         help="Source of the model: base|sft|rl")
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--max-per-task', type=int, default=-1, help='Max examples per CORE task (-1 = all)')
+    parser.add_argument(
+        '--boolq-tau-mode',
+        type=str,
+        choices=('manual', 'prior-match'),
+        default='manual',
+        help='BoolQ only: manual keeps the default argmin-loss decision rule, prior-match calibrates tau to match --boolq-target-yes-rate',
+    )
+    parser.add_argument(
+        '--boolq-target-yes-rate',
+        type=float,
+        default=BOOLQ_YES_RATE_PRIOR,
+        help='BoolQ only: target predicted yes rate used when --boolq-tau-mode=prior-match',
+    )
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
     parser.add_argument('--split-tokens', type=int, default=40*524288, help='Number of tokens to evaluate per split for BPB')
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
@@ -341,7 +439,14 @@ def main():
         print0("CORE Evaluation")
         print0("="*80)
         with autocast_ctx:
-            core_results = evaluate_core(model, tokenizer, device, max_per_task=args.max_per_task)
+            core_results = evaluate_core(
+                model,
+                tokenizer,
+                device,
+                max_per_task=args.max_per_task,
+                boolq_tau_mode=args.boolq_tau_mode,
+                boolq_target_yes_rate=args.boolq_target_yes_rate,
+            )
 
         # Write CSV output
         if ddp_rank == 0:
