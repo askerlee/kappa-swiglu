@@ -264,21 +264,23 @@ if depth != 12:
 
 # Initialize the Optimizer (combined MuonAdamW: Muon for matrix params, AdamW for rest)
 # After setup_optimizer(), one shouldn't change grad scale settings.
-optimizer = model.setup_optimizer(
-    unembedding_lr=args.unembedding_lr,
-    embedding_lr=args.embedding_lr,
-    matrix_lr=args.matrix_lr,
-    matrix_optimizer=args.matrix_optimizer,
-    weight_decay=weight_decay_scaled,
-    muon_match_rms_adamw=args.muon_match_rms_adamw,
-    kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
-    kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
-    kappa_bias_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
-    kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
-)
-# Override the initial learning rate as a fraction of the base learning rate
-for group in optimizer.param_groups:
-    group["initial_lr"] = group["lr"]
+optimizer = None
+if not args.eval_only:
+    optimizer = model.setup_optimizer(
+        unembedding_lr=args.unembedding_lr,
+        embedding_lr=args.embedding_lr,
+        matrix_lr=args.matrix_lr,
+        matrix_optimizer=args.matrix_optimizer,
+        weight_decay=weight_decay_scaled,
+        muon_match_rms_adamw=args.muon_match_rms_adamw,
+        kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
+        kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
+        kappa_bias_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
+        kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
+    )
+    # Override the initial learning rate as a fraction of the base learning rate
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
 
 # SFT data mixture and DataLoader
 base_dir = get_base_dir()
