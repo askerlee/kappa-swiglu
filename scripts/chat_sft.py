@@ -177,8 +177,9 @@ if not use_dummy_wandb:
 # NOTE: the optim state of the base model is not loaded here.
 refresh_kappa_bias_references = args.exp_kappa_bias_l2_anchor == "initial"
 print0(f"expert kappa bias L2 anchor: {args.exp_kappa_bias_l2_anchor}")
+sft_checkpoint_source = "sft" if args.eval_only else "base"
 model, tokenizer, meta = load_model(
-    "base",
+    sft_checkpoint_source,
     device,
     phase="train",
     model_tag=args.model_tag,
