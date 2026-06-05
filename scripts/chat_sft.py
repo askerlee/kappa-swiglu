@@ -40,6 +40,7 @@ from tasks.common import TaskMixture
 from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
+from tasks.tulu3 import Tulu3SFTMixture
 from tasks.customjson import CustomJSON
 from tasks.spellingbee import SimpleSpelling, SpellingBee
 
@@ -71,6 +72,7 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 1)")
+parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=False, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")
@@ -295,6 +297,8 @@ train_tasks = [
     CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
     CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
 ]
+if args.use_tulu3_sft_mixture:
+    train_tasks.append(Tulu3SFTMixture(split="train"))
 for repeat_idx in range(args.train_mixture_repeats):
     simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
     spellingbee_start = repeat_idx * spellingbee_rows_per_repeat
