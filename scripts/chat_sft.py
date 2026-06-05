@@ -116,6 +116,7 @@ parser.add_argument("--chat-eval-num-samples", type=int, default=1, help="number
 parser.add_argument("--chat-eval-top-k", type=int, default=50, help="top-k for generative chat eval")
 parser.add_argument("--chat-eval-batch-size", type=int, default=8, help="batch size for categorical chat eval")
 parser.add_argument("--chat-eval-max-problems", type=int, default=None, help="max problems per chat eval task")
+parser.add_argument("--eval-only", action="store_true", help="load the checkpoint, run evaluation, and exit without training")
 # Output
 parser.add_argument("--dry-run", action="store_true", help="log to wandb but skip checkpoints/report")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
@@ -333,7 +334,7 @@ val_dataset = TaskMixture([
 # DataLoader is defined here, it emits inputs, targets : 2D tensors of shape (device_batch_size, max_seq_len)
 # A big problem is that we don't know the final num_iterations in advance. So we create
 # these two global variables and update them from within the data generator.
-last_step = False # we will toggle this to True when we reach the end of the training dataset
+last_step = args.eval_only # eval-only goes straight to the existing final evaluation path
 approx_progress = 0.0 # will go from 0 to 1 over the course of the epoch
 current_epoch = 1 # track epoch for logging
 train_seen_conversations = 0 # consumed + skipped conversations in train split
@@ -682,7 +683,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
 
 # -----------------------------------------------------------------------------
 # Training loop
-x, y = next(train_loader) # prefetch the very first batch of data
+x, y = (None, None) if args.eval_only else next(train_loader) # skip train prefetch when evaluating only
 min_val_bpb = float("inf")
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
@@ -691,6 +692,8 @@ latest_chat_eval_results = None
 latest_chat_eval_step = None
 step = 0
 while True:
+    if args.eval_only and step == 0 and master_process:
+        print0("Running in eval-only mode; skipping training and checkpoint save.")
     flops_so_far = num_flops_per_token * args.total_batch_size * step
 
     # Synchronize last_step across all ranks to avoid hangs in the distributed setting
@@ -742,7 +745,7 @@ while True:
         MANAGER.reset_all()
 
     # save checkpoint at the end of the run before the expensive final chat eval
-    if master_process and last_step and not args.dry_run:
+    if master_process and last_step and not args.dry_run and not args.eval_only:
         output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
         if args.model_save_tag:
             output_dirname += f"-{args.model_save_tag}"
