@@ -337,7 +337,7 @@ last_step = False # we will toggle this to True when we reach the end of the tra
 approx_progress = 0.0 # will go from 0 to 1 over the course of the epoch
 current_epoch = 1 # track epoch for logging
 train_seen_conversations = 0 # consumed + skipped conversations in train split
-train_skipped_conversations = 0 # conversations skipped for exceeding row_capacity or lacking supervised targets
+train_skipped_conversations = 0 # conversations skipped for being malformed, exceeding row_capacity, or lacking supervised targets
 
 def sft_data_generator_bos_bestfit(split, buffer_size=100):
     """
@@ -361,22 +361,25 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
     conv_buffer = []
     cursor = ddp_rank  # Each rank processes different conversations (for fetching)
     consumed = ddp_rank  # Track actual consumption separately from buffering
-    skipped_overlong = 0
+    skipped_conversations = 0
     epoch = 1
     it = 0  # iteration counter
 
     def refill_buffer():
-        nonlocal cursor, epoch, skipped_overlong
+        nonlocal cursor, epoch, skipped_conversations
         while len(conv_buffer) < buffer_size:
-            conversation = dataset[cursor]
-            ids, mask = tokenizer.render_conversation(conversation, max_tokens=None)
-            # NOTE: in the call above, max_tokens=None, this means:
-            # Full render, then fit-check, instead of truncating to fit.
-            has_supervised_targets = any(mask[1:]) if len(mask) > 1 else False
-            if len(ids) <= row_capacity and has_supervised_targets:
-                conv_buffer.append((ids, mask))
-            else:
-                skipped_overlong += ddp_world_size
+            try:
+                conversation = dataset[cursor]
+                ids, mask = tokenizer.render_conversation(conversation, max_tokens=None)
+                # NOTE: in the call above, max_tokens=None, this means:
+                # Full render, then fit-check, instead of truncating to fit.
+                has_supervised_targets = any(mask[1:]) if len(mask) > 1 else False
+                if len(ids) <= row_capacity and has_supervised_targets:
+                    conv_buffer.append((ids, mask))
+                else:
+                    skipped_conversations += ddp_world_size
+            except (AssertionError, KeyError, TypeError, ValueError):
+                skipped_conversations += ddp_world_size
             cursor += ddp_world_size
             if cursor >= dataset_size:
                 cursor = cursor % dataset_size
@@ -429,14 +432,14 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         # Update progress tracking (based on consumed, not cursor, to account for buffering)
         if split == "train":
             current_epoch = epoch
-            train_seen_conversations = consumed + skipped_overlong
-            train_skipped_conversations = skipped_overlong
+            train_seen_conversations = consumed + skipped_conversations
+            train_skipped_conversations = skipped_conversations
             if args.num_iterations > 0:
                 approx_progress = it / args.num_iterations
             else:
-                approx_progress = (consumed + skipped_overlong) / dataset_size
+                approx_progress = (consumed + skipped_conversations) / dataset_size
             # Trigger last_step when we've consumed enough (instead of when cursor wraps)
-            if consumed + skipped_overlong >= dataset_size:
+            if consumed + skipped_conversations >= dataset_size:
                 last_step = True
 
         # Build tensors
@@ -927,8 +930,8 @@ while True:
             "train/mfu": mfu,
             "train/epoch": current_epoch,
             "train/seen_conversations": train_seen_conversations,
-            "train/skipped_overlong_conversations": train_skipped_conversations,
-            "train/skipped_overlong_fraction": discard_fraction,
+            "train/skipped_conversations": train_skipped_conversations,
+            "train/skipped_fraction": discard_fraction,
         }
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
@@ -1010,7 +1013,7 @@ print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
 print0(f"Total training time: {total_training_time/60:.2f}m")
 print0(f"Minimum validation bpb: {min_val_bpb:.4f}")
 print0(
-    f"Skipped overlong train conversations: {train_skipped_conversations}/{train_seen_conversations} "
+    f"Skipped train conversations: {train_skipped_conversations}/{train_seen_conversations} "
     f"({100 * train_skipped_conversations / max(train_seen_conversations, 1):.2f}%)"
 )
 
