@@ -1920,6 +1920,14 @@ class MOELayer(nn.Module):
             smoothed_router_weight_magnitudes_all = torch.sqrt(
                 router_weight_magnitudes_all.square() + self.top_logit_norm_eps
             )
+            # Partial normalization using smoothed_router_weight_magnitudes below
+            # leaves a residual ||w||^(1-alpha) factor.
+            # Calibrate it back to unit scale using the detached layer-wide
+            # average router-weight magnitude, so the correction is batch
+            # independent while keeping relative per-expert magnitude effects.
+            scale_compensation = smoothed_router_weight_magnitudes_all.pow(
+                1.0 - self.top_logit_norm_exponent
+            ).mean().detach()
             router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
             # Witout the top_logit_norm_eps term, if router_weight_magnitudes is
             # close to zero, and top_logit_norm_exponent = 0.5, then
@@ -1928,26 +1936,16 @@ class MOELayer(nn.Module):
                 router_weight_magnitudes.square() + self.top_logit_norm_eps
             )
             # Router inputs are RMS-normalized, so each token has L2 norm sqrt(hidden_dim).
-            # sqrt(1024) = 32. We only normalize w.r.t. router weight magnitudes.
+            # sqrt(1024) = 32.
             token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
                 self.top_logit_norm_exponent
-            )
-            # Partial normalization leaves a residual ||w||^(1-alpha) factor.
-            # Calibrate it back to unit scale using the detached layer-wide
-            # average router-weight magnitude, so the correction is batch
-            # independent while keeping relative per-expert magnitude effects.
-            scale_compensation = smoothed_router_weight_magnitudes_all.pow(
-                1.0 - self.top_logit_norm_exponent
-            ).mean().detach()
-            # The average cosine(token embeddings, router weights) is 0.15.
-            # i.e., top_k_scores / (token_magnitude * smoothed_router_weight_magnitudes)
-            # is around 0.15.
+            ) * scale_compensation
+
+            # Empirically, the average cosine(token embeddings, router weights) is 0.15.
+            # top_k_scores / normalizer is roughly the cosine similarity, i.e., ~ 0.15.
             # We should multiply it by 6 to get it to be close to 1.0.
-            return 6 * top_k_scores / (
-                normalizer.to(dtype=top_k_scores.dtype)
-                * scale_compensation.to(dtype=top_k_scores.dtype)
-            )
+            return 6 * top_k_scores / normalizer.to(dtype=top_k_scores.dtype)
         
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
