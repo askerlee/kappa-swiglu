@@ -1929,11 +1929,19 @@ class MOELayer(nn.Module):
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
                 self.top_logit_norm_exponent
             )
-            # top_k_scores after normalization should be in a similar range as router_probs.
-            # i.e., around 0.5. So we * 2 -> 1.0.
-            # Partial normalization damps router-weight magnitude effects without
-            # forcing the score all the way to cosine similarity.
-            return 2 * top_k_scores / normalizer.to(dtype=top_k_scores.dtype)
+            # Partial normalization leaves a residual ||w||^(1-alpha) factor.
+            # Calibrate it back to unit scale using the detached average selected
+            # router-weight magnitude for this batch, while keeping relative
+            # per-expert magnitude differences.
+            scale_compensation = smoothed_router_weight_magnitudes.pow(
+                1.0 - self.top_logit_norm_exponent
+            ).mean().detach()
+            # top_k_scores after normalization and compensation should be in a
+            # similar range as router_probs, i.e. around 0.5. So we * 2 -> 1.0.
+            return 2 * top_k_scores / (
+                normalizer.to(dtype=top_k_scores.dtype)
+                * scale_compensation.to(dtype=top_k_scores.dtype)
+            )
         
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.

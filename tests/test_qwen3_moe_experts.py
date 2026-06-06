@@ -510,7 +510,12 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
     smoothed_router_weight_magnitudes = torch.sqrt(
         router_weight_magnitudes.square() + moe_layer.top_logit_norm_eps
     )
-    expected = (top_k_scores * 2.0) / (math.sqrt(config.n_embd) * smoothed_router_weight_magnitudes.sqrt())
+    scale_compensation = smoothed_router_weight_magnitudes.sqrt().mean()
+    expected = (top_k_scores * 2.0) / (
+        math.sqrt(config.n_embd)
+        * smoothed_router_weight_magnitudes.sqrt()
+        * scale_compensation
+    )
 
     torch.testing.assert_close(actual, expected)
 
@@ -546,6 +551,57 @@ def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
     ])
 
     torch.testing.assert_close(actual, expected)
+
+
+def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
+    config = GPTConfig(
+        n_exp=3,
+        n_embd=4,
+        moe_top_k=2,
+        kappa_input="top_logits",
+        top_logit_norm_exponent=0.5,
+        debug=False,
+    )
+    moe_layer = MOELayer(config, layer_idx=0)
+
+    router_probs = torch.tensor([
+        [0.7, 0.3],
+        [0.6, 0.4],
+    ])
+    top_k_indices = torch.tensor([
+        [0, 1],
+        [1, 2],
+    ])
+
+    with torch.no_grad():
+        moe_layer.router.w_g.weight.copy_(torch.tensor([
+            [2.0, 0.0, 0.0, 0.0],
+            [8.0, 0.0, 0.0, 0.0],
+            [18.0, 0.0, 0.0, 0.0],
+        ]))
+
+    target_gate_confidence = torch.ones_like(router_probs)
+    router_weight_magnitudes = moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1)
+    smoothed_router_weight_magnitudes = torch.sqrt(
+        router_weight_magnitudes.square() + moe_layer.top_logit_norm_eps
+    )
+    scale_compensation = smoothed_router_weight_magnitudes.pow(0.5).mean()
+    top_k_scores = (
+        target_gate_confidence
+        * math.sqrt(config.n_embd)
+        * smoothed_router_weight_magnitudes.pow(config.top_logit_norm_exponent)
+        * scale_compensation
+        / 2.0
+    )
+
+    actual = moe_layer._select_gate_confidence(
+        top_k_scores,
+        router_probs,
+        x_flat=torch.zeros(2, config.n_embd),
+        top_k_indices=top_k_indices,
+    )
+
+    torch.testing.assert_close(actual, target_gate_confidence)
 
 def test_kappa_bias_l2_losses_split_above_and_below_zero():
     config = GPTConfig(
