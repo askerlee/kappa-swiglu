@@ -1917,6 +1917,9 @@ class MOELayer(nn.Module):
                 dim=-1,
                 dtype=torch.float32,
             )
+            smoothed_router_weight_magnitudes_all = torch.sqrt(
+                router_weight_magnitudes_all.square() + self.top_logit_norm_eps
+            )
             router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
             # Witout the top_logit_norm_eps term, if router_weight_magnitudes is
             # close to zero, and top_logit_norm_exponent = 0.5, then
@@ -1930,10 +1933,10 @@ class MOELayer(nn.Module):
                 self.top_logit_norm_exponent
             )
             # Partial normalization leaves a residual ||w||^(1-alpha) factor.
-            # Calibrate it back to unit scale using the detached average selected
-            # router-weight magnitude for this batch, while keeping relative
-            # per-expert magnitude differences.
-            scale_compensation = smoothed_router_weight_magnitudes.pow(
+            # Calibrate it back to unit scale using the detached layer-wide
+            # average router-weight magnitude, so the correction is batch
+            # independent while keeping relative per-expert magnitude effects.
+            scale_compensation = smoothed_router_weight_magnitudes_all.pow(
                 1.0 - self.top_logit_norm_exponent
             ).mean().detach()
             # top_k_scores after normalization and compensation should be in a

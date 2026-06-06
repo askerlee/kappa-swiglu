@@ -510,7 +510,9 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
     smoothed_router_weight_magnitudes = torch.sqrt(
         router_weight_magnitudes.square() + moe_layer.top_logit_norm_eps
     )
-    scale_compensation = smoothed_router_weight_magnitudes.sqrt().mean()
+    scale_compensation = torch.sqrt(
+        moe_layer.router.w_g.weight.norm(dim=-1).square() + moe_layer.top_logit_norm_eps
+    ).sqrt().mean()
     expected = (top_k_scores * 2.0) / (
         math.sqrt(config.n_embd)
         * smoothed_router_weight_magnitudes.sqrt()
@@ -585,7 +587,9 @@ def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
     smoothed_router_weight_magnitudes = torch.sqrt(
         router_weight_magnitudes.square() + moe_layer.top_logit_norm_eps
     )
-    scale_compensation = smoothed_router_weight_magnitudes.pow(0.5).mean()
+    scale_compensation = torch.sqrt(
+        moe_layer.router.w_g.weight.norm(dim=-1).square() + moe_layer.top_logit_norm_eps
+    ).pow(0.5).mean()
     top_k_scores = (
         target_gate_confidence
         * math.sqrt(config.n_embd)
