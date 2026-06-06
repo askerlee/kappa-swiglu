@@ -71,7 +71,7 @@ parser.add_argument("--model-save-tag", type=str, default=None, help="extra mode
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
-parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 1)")
+parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4, or 2 when --use-tulu3-sft-mixture is enabled)")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=False, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
@@ -99,7 +99,9 @@ parser.add_argument(
     default=1e-2,
     help="L2 weight on kappa_bias values",
 )
-parser.add_argument("--exp-kappa-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
+parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=2.0,
+                    help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
+parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor expert kappa bias L2 either around the loaded initial value or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
@@ -124,6 +126,9 @@ parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, de
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
+train_mixture_repeats_was_specified = arg_was_explicitly_set(sys.argv[1:], '--train-mixture-repeats')
+if args.use_tulu3_sft_mixture and not train_mixture_repeats_was_specified:
+    args.train_mixture_repeats = 2
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
@@ -133,6 +138,7 @@ if args.kappa_bias_lr_warmup_iterations < 0:
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
+kappa_scale_l2_loss_weight_scale_was_specified = arg_was_explicitly_set(sys.argv[1:], '--kappa-scale-l2-loss-weight-scale')
 
 
 def drop_none_log_values(log_data):
@@ -175,8 +181,8 @@ if not use_dummy_wandb:
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
-refresh_kappa_bias_references = args.exp_kappa_bias_l2_anchor == "initial"
-print0(f"expert kappa bias L2 anchor: {args.exp_kappa_bias_l2_anchor}")
+refresh_kappa_bias_references = args.kappa_bias_l2_anchor == "initial"
+print0(f"expert kappa bias L2 anchor: {args.kappa_bias_l2_anchor}")
 sft_checkpoint_source = "sft" if args.eval_only else "base"
 model, tokenizer, meta = load_model(
     sft_checkpoint_source,
@@ -191,6 +197,27 @@ if not use_dummy_wandb:
     wandb_run.config.update(
         {
             "kappa_l2_loss_weight": args.kappa_l2_loss_weight,
+        },
+        allow_val_change=True,
+    )
+if kappa_scale_l2_loss_weight_scale_was_specified:
+    print0(
+        "Specified kappa_scale_l2_loss_weight_scale: "
+        f"{args.kappa_scale_l2_loss_weight_scale}"
+    )
+else:
+    args.kappa_scale_l2_loss_weight_scale = meta.get("user_config", {}).get(
+        "kappa_scale_l2_loss_weight_scale", 2.0
+    )
+    print0(
+        "Inherited kappa_scale_l2_loss_weight_scale: "
+        f"{args.kappa_scale_l2_loss_weight_scale}"
+    )
+user_config["kappa_scale_l2_loss_weight_scale"] = args.kappa_scale_l2_loss_weight_scale
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {
+            "kappa_scale_l2_loss_weight_scale": args.kappa_scale_l2_loss_weight_scale,
         },
         allow_val_change=True,
     )
@@ -241,6 +268,7 @@ print0(f"Inherited aux_loss_weight: {aux_loss_weight}")
 user_config["aux_loss_weight"] = aux_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
+kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
 orig_model = model
 model = torch.compile(model, dynamic=False)
@@ -302,6 +330,7 @@ train_tasks = [
     CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
 ]
 if args.use_tulu3_sft_mixture:
+    # allenai/tulu-3-sft-mixture: 939,344 samples
     train_tasks.append(Tulu3SFTMixture(split="train"))
 for repeat_idx in range(args.train_mixture_repeats):
     simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
@@ -771,6 +800,7 @@ while True:
 
     if last_step:
         model.eval()
+        orig_model.eval()
         engine = Engine(orig_model, tokenizer)
         chat_eval_results = {}
         with autocast_ctx:
@@ -838,6 +868,7 @@ while True:
                 wandb_run.log_artifact(artifact)
             print0(f"\nChat eval results written to: {output_csv_path}")
         model.train()
+        orig_model.train()
 
     if last_step:
         break
@@ -864,7 +895,11 @@ while True:
         kappa_bias_l2_loss = losses.get("kappa_bias_l2_loss")
         if kappa_bias_l2_loss is None:
             kappa_bias_l2_loss = 0.0
+        kappa_scale_l2_loss = losses.get("kappa_scale_l2_loss")
+        if kappa_scale_l2_loss is None:
+            kappa_scale_l2_loss = 0.0
         loss = loss + args.kappa_l2_loss_weight * kappa_bias_l2_loss
+        loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
 
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
@@ -923,12 +958,14 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_bias_l2_loss_step": scalar_loss_to_item(losses['kappa_bias_l2_loss']),
+            "train/kappa_scale_l2_loss_step": scalar_loss_to_item(losses['kappa_scale_l2_loss']),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
             "train/kappa_bias_l2_loss_weight": args.kappa_l2_loss_weight,
+            "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": dt,
