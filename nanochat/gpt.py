@@ -1928,6 +1928,7 @@ class MOELayer(nn.Module):
                 router_weight_magnitudes.square() + self.top_logit_norm_eps
             )
             # Router inputs are RMS-normalized, so each token has L2 norm sqrt(hidden_dim).
+            # sqrt(1024) = 32. We only normalize w.r.t. router weight magnitudes.
             token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
                 self.top_logit_norm_exponent
@@ -1939,9 +1940,11 @@ class MOELayer(nn.Module):
             scale_compensation = smoothed_router_weight_magnitudes_all.pow(
                 1.0 - self.top_logit_norm_exponent
             ).mean().detach()
-            # top_k_scores after normalization and compensation should be in a
-            # similar range as router_probs, i.e. around 0.5. So we * 2 -> 1.0.
-            return 2 * top_k_scores / (
+            # The average cosine(token embeddings, router weights) is 0.15.
+            # i.e., top_k_scores / (token_magnitude * smoothed_router_weight_magnitudes)
+            # is around 0.15.
+            # We should multiply it by 6 to get it to be close to 1.0.
+            return 6 * top_k_scores / (
                 normalizer.to(dtype=top_k_scores.dtype)
                 * scale_compensation.to(dtype=top_k_scores.dtype)
             )
