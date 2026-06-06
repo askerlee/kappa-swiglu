@@ -71,7 +71,8 @@ parser.add_argument("--model-save-tag", type=str, default=None, help="extra mode
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
-parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4, or 2 when --use-tulu3-sft-mixture is enabled)")
+parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
+                    "tulu3 is not repeated; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4)")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=False, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
@@ -126,9 +127,6 @@ parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, de
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
-train_mixture_repeats_was_specified = arg_was_explicitly_set(sys.argv[1:], '--train-mixture-repeats')
-if args.use_tulu3_sft_mixture and not train_mixture_repeats_was_specified:
-    args.train_mixture_repeats = 2
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
