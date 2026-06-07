@@ -224,7 +224,7 @@ parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
-parser.add_argument("--top-logit-norm-exponent", dest="top_logit_norm_exponent", type=float, default=0.5,
+parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=False,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
@@ -393,8 +393,8 @@ if args.kappa_l2_ema_anchor_end > 1.0:
     raise ValueError("--kappa-l2-ema-anchor-end must satisfy 0 <= end <= 1")
 if args.kappa_l2_ema_floor_frac < 0.0:
     raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
-if args.top_logit_norm_exponent is not None and args.top_logit_norm_exponent < 0.0:
-    raise ValueError("--top-logit-norm-exponent must be >= 0")
+if args.kappa_input_logit_norm_exponent is not None and args.kappa_input_logit_norm_exponent < 0.0:
+    raise ValueError("--kappa-input-logit-norm-exponent must be >= 0")
 
 '''
 # Aurora and kappa-bias interact more stably when the confidence input is
@@ -571,7 +571,7 @@ def build_model_meta(depth):
         use_kappa_swiglu=args.use_kappa_swiglu,
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
-        top_logit_norm_exponent=args.top_logit_norm_exponent,
+        kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,

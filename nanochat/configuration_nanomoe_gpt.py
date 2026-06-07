@@ -26,7 +26,7 @@ class GPTConfig:
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
-        top_logit_norm_exponent: float | None = None,
+        kappa_input_logit_norm_exponent: float | None = None,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
@@ -99,16 +99,16 @@ class GPTConfig:
         self.kappa_input_constant = (
             None if kappa_input_constant is None else float(kappa_input_constant)
         )
-        if top_logit_norm_exponent is None:
-            resolved_top_logit_norm_exponent = 0.0
+        if kappa_input_logit_norm_exponent is None:
+            resolved_kappa_input_logit_norm_exponent = 0.0
         else:
-            resolved_top_logit_norm_exponent = float(top_logit_norm_exponent)
-        if resolved_top_logit_norm_exponent < 0.0:
+            resolved_kappa_input_logit_norm_exponent = float(kappa_input_logit_norm_exponent)
+        if resolved_kappa_input_logit_norm_exponent < 0.0:
             raise ValueError(
-                "top_logit_norm_exponent must be >= 0, got "
-                f"{resolved_top_logit_norm_exponent}"
+                "kappa_input_logit_norm_exponent must be >= 0, got "
+                f"{resolved_kappa_input_logit_norm_exponent}"
             )
-        self.top_logit_norm_exponent = resolved_top_logit_norm_exponent
+        self.kappa_input_logit_norm_exponent = resolved_kappa_input_logit_norm_exponent
         self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
         self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
         valid_kappa_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}

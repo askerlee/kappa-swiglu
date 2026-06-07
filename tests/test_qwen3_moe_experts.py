@@ -443,11 +443,11 @@ def test_kappa_input_defaults_and_overrides_from_config():
 
     assert default_config.kappa_input == "router_probs"
     assert override_config.kappa_input == "router_probs"
-    assert default_config.top_logit_norm_exponent == 0.0
-    assert override_config.top_logit_norm_exponent == 0.0
+    assert default_config.kappa_input_logit_norm_exponent == 0.0
+    assert override_config.kappa_input_logit_norm_exponent == 0.0
 
 
-def test_top_logit_norm_exponent_defaults_and_overrides():
+def test_kappa_input_logit_norm_exponent_defaults_and_overrides():
     default_config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -456,12 +456,12 @@ def test_top_logit_norm_exponent_defaults_and_overrides():
     explicit_config = GPTConfig(
         n_exp=2,
         n_embd=4,
-        top_logit_norm_exponent=0.5,
+        kappa_input_logit_norm_exponent=0.5,
         debug=False,
     )
 
-    assert default_config.top_logit_norm_exponent == 0.0
-    assert explicit_config.top_logit_norm_exponent == 0.5
+    assert default_config.kappa_input_logit_norm_exponent == 0.0
+    assert explicit_config.kappa_input_logit_norm_exponent == 0.5
 
 
 def test_moe_select_gate_confidence_can_normalize_top_logits():
@@ -470,7 +470,7 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
         n_embd=4,
         moe_top_k=2,
         kappa_input="top_logits",
-        top_logit_norm_exponent=0.5,
+        kappa_input_logit_norm_exponent=0.5,
         debug=False,
     )
     moe_layer = MOELayer(config, layer_idx=0)
@@ -528,7 +528,7 @@ def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
         n_embd=4,
         moe_top_k=1,
         kappa_input="top_logits",
-        top_logit_norm_exponent=0.5,
+        kappa_input_logit_norm_exponent=0.5,
         debug=False,
     )
     moe_layer = MOELayer(config, layer_idx=0)
@@ -561,7 +561,7 @@ def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
         n_embd=4,
         moe_top_k=2,
         kappa_input="top_logits",
-        top_logit_norm_exponent=0.5,
+        kappa_input_logit_norm_exponent=0.5,
         debug=False,
     )
     moe_layer = MOELayer(config, layer_idx=0)
@@ -593,7 +593,7 @@ def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
     top_k_scores = (
         target_gate_confidence
         * math.sqrt(config.n_embd)
-        * smoothed_router_weight_magnitudes.pow(config.top_logit_norm_exponent)
+        * smoothed_router_weight_magnitudes.pow(config.kappa_input_logit_norm_exponent)
         * scale_compensation
         / 2.0
     )

@@ -170,12 +170,12 @@ def test_kappa_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
     assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
 
 
-def test_top_logit_norm_exponent_cli_is_wired_into_config():
+def test_kappa_input_logit_norm_exponent_cli_is_wired_into_config():
     source = BASE_TRAIN.read_text()
 
     assert '--normalize-top-logits' not in source
-    assert 'parser.add_argument("--top-logit-norm-exponent", dest="top_logit_norm_exponent", type=float, default=None,' in source
-    assert 'top_logit_norm_exponent=args.top_logit_norm_exponent' in source
+    assert 'parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,' in source
+    assert 'kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent' in source
 
 
 def test_loss_recompute_backward_cli_is_wired_into_config():

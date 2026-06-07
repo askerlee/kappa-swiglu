@@ -1804,7 +1804,9 @@ class MOELayer(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
-        self.top_logit_norm_exponent = float(getattr(config, 'top_logit_norm_exponent', 0.0))
+        self.kappa_input_logit_norm_exponent = float(
+            getattr(config, 'kappa_input_logit_norm_exponent', 0.0)
+        )
         self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
@@ -1900,14 +1902,14 @@ class MOELayer(nn.Module):
 
     def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
         if self.kappa_input == 'top_logits':
-            if self.top_logit_norm_exponent <= 0.0:
+            if self.kappa_input_logit_norm_exponent <= 0.0:
                 # No normalization.
                 # top_logits are usually 3~4. * 0.3 -> 0.9~1.2. 
                 # Similar as the default "constant" setting of 1.
                 return 0.3 * top_k_scores
             if top_k_indices is None:
                 raise RuntimeError(
-                    "top_k_indices are required when top_logit_norm_exponent is enabled"
+                    "top_k_indices are required when kappa_input_logit_norm_exponent is enabled"
                 )
             # For exp32-d10, router_weight_magnitudes_all has (min, max, std)
             # of (0.24, 0.83, 0.21).
@@ -1926,11 +1928,11 @@ class MOELayer(nn.Module):
             # average router-weight magnitude, so the correction is batch
             # independent while keeping relative per-expert magnitude effects.
             scale_compensation = smoothed_router_weight_magnitudes_all.pow(
-                1.0 - self.top_logit_norm_exponent
+                1.0 - self.kappa_input_logit_norm_exponent
             ).mean().detach()
             router_weight_magnitudes = router_weight_magnitudes_all[top_k_indices]
             # Witout the top_logit_norm_eps term, if router_weight_magnitudes is
-            # close to zero, and top_logit_norm_exponent = 0.5, then
+            # close to zero, and kappa_input_logit_norm_exponent = 0.5, then
             # the grad w.r.t. router_weight_magnitudes will be huge.
             smoothed_router_weight_magnitudes = torch.sqrt(
                 router_weight_magnitudes.square() + self.top_logit_norm_eps
@@ -1939,7 +1941,7 @@ class MOELayer(nn.Module):
             # sqrt(1024) = 32.
             token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
-                self.top_logit_norm_exponent
+                self.kappa_input_logit_norm_exponent
             ).detach() * scale_compensation
 
             # Empirically, the average cosine(token embeddings, router weights) is 0.15.
