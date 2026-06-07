@@ -26,7 +26,7 @@ class GPTConfig:
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
-        kappa_input_logit_norm_exponent: float | None = None,
+        kappa_input_logit_norm_exponent: float = 0.5,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,

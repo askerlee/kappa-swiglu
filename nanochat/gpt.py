@@ -1501,7 +1501,7 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
-        slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(2.0 * slope_work))
+        slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
         self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)

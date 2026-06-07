@@ -1163,6 +1163,7 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 # Training loop
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
+    is_resume_step = resuming and step == args.resume_from_step
     should_terminate_after_checkpoint = sigterm_requested and not is_last_step
     refresh_compiled_training_model = False
     tokens_seen = total_batch_size * step
@@ -1179,7 +1180,12 @@ while True:
     )
 
     # once in a while: evaluate the val bpb (all ranks participate)
-    if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.eval_every > 0 and (is_last_step or (step > 0 and step % args.eval_every == 0)):
+    if (
+        (not should_terminate_after_checkpoint)
+        and (not args.mockup_mode)
+        and args.eval_every > 0
+        and (is_last_step or ((not is_resume_step) and step > 0 and step % args.eval_every == 0))
+    ):
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
@@ -1312,7 +1318,12 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     # disable FP8 for evaluation to use BF16 for more consistent/accurate results
 
-    if (not should_terminate_after_checkpoint) and (not args.mockup_mode) and args.core_metric_every > 0 and (is_last_step or (step > 0 and step % args.core_metric_every == 0)):
+    if (
+        (not should_terminate_after_checkpoint)
+        and (not args.mockup_mode)
+        and args.core_metric_every > 0
+        and (is_last_step or ((not is_resume_step) and step > 0 and step % args.core_metric_every == 0))
+    ):
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
@@ -1372,7 +1383,7 @@ while True:
         (not should_terminate_after_checkpoint)
         and (not args.mockup_mode)
         and args.sample_every > 0
-        and (is_last_step or (step > 0 and step % args.sample_every == 0))
+        and (is_last_step or ((not is_resume_step) and step > 0 and step % args.sample_every == 0))
     )
     if should_sample:
         if ddp:
