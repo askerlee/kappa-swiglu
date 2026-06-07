@@ -224,7 +224,7 @@ parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
-parser.add_argument("--top-logit-norm-exponent", dest="top_logit_norm_exponent", type=float, default=None,
+parser.add_argument("--top-logit-norm-exponent", dest="top_logit_norm_exponent", type=float, default=0.5,
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=False,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
@@ -268,7 +268,7 @@ parser.add_argument("--kappa-l2-ema-anchor-end", dest="kappa_l2_ema_anchor_end",
                     help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
 parser.add_argument("--kappa-l2-ema-floor-frac", dest="kappa_l2_ema_floor_frac", type=float, default=0.9,
                     help="floor fraction applied to the anchored EMA RMS target when --kappa-ema-rms-reg is enabled")
-parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1.0,
+parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.5,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 

@@ -1940,7 +1940,7 @@ class MOELayer(nn.Module):
             token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
                 self.top_logit_norm_exponent
-            ) * scale_compensation
+            ).detach() * scale_compensation
 
             # Empirically, the average cosine(token embeddings, router weights) is 0.15.
             # top_k_scores / normalizer is roughly the cosine similarity, i.e., ~ 0.15.
