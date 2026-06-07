@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -147,6 +148,91 @@ def rename_legacy_keys(value: Any, changes: list[str], file_path: Path, path: st
     return value
 
 
+def _find_paired_model_file(meta_path: Path) -> Path | None:
+    match = re.match(r"meta_(\d+)\.json$", meta_path.name)
+    if match is None:
+        return None
+    candidate = meta_path.with_name(f"model_{match.group(1)}.pt")
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _infer_model_config_updates_from_model_data(model_data: dict[str, Any]) -> dict[str, Any]:
+    layer_pattern = re.compile(r"^transformer\.h\.(\d+)\.")
+
+    kappa_layers: set[int] = set()
+    dense_kappa_layers: set[int] = set()
+    has_kappa_bias_ema_rms_reg = False
+
+    for key in model_data:
+        if not isinstance(key, str):
+            continue
+        layer_match = layer_pattern.match(key)
+        layer_idx = int(layer_match.group(1)) if layer_match is not None else None
+
+        if ".kappa_bias" in key or ".kappa_scale" in key:
+            if layer_idx is not None:
+                kappa_layers.add(layer_idx)
+            if ".mlp.kappa_bias" in key or ".mlp.kappa_scale" in key:
+                if ".mlp.experts." not in key and layer_idx is not None:
+                    dense_kappa_layers.add(layer_idx)
+
+        if "kappa_bias_ema_rms_reg_keeper." in key or "kappa_scale_ema_rms_reg_keeper." in key:
+            has_kappa_bias_ema_rms_reg = True
+            if layer_idx is not None:
+                kappa_layers.add(layer_idx)
+            if ".mlp.experts." not in key and layer_idx is not None:
+                dense_kappa_layers.add(layer_idx)
+
+    updates: dict[str, Any] = {}
+    if kappa_layers:
+        updates["use_kappa_swiglu"] = True
+        updates["kappa_bias_start_layer"] = min(kappa_layers)
+    if dense_kappa_layers:
+        updates["constant_kappa_bias_dense_layers"] = True
+    if has_kappa_bias_ema_rms_reg:
+        updates["kappa_bias_ema_rms_reg"] = True
+    return updates
+
+
+def _reconcile_model_config_from_model_file(
+    payload: Any,
+    meta_path: Path,
+    dry_run: bool,
+    changes: list[str],
+) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    model_config = payload.get("model_config")
+    if not isinstance(model_config, dict):
+        return payload
+
+    model_path = _find_paired_model_file(meta_path)
+    if model_path is None:
+        return payload
+
+    model_data = torch.load(model_path, map_location="cpu")
+    if not isinstance(model_data, dict):
+        return payload
+
+    inferred_updates = _infer_model_config_updates_from_model_data(model_data)
+    if not inferred_updates:
+        return payload
+
+    reconciled_payload = payload
+    for key, inferred_value in inferred_updates.items():
+        existing_value = model_config.get(key)
+        if existing_value == inferred_value:
+            continue
+        model_config[key] = inferred_value
+        changes.append(
+            f"{meta_path}: model_config.{key} {existing_value!r} -> {inferred_value!r} (inferred from {model_path.name})"
+        )
+
+    return reconciled_payload
+
+
 def atomic_write_json(path: Path, payload: Any) -> None:
     with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
         json.dump(payload, tmp, indent=2)
@@ -171,6 +257,7 @@ def process_json_file(path: Path, dry_run: bool) -> list[str]:
         payload = json.load(handle)
     changes: list[str] = []
     renamed_payload = rename_legacy_keys(payload, changes, path)
+    renamed_payload = _reconcile_model_config_from_model_file(renamed_payload, path, dry_run, changes)
     if changes and not dry_run:
         atomic_write_json(path, renamed_payload)
     return changes
