@@ -100,7 +100,7 @@ parser.add_argument(
     default=1e-2,
     help="L2 weight on kappa_bias values",
 )
-parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.5,
+parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
                     help="anchor expert kappa bias L2 either around the loaded initial value or around 0")
