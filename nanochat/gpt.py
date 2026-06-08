@@ -1064,6 +1064,7 @@ class Qwen3MLP(nn.Module):
         kappa_bias_param = self._get_kappa_bias_parameter() if self.has_active_kappa_bias else None
         bias_version = None if kappa_bias_param is None else kappa_bias_param._version
         scale_version = self.kappa_slope_max_scale._version
+        # If kappa_slope_scales is cached, then return the cache.
         if (
             self._eval_kappa_slope_scales_cache is not None
             and self._eval_kappa_slope_scales_cache_dtype == target_dtype
@@ -1072,6 +1073,8 @@ class Qwen3MLP(nn.Module):
             and self._eval_kappa_slope_scales_cache_scale_version == scale_version
         ):
             return self._eval_kappa_slope_scales_cache
+        # If kappa_slope_scales is not cached, 
+        # compute in the same way as training.
         kappa_bias = self._materialize_kappa_bias().to(device=target_device, dtype=target_dtype)
         slope_scales = self._compute_kappa_slope_scales(kappa_bias)
         self._eval_kappa_slope_scales_cache = slope_scales
@@ -2507,7 +2510,12 @@ class GPT(nn.Module):
             target_nonmatrix_params = moe_nonmatrix_params if isinstance(mlp, MOELayer) else dense_nonmatrix_params
             for name, param in block.named_parameters():
                 full_name = f'transformer.h.{block_idx}.{name}'
-                if name.startswith('mlp.experts.kappa_bias') or name.startswith('mlp.kappa_bias'):
+                if (
+                    name.startswith('mlp.experts.kappa_bias')
+                    or name.startswith('mlp.kappa_bias')
+                    or name.startswith('mlp.experts.kappa_scale')
+                    or name.startswith('mlp.kappa_scale')
+                ):
                     append_param(kappa_bias_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
