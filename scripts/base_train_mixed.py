@@ -126,17 +126,19 @@ parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, 
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--kappa-bias-start-layer", type=int, default=4,
                     help="first transformer layer index where MoE kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5))")
-parser.add_argument("--kappa-bias-lr-max-scale", type=float, default=0.4,
-                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-bias-lr-final-scale")
-# With slope scaling always enabled, --kappa-bias-lr-final-scale
-# defaults to half of --kappa-bias-lr-max-scale, which is 0.2 by default.
-parser.add_argument("--kappa-bias-lr-final-scale", type=float, default=0.2,
+parser.add_argument("--kappa-lr-max-scale",
+                    dest="kappa_lr_max_scale", type=float, default=1.0,
+                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
+# With slope scaling always enabled, --kappa-lr-final-scale
+# defaults to half of --kappa-lr-max-scale, which is 0.2 by default.
+parser.add_argument("--kappa-lr-final-scale",
+                    dest="kappa_lr_final_scale", type=float, default=0.5,
                     help="final LR scale factor for kappa_bias params after warming from 0 to 1")
 parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
                     dest="kappa_bias_delay_start_min_iterations", type=int, default=400,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
 parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=1000,
-                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2, help="weight for MoE kappa_bias L2 loss")
 parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
 # With slope scaling always enabled, the stage1 frac and final frac
@@ -657,8 +659,8 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
-    kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
-    kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
+    kappa_lr_final_scale=args.kappa_lr_final_scale,
+    kappa_lr_max_scale=args.kappa_lr_max_scale,
     kappa_bias_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
     kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
 )

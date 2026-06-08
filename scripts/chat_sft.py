@@ -84,15 +84,17 @@ parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learnin
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scale for all types of learning rates")
-parser.add_argument("--kappa-bias-lr-max-scale", type=float, default=0.1,
-                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-bias-lr-final-scale")
-parser.add_argument("--kappa-bias-lr-final-scale", type=float, default=0.05,
-                    help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-bias-lr-max-scale")
+parser.add_argument("--kappa-lr-max-scale",
+                    dest="kappa_lr_max_scale", type=float, default=0.2,
+                    help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
+parser.add_argument("--kappa-lr-final-scale",
+                    dest="kappa_lr_final_scale", type=float, default=0.1,
+                    help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-lr-max-scale")
 parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
                     dest="kappa_bias_delay_start_min_iterations", type=int, default=50,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
 parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=100,
-                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-bias-lr-max-scale before annealing to --kappa-bias-lr-final-scale")
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
@@ -300,8 +302,8 @@ if not args.eval_only:
         matrix_optimizer=args.matrix_optimizer,
         weight_decay=weight_decay_scaled,
         muon_match_rms_adamw=args.muon_match_rms_adamw,
-        kappa_bias_lr_final_scale=args.kappa_bias_lr_final_scale,
-        kappa_bias_lr_max_scale=args.kappa_bias_lr_max_scale,
+        kappa_lr_final_scale=args.kappa_lr_final_scale,
+        kappa_lr_max_scale=args.kappa_lr_max_scale,
         kappa_bias_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
         kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
     )
@@ -533,8 +535,8 @@ def get_kappa_bias_lr_scale(step, progress):
     return get_linear_lr_scale(
         step,
         kappa_bias_schedule_total_iterations,
-        end_scale=args.kappa_bias_lr_final_scale,
-        max_scale=args.kappa_bias_lr_max_scale,
+        end_scale=args.kappa_lr_final_scale,
+        max_scale=args.kappa_lr_max_scale,
         nolearn_iterations=args.kappa_bias_delay_start_min_iterations,
         warmup_iterations=args.kappa_bias_lr_warmup_iterations,
     )

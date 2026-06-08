@@ -2474,8 +2474,8 @@ class GPT(nn.Module):
                         weight_decay=0.0,
                         adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
                         matrix_optimizer='aurora',
-                        kappa_bias_lr_final_scale=1.0,
-                        kappa_bias_lr_max_scale=1.0,
+                        kappa_lr_final_scale=1.0,
+                        kappa_lr_max_scale=1.0,
                         kappa_bias_delay_start_iterations=0,
                         kappa_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
@@ -2570,8 +2570,8 @@ class GPT(nn.Module):
                 debug_param_names=[param_names[id(p)] for p in kappa_bias_params],
                 lr=0.0,
                 base_lr=embedding_lr * dmodel_lr_scale,
-                lr_scale_end=kappa_bias_lr_final_scale,
-                lr_scale_max=kappa_bias_lr_max_scale,
+                lr_scale_end=kappa_lr_final_scale,
+                lr_scale_max=kappa_lr_max_scale,
                 lr_scale_nolearn_iterations=kappa_bias_delay_start_iterations,
                 lr_scale_warmup_iterations=kappa_bias_lr_warmup_iterations,
                 betas=adam_betas,

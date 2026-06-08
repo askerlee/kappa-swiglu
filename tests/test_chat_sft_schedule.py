@@ -8,8 +8,8 @@ def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
 
     assert "def get_kappa_bias_lr_scale(step, progress):" in source
     assert "kappa_bias_schedule_total_iterations = get_kappa_bias_schedule_total_iterations(step, progress)" in source
-    assert "end_scale=args.kappa_bias_lr_final_scale" in source
-    assert "max_scale=args.kappa_bias_lr_max_scale" in source
+    assert "end_scale=args.kappa_lr_final_scale" in source
+    assert "max_scale=args.kappa_lr_max_scale" in source
 
 
 def test_kappa_bias_lr_schedule_wires_delay_and_warmup_cli_args():

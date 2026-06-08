@@ -533,8 +533,8 @@ def test_setup_optimizer_places_kappa_biases_in_scaled_groups():
         embedding_lr=0.2,
         matrix_lr=0.01,
         weight_decay=0.0,
-        kappa_bias_lr_final_scale=1.0,
-        kappa_bias_lr_warmup_iterations=1000,
+        kappa_lr_final_scale=1.0,
+        kappa_lr_warmup_iterations=1000,
     )
 
     moe_kappa_bias_params = []

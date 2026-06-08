@@ -897,8 +897,8 @@ optimizer = model.setup_optimizer(
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
     muon_match_rms_adamw=args.muon_match_rms_adamw,
-    kappa_bias_lr_final_scale=args.kappa_lr_final_scale,
-    kappa_bias_lr_max_scale=args.kappa_lr_max_scale,
+    kappa_lr_final_scale=args.kappa_lr_final_scale,
+    kappa_lr_max_scale=args.kappa_lr_max_scale,
     kappa_bias_delay_start_iterations=kappa_bias_delay_start_iterations,
     kappa_bias_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
 )
