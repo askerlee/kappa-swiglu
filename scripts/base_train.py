@@ -244,11 +244,11 @@ parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, d
                     help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
 parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
                         help="log the implicit kappa bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-kappa-swiglu")
-parser.add_argument("--kappa-lr-max-scale", dest="kappa_lr_max_scale", type=float, default=0.4,
+parser.add_argument("--kappa-lr-max-scale", dest="kappa_lr_max_scale", type=float, default=1.0,
                     help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
 # With slope scaling always enabled, --kappa-lr-final-scale
-# defaults to half of --kappa-lr-max-scale, which is 0.2 by default.
-parser.add_argument("--kappa-lr-final-scale", dest="kappa_lr_final_scale", type=float, default=0.2,
+# defaults to half of --kappa-lr-max-scale, which is 0.5 by default.
+parser.add_argument("--kappa-lr-final-scale", dest="kappa_lr_final_scale", type=float, default=0.5,
                     help="final LR scale factor for kappa_bias params after warming from 0 to 1")
 parser.add_argument("--kappa-delay-start-min-iterations", dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
