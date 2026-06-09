@@ -530,34 +530,18 @@ def get_kappa_bias_schedule_total_iterations(step, progress):
     return step + 1
 
 
-def get_kappa_bias_lr_scale(step, progress):
-    kappa_bias_schedule_total_iterations = get_kappa_bias_schedule_total_iterations(step, progress)
-    return get_linear_lr_scale(
-        step,
-        kappa_bias_schedule_total_iterations,
-        end_scale=args.kappa_lr_final_scale,
-        max_scale=args.kappa_lr_max_scale,
-        nolearn_iterations=args.kappa_bias_delay_start_min_iterations,
-        warmup_iterations=args.kappa_bias_lr_warmup_iterations,
-    )
-
-
-def get_kappa_slope_max_scale(target_max_scale, step, total_iterations):
-    target_max_scale = float(target_max_scale)
-    if target_max_scale == 1.0:
-        return 1.0
-
-    delay_iterations = max(int(args.kappa_bias_delay_start_min_iterations), 0)
-    if int(step) < delay_iterations:
-        return 1.0
-
-    warmup_iterations = max(int(args.kappa_bias_lr_warmup_iterations), 0)
-    if warmup_iterations <= 0:
-        return target_max_scale
-
-    warmup_step = min(max(int(step) - delay_iterations, 0), warmup_iterations)
-    progress = warmup_step / warmup_iterations
-    return 1.0 + (target_max_scale - 1.0) * progress
+def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
+    for group in optimizer.param_groups:
+        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
+            return get_linear_lr_scale(
+                step,
+                num_iterations,
+                end_scale=group.get("lr_scale_end", 1.0),
+                max_scale=group.get("lr_scale_max", 1.0),
+                nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
+                warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
+            )
+    return 1.0
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
@@ -740,16 +724,8 @@ while True:
     )
     orig_model.set_kappa_bias_ema_rms_reg_total_iterations(kappa_bias_schedule_total_iterations)
     orig_model.set_kappa_bias_ema_rms_reg_step(step)
-    moe_kappa_slope_max_scale = get_kappa_slope_max_scale(
-        getattr(orig_model.config, "moe_kappa_slope_max_scale", 3.0),
-        step,
-        kappa_bias_schedule_total_iterations,
-    )
-    dense_kappa_slope_max_scale = get_kappa_slope_max_scale(
-        getattr(orig_model.config, "dense_kappa_slope_max_scale", 2.0),
-        step,
-        kappa_bias_schedule_total_iterations,
-    )
+    moe_kappa_slope_max_scale = getattr(orig_model.config, "moe_kappa_slope_max_scale", 3.0)
+    dense_kappa_slope_max_scale = getattr(orig_model.config, "dense_kappa_slope_max_scale", 2.0)
     orig_model.set_kappa_slope_max_scales(
         moe_kappa_slope_max_scale=moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=dense_kappa_slope_max_scale,
@@ -882,7 +858,11 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
-    kappa_bias_lr_scale = get_kappa_bias_lr_scale(step, max(progress, approx_progress))
+    kappa_bias_lr_scale = get_kappa_bias_lr_scale(
+        optimizer,
+        step,
+        kappa_bias_schedule_total_iterations,
+    )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_bias_lr_scale)
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
