@@ -99,7 +99,7 @@ parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
     type=float,
-    default=1e-2,
+    default=3e-3,
     help="L2 weight on kappa_bias values",
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1,
