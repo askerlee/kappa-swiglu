@@ -694,15 +694,29 @@ class DistMuonAdamW(torch.optim.Optimizer):
                     debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
                 )
             else:
-                # Large params: reduce_scatter
-                assert grad.shape[0] % world_size == 0, f"AdamW reduce_scatter requires shape[0] ({grad.shape[0]}) divisible by world_size ({world_size})"
-                rank_size = grad.shape[0] // world_size
-                grad_slice = torch.empty_like(grad[:rank_size])
-                future = dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
+                # Large params: reduce_scatter with first-dimension padding when needed.
+                orig_dim0 = grad.shape[0]
+                rank_size = (orig_dim0 + world_size - 1) // world_size
+                padded_dim0 = rank_size * world_size
+                if padded_dim0 == orig_dim0:
+                    reduce_input = grad
+                else:
+                    reduce_input = torch.empty(
+                        (padded_dim0, *grad.shape[1:]),
+                        dtype=grad.dtype,
+                        device=grad.device,
+                    )
+                    reduce_input[:orig_dim0].copy_(grad)
+                    reduce_input[orig_dim0:].zero_()
+                grad_slice = torch.empty_like(reduce_input[:rank_size])
+                future = dist.reduce_scatter_tensor(grad_slice, reduce_input, op=dist.ReduceOp.AVG, async_op=True).get_future()
                 param_infos[p] = dict(
                     future=future,
                     grad_slice=grad_slice,
                     is_small=False,
+                    orig_dim0=orig_dim0,
+                    rank_size=rank_size,
+                    padded_dim0=padded_dim0,
                     debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
                 )
         return dict(param_infos=param_infos)
@@ -756,16 +770,20 @@ class DistMuonAdamW(torch.optim.Optimizer):
         for p in group['params']:
             pinfo = param_infos[p]
             pinfo['future'].wait()
-            grad_slice = pinfo['grad_slice']
             param_name = pinfo.get('debug_param_name')
             state = self.state[p]
 
             # For small params, operate on full param; for large, operate on slice
             if pinfo['is_small']:
                 p_slice = p
+                grad_slice = pinfo['grad_slice']
             else:
-                rank_size = p.shape[0] // world_size
-                p_slice = p[rank * rank_size:(rank + 1) * rank_size]
+                rank_size = pinfo['rank_size']
+                start = rank * rank_size
+                stop = min(start + rank_size, pinfo['orig_dim0'])
+                num_rows = max(0, stop - start)
+                p_slice = p[start:stop]
+                grad_slice = pinfo['grad_slice'][:num_rows]
 
             # State init
             if not state:
@@ -809,8 +827,28 @@ class DistMuonAdamW(torch.optim.Optimizer):
 
             # Large params need all_gather
             if not pinfo['is_small']:
-                future = dist.all_gather_into_tensor(p, p_slice, async_op=True).get_future()
-                gather_list.append(dict(future=future, params=None))
+                gathered_slice = pinfo['grad_slice']
+                if num_rows > 0:
+                    gathered_slice[:num_rows].copy_(p_slice)
+                if num_rows < pinfo['rank_size']:
+                    gathered_slice[num_rows:].zero_()
+                if pinfo['padded_dim0'] == pinfo['orig_dim0']:
+                    future = dist.all_gather_into_tensor(p, gathered_slice, async_op=True).get_future()
+                    gather_list.append(dict(future=future, params=None))
+                else:
+                    gathered_param = torch.empty(
+                        (pinfo['padded_dim0'], *p.shape[1:]),
+                        dtype=p.dtype,
+                        device=p.device,
+                    )
+                    future = dist.all_gather_into_tensor(gathered_param, gathered_slice, async_op=True).get_future()
+                    gather_list.append(dict(
+                        future=future,
+                        params=None,
+                        full_param=p,
+                        gathered_param=gathered_param,
+                        orig_dim0=pinfo['orig_dim0'],
+                    ))
 
     def _compute_muon(self, group: dict, info: dict, gather_list: list, rank: int) -> None:
         """Wait for reduce, compute Muon updates, launch gather."""
@@ -869,6 +907,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
             if info["params"] is not None:
                 # Muon: copy from stacked buffer back to individual params
                 torch._foreach_copy_(info["params"], list(info["stacked_params"][:len(info["params"])].unbind(0)))
+            elif "full_param" in info:
+                info["full_param"].copy_(info["gathered_param"][:info["orig_dim0"]])
 
     @torch.inference_mode()
     def step(self):
@@ -1063,14 +1103,28 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                     debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
                 )
             else:
-                assert grad.shape[0] % world_size == 0, f"AdamW reduce_scatter requires shape[0] ({grad.shape[0]}) divisible by world_size ({world_size})"
-                rank_size = grad.shape[0] // world_size
-                grad_slice = torch.empty_like(grad[:rank_size])
-                future = dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
+                orig_dim0 = grad.shape[0]
+                rank_size = (orig_dim0 + world_size - 1) // world_size
+                padded_dim0 = rank_size * world_size
+                if padded_dim0 == orig_dim0:
+                    reduce_input = grad
+                else:
+                    reduce_input = torch.empty(
+                        (padded_dim0, *grad.shape[1:]),
+                        dtype=grad.dtype,
+                        device=grad.device,
+                    )
+                    reduce_input[:orig_dim0].copy_(grad)
+                    reduce_input[orig_dim0:].zero_()
+                grad_slice = torch.empty_like(reduce_input[:rank_size])
+                future = dist.reduce_scatter_tensor(grad_slice, reduce_input, op=dist.ReduceOp.AVG, async_op=True).get_future()
                 param_infos[p] = dict(
                     future=future,
                     grad_slice=grad_slice,
                     is_small=False,
+                    orig_dim0=orig_dim0,
+                    rank_size=rank_size,
+                    padded_dim0=padded_dim0,
                     debug_param_name=group_param_names[idx] if idx < len(group_param_names) else None,
                 )
         return dict(param_infos=param_infos)
@@ -1124,15 +1178,19 @@ class DistAuroraAdamW(torch.optim.Optimizer):
         for p in group['params']:
             pinfo = param_infos[p]
             pinfo['future'].wait()
-            grad_slice = pinfo['grad_slice']
             param_name = pinfo.get('debug_param_name')
             state = self.state[p]
 
             if pinfo['is_small']:
                 p_slice = p
+                grad_slice = pinfo['grad_slice']
             else:
-                rank_size = p.shape[0] // world_size
-                p_slice = p[rank * rank_size:(rank + 1) * rank_size]
+                rank_size = pinfo['rank_size']
+                start = rank * rank_size
+                stop = min(start + rank_size, pinfo['orig_dim0'])
+                num_rows = max(0, stop - start)
+                p_slice = p[start:stop]
+                grad_slice = pinfo['grad_slice'][:num_rows]
 
             if not state:
                 state['step'] = 0
@@ -1173,8 +1231,28 @@ class DistAuroraAdamW(torch.optim.Optimizer):
                 )
 
             if not pinfo['is_small']:
-                future = dist.all_gather_into_tensor(p, p_slice, async_op=True).get_future()
-                gather_list.append(dict(future=future, params=None))
+                gathered_slice = pinfo['grad_slice']
+                if num_rows > 0:
+                    gathered_slice[:num_rows].copy_(p_slice)
+                if num_rows < pinfo['rank_size']:
+                    gathered_slice[num_rows:].zero_()
+                if pinfo['padded_dim0'] == pinfo['orig_dim0']:
+                    future = dist.all_gather_into_tensor(p, gathered_slice, async_op=True).get_future()
+                    gather_list.append(dict(future=future, params=None))
+                else:
+                    gathered_param = torch.empty(
+                        (pinfo['padded_dim0'], *p.shape[1:]),
+                        dtype=p.dtype,
+                        device=p.device,
+                    )
+                    future = dist.all_gather_into_tensor(gathered_param, gathered_slice, async_op=True).get_future()
+                    gather_list.append(dict(
+                        future=future,
+                        params=None,
+                        full_param=p,
+                        gathered_param=gathered_param,
+                        orig_dim0=pinfo['orig_dim0'],
+                    ))
 
     def _compute_aurora(self, group: dict, info: dict, gather_list: list, rank: int) -> None:
         for chunk_info in info['chunk_infos']:
@@ -1243,6 +1321,8 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             info['future'].wait()
             if info['params'] is not None:
                 torch._foreach_copy_(info['params'], list(info['stacked_params'][:len(info['params'])].unbind(0)))
+            elif 'full_param' in info:
+                info['full_param'].copy_(info['gathered_param'][:info['orig_dim0']])
 
     @torch.inference_mode()
     def step(self):
