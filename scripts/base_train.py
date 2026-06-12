@@ -140,10 +140,9 @@ def build_chat_sft_exec_argv(
     python_executable,
     model_tag,
     model_step,
+    device_batch_size,
     extra_args_text="",
 ):
-    import shlex
-
     argv = [
         python_executable,
         "-m",
@@ -153,6 +152,8 @@ def build_chat_sft_exec_argv(
         model_tag,
         "--model-step",
         str(model_step),
+        "--device-batch-size",
+        str(device_batch_size),
     ]
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
@@ -2108,6 +2109,7 @@ if should_continue_to_chat_sft:
         sys.executable,
         output_dirname,
         step,
+        args.device_batch_size,
         args.continue_to_chat_sft_args,
     )
     sanitize_chat_sft_rendezvous_env()
