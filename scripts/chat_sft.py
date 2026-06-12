@@ -192,6 +192,7 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
+loaded_checkpoint_step = int(meta.get("step", 0))
 user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update(
@@ -778,6 +779,7 @@ while True:
         model.eval()
         orig_model.eval()
         engine = Engine(orig_model, tokenizer)
+        chat_eval_step = loaded_checkpoint_step if args.eval_only else step
         chat_eval_results = {}
         with autocast_ctx:
             for task_name in chat_eval_task_names:
@@ -798,9 +800,9 @@ while True:
         chatcore_metric_dict = compute_chatcore_metric(chat_eval_results)
         latest_chat_eval_results = dict(chat_eval_results)
         latest_chat_eval_results.update(chatcore_metric_dict)
-        latest_chat_eval_step = step
+        latest_chat_eval_step = chat_eval_step
         wandb_log_data = {
-            "step": step,
+            "step": chat_eval_step,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
         }
@@ -812,9 +814,9 @@ while True:
             wandb_log_data["chat_eval/ChatCORE"] = chatcore_metric_dict["ChatCORE metric"]
         if "ChatCORE metric (without SpellingBee)" in chatcore_metric_dict:
             wandb_log_data["chat_eval/ChatCORE_without_SpellingBee"] = chatcore_metric_dict["ChatCORE metric (without SpellingBee)"]
-        wandb_run.log(drop_none_log_values(wandb_log_data), step=step)
+        wandb_run.log(drop_none_log_values(wandb_log_data), step=chat_eval_step)
         if ddp_rank == 0:
-            model_slug = ckpt_prefix2 + f"_chat_{step:06d}"
+            model_slug = ckpt_prefix2 + f"_chat_{chat_eval_step:06d}"
             output_csv_path = os.path.join(base_dir, "chat_eval", f"{model_slug}.csv")
             os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
             with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:
@@ -829,7 +831,7 @@ while True:
                     type="chat-eval-results",
                     metadata={
                         "model_slug": model_slug,
-                        "step": step,
+                        "step": chat_eval_step,
                         "task_names": list(chat_eval_results.keys()),
                         "max_problems": args.chat_eval_max_problems,
                         "batch_size": args.chat_eval_batch_size,
