@@ -347,7 +347,8 @@ parser.add_argument("--save-optimizer-state", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--delete-old-ckpts", type=str2bool, nargs='?', const=True, default=True, help="after saving a checkpoint, delete all older checkpoints based on step number")
 parser.add_argument("--delete-old-ckpts-before-save", action="store_true", help="delete old checkpoints before saving the new checkpoint; keeps file-size validation by snapshotting the previous checkpoint sizes first")
 parser.add_argument("--continue-to-chat-sft", type=str2bool, nargs='?', const=True, default=True, help="after a successful base training run, exec scripts.chat_sft from the final base checkpoint; when launched under torchrun, each existing worker continues in place with the same world size")
-parser.add_argument("--continue-to-chat-sft-args", type=str, default="", help="extra CLI args forwarded to scripts.chat_sft when --continue-to-chat-sft is set")
+# By default, enable using Tulu3 SFT mixture for chat SFT. Changing 1 to 0 disables it.
+parser.add_argument("--continue-to-chat-sft-args", type=str, default="--use-tulu3-sft-mixture 1", help="extra CLI args forwarded to scripts.chat_sft when --continue-to-chat-sft is set")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 parser.add_argument("--wandb-api-key-file", type=str, default=None, help="Weights & Biases API key file (optional). If provided, sets WANDB_API_KEY for this run")
