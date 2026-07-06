@@ -2,14 +2,14 @@
 Train model with optional periodic chat-SFT steps mixed into base pretraining.
 From root directory of the project, run as:
 
-python -m scripts.base_train_mixed
+python -m scripts.base_train_mix
 
 or distributed as:
 
-torchrun --nproc_per_node=8 -m scripts.base_train_mixed
+torchrun --nproc_per_node=8 -m scripts.base_train_mix
 
 If you are only on CPU/Macbook, you'll want to train a much much smaller LLM. Example:
-python -m scripts.base_train_mixed --depth=4 --max-seq-len=512 --device-batch-size=1 
+python -m scripts.base_train_mix --depth=4 --max-seq-len=512 --device-batch-size=1 
 --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=2000 
 --chat-sft-every=100
 
