@@ -54,6 +54,7 @@ from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.spellingbee import SimpleSpelling, SpellingBee
+from tasks.tulu3 import Tulu3SFTMixture
 torch.set_printoptions(sci_mode=False)
 
 # print_banner()
@@ -312,6 +313,8 @@ parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
 parser.add_argument("--chat-sft-every", type=int, default=-1, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
+parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
+                    help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
@@ -945,21 +948,23 @@ if resuming and load_optimizer_state:
 
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
-def build_chat_sft_train_dataset(train_mixture_repeats, identity_conversations_filepath):
+def build_chat_sft_train_dataset(train_mixture_repeats, identity_conversations_filepath, use_tulu3_sft_mixture=False):
     smoltalk_rows_per_repeat = 50000
     simple_spelling_rows_per_repeat = 200000
     spellingbee_rows_per_repeat = 80000
 
     train_tasks = [
-        SmolTalk(split="train", stop=smoltalk_rows_per_repeat * train_mixture_repeats),
-        MMLU(subset="auxiliary_train", split="train"),
+        SmolTalk(split="train", stop=smoltalk_rows_per_repeat * train_mixture_repeats), # grow the capped SmolTalk slice instead of replaying the same subset
+        MMLU(subset="auxiliary_train", split="train"), # 100K rows of multiple choice problems drawn from ARC, MC_TEST, OBQA, RACE
         ARC(subset="ARC-Easy", split="train"),
         ARC(subset="ARC-Challenge", split="train"),
-        GSM8K(subset="main", split="train"),
-        GSM8K(subset="main", split="train"),
-        CustomJSON(filepath=identity_conversations_filepath),
-        CustomJSON(filepath=identity_conversations_filepath),
+        GSM8K(subset="main", split="train"), # 8K rows teaching simple math and (calculator) tool use
+        GSM8K(subset="main", split="train"), # 2 epochs of GSM8K
+        CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
+        CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
     ]
+    if use_tulu3_sft_mixture:
+        train_tasks.append(Tulu3SFTMixture(split="train"))
     for repeat_idx in range(train_mixture_repeats):
         simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
         spellingbee_start = repeat_idx * spellingbee_rows_per_repeat
@@ -969,21 +974,21 @@ def build_chat_sft_train_dataset(train_mixture_repeats, identity_conversations_f
                 split="train",
                 start=simple_spelling_start,
                 stop=simple_spelling_start + simple_spelling_rows_per_repeat,
-            ),
+            ), # use a fresh procedural slice each repeat instead of duplicating the same examples
             SpellingBee(
                 size=spellingbee_start + spellingbee_rows_per_repeat,
                 split="train",
                 response_style="mixed",
                 start=spellingbee_start,
                 stop=spellingbee_start + spellingbee_rows_per_repeat,
-            ),
+            ), # mix direct answers with tool-verified ones over fresh seeds each repeat
             SpellingBee(
                 size=spellingbee_start + spellingbee_rows_per_repeat,
                 split="train",
                 response_style="direct",
                 start=spellingbee_start,
                 stop=spellingbee_start + spellingbee_rows_per_repeat,
-            ),
+            ), # extra direct-answer supervision for spelling/counting over fresh seeds each repeat
         ])
     return TaskMixture(train_tasks)
 
@@ -1100,6 +1105,7 @@ identity_conversations_filepath = os.path.join(base_dir, "identity_conversations
 chat_sft_train_dataset = build_chat_sft_train_dataset(
     args.chat_sft_train_mixture_repeats,
     identity_conversations_filepath,
+    use_tulu3_sft_mixture=args.use_tulu3_sft_mixture,
 )
 chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(
     chat_sft_train_dataset,
