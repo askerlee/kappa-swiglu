@@ -170,8 +170,6 @@ def pick_free_tcp_port():
 
 
 def prepare_chat_sft_rendezvous(ddp, ddp_rank, device):
-    import torch
-
     if not ddp:
         return None
 
@@ -244,14 +242,17 @@ parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity
 parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
                     help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
 parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
-                        help="log the implicit kappa bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-kappa-swiglu")
-parser.add_argument("--kappa-lr-max-scale", dest="kappa_lr_max_scale", type=float, default=1.0,
+                    help="log the implicit kappa bias top/bottom 5% stats for MoE experts; this can be enabled independently of --use-kappa-swiglu")
+parser.add_argument("--kappa-lr-max-scale",
+                    dest="kappa_lr_max_scale", type=float, default=1.0,
                     help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
 # With slope scaling always enabled, --kappa-lr-final-scale
 # defaults to half of --kappa-lr-max-scale, which is 0.5 by default.
-parser.add_argument("--kappa-lr-final-scale", dest="kappa_lr_final_scale", type=float, default=0.5,
+parser.add_argument("--kappa-lr-final-scale",
+                    dest="kappa_lr_final_scale", type=float, default=0.5,
                     help="final LR scale factor for kappa_bias params after warming from 0 to 1")
-parser.add_argument("--kappa-delay-start-min-iterations", dest="kappa_delay_start_min_iterations", type=int, default=200,
+parser.add_argument("--kappa-delay-start-min-iterations",
+                    dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
 parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.05,
                     help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
@@ -382,29 +383,27 @@ if not (0.0 <= args.kappa_slope_max_scale_warmup_iteration_frac <= 1.0):
 if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
-    raise ValueError("--aux-loss-weight--init-anneal-iterations must be >= 0")
+    raise ValueError("--aux-loss-weight-init-anneal-iterations must be >= 0")
 if not (0.0 <= args.kappa_l2_ema_beta < 1.0):
     raise ValueError("--kappa-l2-ema-beta must satisfy 0 <= beta < 1")
 if not (0.0 <= args.kappa_l2_ema_anchor_start <= 1.0):
     raise ValueError("--kappa-l2-ema-anchor-start must satisfy 0 <= start <= 1")
 if args.kappa_l2_ema_anchor_end < args.kappa_l2_ema_anchor_start:
-    raise ValueError(
-        "--kappa-l2-ema-anchor-end must be >= --kappa-l2-ema-anchor-start"
-    )
+    raise ValueError("--kappa-l2-ema-anchor-end must be >= --kappa-l2-ema-anchor-start")
 if args.kappa_l2_ema_anchor_end > 1.0:
     raise ValueError("--kappa-l2-ema-anchor-end must satisfy 0 <= end <= 1")
 if args.kappa_l2_ema_floor_frac < 0.0:
     raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
 if args.kappa_input_logit_norm_exponent is not None and args.kappa_input_logit_norm_exponent < 0.0:
     raise ValueError("--kappa-input-logit-norm-exponent must be >= 0")
-
-'''
-# Aurora and kappa-bias interact more stably when the confidence input is
-# router_probs instead of top_logits, so force that setting here.
-if args.matrix_optimizer == "aurora" and args.kappa_input != "constant":
-    args.kappa_input = "router_probs"
-'''
-
+if not (0.0 <= args.kappa_l2_loss_stage1_frac <= 1.0):
+    raise ValueError(
+        "--kappa-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
+    )
+if not (0.0 <= args.kappa_l2_loss_final_frac <= 1.0):
+    raise ValueError(
+        "--kappa-l2-loss-final-frac must satisfy 0 <= final_frac <= 1"
+    )
 # num_moe_layers: 
 # -1 (default): all layers from moe_start_layer
 # 0: no moe layers, i.e., a dense model
@@ -1025,8 +1024,6 @@ def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
 
 
 def get_kappa_slope_max_scale(target_max_scale, it, total_iterations, warmup_iteration_frac=0.1, delay_iterations=0):
-    import math
-
     target_max_scale = float(target_max_scale)
     if target_max_scale == 1.0:
         return 1.0
@@ -1239,10 +1236,6 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 )
                 losses[f'router_weight_exp_gate_alignment_top5p_{i}'] = top_exp_gate_weight_alignment.item()
                 losses[f'router_weight_exp_gate_alignment_bottom5p_{i}'] = bottom_exp_gate_weight_alignment.item()
-
-                router_weight_unit = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
-                exp_gate_parallel = (exp_gate_weight * router_weight_unit.unsqueeze(2)).sum(dim=1, keepdim=True)
-                exp_gate_orthogonal = exp_gate_weight - router_weight_unit.unsqueeze(2) * exp_gate_parallel
 
                 if expert_utilities is not None:
                     # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
@@ -1829,13 +1822,13 @@ while True:
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-                if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':
-                    group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
-                else:
-                    group["lr"] = group["initial_lr"] * lrm
-                if group['kind'] == 'muon':
-                    group["momentum"] = muon_momentum
-                group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
+            if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':
+                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
+            else:
+                group["lr"] = group["initial_lr"] * lrm
+            if group['kind'] == 'muon':
+                group["momentum"] = muon_momentum
+            group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
         orig_model.update_aux_free_load_balancing()
         trace_rank(f"step {step}: starting optimizer.step()")
         optimizer.step()
@@ -2047,7 +2040,7 @@ while True:
                 log_data.update({f"inspect/kappa_slope_scale_abs_bottom5p_mean_{i}": losses[f'kappa_slope_scale_abs_bottom5p_mean_{i}']})
             if f'kappa_slope_scale_abs_mean_normalized_{i}' in losses:
                 log_data.update({f"inspect/kappa_slope_scale_abs_mean_normalized_{i}": losses[f'kappa_slope_scale_abs_mean_normalized_{i}']})
-                        
+
         wandb_run.log(drop_none_log_values(log_data), step=step)
 
     # state update
