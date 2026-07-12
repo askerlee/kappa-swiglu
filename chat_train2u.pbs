@@ -14,4 +14,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
 
 set -x
-~/miniconda3/bin/torchrun --standalone --nproc_per_node=2 -m scripts.chat_sft --model-tag "$PBS_JOBID" $input
+~/miniconda3/bin/torchrun --standalone --nproc_per_node=2 -m scripts.chat_sft --model-tag "$PBS_JOBID" "$@"

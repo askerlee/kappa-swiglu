@@ -17,4 +17,4 @@ cd "$PBS_O_WORKDIR" || exit 1
 exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
 
 set -x
-~/miniconda3/bin/torchrun --standalone --nproc_per_node=2 -m scripts.base_train_mix --save-every 2000 --continue-to-chat-sft --model-tag "$PBS_JOBID" $input
+~/miniconda3/bin/torchrun --standalone --nproc_per_node=2 -m scripts.base_train_mix --save-every 2000 --continue-to-chat-sft --model-tag "$PBS_JOBID" "$@"
