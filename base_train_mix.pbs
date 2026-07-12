@@ -14,4 +14,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
 
 set -x
-~/miniconda3/bin/python -m scripts.base_train_mix --save-every 2000 --continue-to-chat-sft --model-tag "$PBS_JOBID" "$@"
+~/miniconda3/bin/python -m scripts.base_train_mix --save-every 2000 --continue-to-chat-sft --model-tag "$PBS_JOBID" $input
