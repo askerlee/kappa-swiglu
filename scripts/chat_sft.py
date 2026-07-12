@@ -73,7 +73,7 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
                     "tulu3 is not repeated; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4)")
-parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=False, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
+parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")

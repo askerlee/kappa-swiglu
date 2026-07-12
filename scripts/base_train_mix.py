@@ -380,8 +380,8 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 
-if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
-    args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
+#if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
+#    args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
 
 if args.model_tag is not None and arg_was_explicitly_set(sys.argv[1:], '--seed'):
     args.model_tag = f"{args.model_tag}-s{args.seed}"

@@ -1,8 +1,9 @@
 import re
 
 
-ALL_CHAT_EVAL_TASKS = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
-CHATCORE_TASKS_WITHOUT_SPELLINGBEE = [task_name for task_name in ALL_CHAT_EVAL_TASKS if task_name != 'SpellingBee']
+ALL_CHAT_EVAL_TASKS = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee', 'IFEval']
+CHATCORE_TASKS = [task_name for task_name in ALL_CHAT_EVAL_TASKS if task_name != 'IFEval']
+CHATCORE_TASKS_WITHOUT_SPELLINGBEE = [task_name for task_name in CHATCORE_TASKS if task_name != 'SpellingBee']
 CHAT_EVAL_BASELINE_ACCURACIES = {
     'ARC-Easy': 0.25,
     'ARC-Challenge': 0.25,
@@ -16,7 +17,7 @@ ACCURACY_LINE_RE = re.compile(r'^(?P<task>.+?)\s+accuracy:\s+(?P<percent>\d+(?:\
 
 def compute_chatcore_metric(results, baseline_accuracies=None, all_tasks=None):
     baseline_accuracies = CHAT_EVAL_BASELINE_ACCURACIES if baseline_accuracies is None else baseline_accuracies
-    all_tasks = ALL_CHAT_EVAL_TASKS if all_tasks is None else all_tasks
+    all_tasks = CHATCORE_TASKS if all_tasks is None else all_tasks
     metrics = {}
 
     def add_metric(metric_name, metric_tasks):
