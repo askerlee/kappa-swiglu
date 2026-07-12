@@ -245,7 +245,7 @@ if __name__ == "__main__":
                 max_problems=args.max_problems,
             )
             results[task_name] = acc
-            print0(f"{task_name} accuracy: {100 * acc:.2f}%")
+            print0(f"{task_name}, {acc:.6f}")
 
     # Log to report
     from nanochat.report import get_report

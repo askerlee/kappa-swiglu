@@ -31,3 +31,4 @@ pbs*.err
 pbs*.out
 *debug.log
 figures/
+*.log
