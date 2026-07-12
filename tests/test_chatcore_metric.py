@@ -17,6 +17,14 @@ HumanEval accuracy: 2.44%
 SpellingBee accuracy: 76.17%
 """
 
+MANUAL_SCORE_INPUT = """ARC-Easy accuracy: 51.22%
+ARC-Challenge accuracy: 38.91%
+MMLU accuracy: 33.17%
+GSM8K accuracy: 1.52%
+HumanEval accuracy: 12.20%
+SpellingBee accuracy: 97.66%
+"""
+
 
 def test_parse_accuracy_report_parses_percent_lines():
     results = parse_accuracy_report(SAMPLE_INPUT)
@@ -55,4 +63,20 @@ def test_chatcore_metric_script_reads_pasted_input_from_stdin():
     assert completed.stdout == (
         "ChatCORE metric: 0.1799\n"
         "ChatCORE metric (without SpellingBee): 0.0635\n"
+    )
+
+
+def test_manual_chatcore_score_script_reads_pasted_input_from_stdin():
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.manual_chatcore_score"],
+        input=MANUAL_SCORE_INPUT,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        check=True,
+    )
+
+    assert completed.stdout == (
+        "ChatCORE metric: 0.2930\n"
+        "ChatCORE metric (without SpellingBee): 0.1562\n"
     )
