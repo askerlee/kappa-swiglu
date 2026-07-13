@@ -123,6 +123,17 @@ def test_chatcore_significance_and_ifeval_paired_differences(tmp_path: Path):
     assert chatcore_summary["wilcoxon_stat"] == pytest.approx(0.0)
     assert chatcore_summary["wilcoxon_pvalue"] == pytest.approx(0.03125)
 
+    combined_seed_summary = analyses["chatcore_ifeval_average_seed_paired"]
+    assert combined_seed_summary["count"] == 2
+    assert combined_seed_summary["wins"] == 2
+    assert combined_seed_summary["losses"] == 0
+    assert combined_seed_summary["ties"] == 0
+    assert combined_seed_summary["mean"] == pytest.approx(0.061368)
+    assert combined_seed_summary["median"] == pytest.approx(0.061368)
+    assert combined_seed_summary["sign_pvalue"] == pytest.approx(0.5)
+    assert combined_seed_summary["wilcoxon_stat"] == pytest.approx(0.0)
+    assert combined_seed_summary["wilcoxon_pvalue"] == pytest.approx(0.5)
+
     ifeval_summary = analyses["ifeval_seed_paired"]
     assert ifeval_summary["count"] == 2
     assert ifeval_summary["wins"] == 2

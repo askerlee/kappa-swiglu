@@ -184,6 +184,24 @@ def compute_chatcore_average_diffs(pair_results: list[PairResult]):
     return averaged_diffs
 
 
+def compute_seed_paired_chatcore_average_diffs(pair_results: list[PairResult]):
+    if not pair_results:
+        raise ValueError("At least one paired result is required")
+
+    return [
+        sum(pair_result.chatcore_diffs[task] for task in CHATCORE_TASKS) / len(CHATCORE_TASKS)
+        for pair_result in pair_results
+    ]
+
+
+def compute_seed_paired_combined_average_diffs(pair_results: list[PairResult]):
+    chatcore_diffs = compute_seed_paired_chatcore_average_diffs(pair_results)
+    return [
+        (chatcore_diff + pair_result.ifeval_diff) / 2.0
+        for chatcore_diff, pair_result in zip(chatcore_diffs, pair_results)
+    ]
+
+
 def compute_task_config_diffs(pair_result_groups: list[list[PairResult]]):
     task_config_diffs = []
     for pair_results in pair_result_groups:
@@ -258,11 +276,13 @@ def print_summary(label: str, summary):
 
 def run_analyses(pair_results: list[PairResult], pair_result_groups: list[list[PairResult]] | None = None):
     chatcore_avg_diffs = compute_chatcore_average_diffs(pair_results)
+    combined_seed_paired_diffs = compute_seed_paired_combined_average_diffs(pair_results)
     ifeval_diffs = [pair_result.ifeval_diff for pair_result in pair_results]
 
     analyses = {
         "chatcore_benchmark_paired": summarize_diffs(list(chatcore_avg_diffs.values())),
         "chatcore_average_diffs": chatcore_avg_diffs,
+        "chatcore_ifeval_average_seed_paired": summarize_diffs(combined_seed_paired_diffs),
         "ifeval_seed_paired": summarize_diffs(ifeval_diffs),
     }
     if pair_result_groups is not None:
@@ -284,6 +304,10 @@ def main():
         f"Compared column '{ACCURACY_COLUMN}' as right - left across {len(pair_results)} matched file pair(s)."
     )
     print_summary("ChatCORE benchmark-paired", analyses["chatcore_benchmark_paired"])
+    print_summary(
+        "Average ChatCORE and IFEval score seed-paired",
+        analyses["chatcore_ifeval_average_seed_paired"],
+    )
     print("Task-configuration robustness (supplementary; cells are correlated, so p-values are descriptive)")
     print_summary("  6-task task-configuration cells", analyses["task_config_robustness"])
     print_summary("IFEval seed-paired", analyses["ifeval_seed_paired"])
