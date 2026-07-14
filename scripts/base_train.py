@@ -1469,7 +1469,7 @@ while True:
         delete_old_ckpts_error = ""
         comparison_step = None
         reference_file_sizes = None
-        keep_checkpoint_steps = [last_core_eval_step]
+        keep_checkpoint_steps = [] if is_last_step else [last_core_eval_step]
         if args.delete_old_ckpts and args.delete_old_ckpts_before_save and master_process:
             try:
                 comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
