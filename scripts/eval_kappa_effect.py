@@ -749,11 +749,14 @@ def main():
 
     summary_collector.reduce()
     summary = summary_collector.summary()
-    print0(f"count: {int(summary['count'])}")
     print_routing_summary(summary)
     
     print0()
+
     print0("Gate bias activation delta summary:")
+    # count is not a token count. It is the number of valid scalar gate activations included in delta_gate statistics
+    # It's a huge number, for example 1546188226560.
+    print0(f"Gate activation count: {int(summary['count'])}")
     print0(f"mean(delta_gate): {summary['mean(delta_gate)']:.3e}")
     print0(f"mean(abs(delta_gate)): {summary['mean(abs(delta_gate))']:.3e}")
     print0(f"rms(delta_gate): {summary['rms(delta_gate)']:.3e}")

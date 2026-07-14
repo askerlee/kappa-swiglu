@@ -1802,8 +1802,13 @@ while True:
 
         # For the final evaluation at the end of training, write CSV output
         if is_last_step and ddp_rank == 0:
-            model_slug = f"{output_dirname}_mixed_{step:06d}"
-            output_csv_path = os.path.join(base_dir, "base_mixed_eval", f"{model_slug}.csv")
+            model_slug = (
+                f"{output_dirname}_{step:06d}"
+                if args.chat_sft_every == 0
+                else f"{output_dirname}_mixed_{step:06d}"
+            )
+            output_eval_dir = "base_eval" if args.chat_sft_every == 0 else "base_mixed_eval"
+            output_csv_path = os.path.join(base_dir, output_eval_dir, f"{model_slug}.csv")
             os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
             with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:
                 f.write(f"{'Task':<35}, {'Accuracy':<10}, {'Centered':<10}\n")
