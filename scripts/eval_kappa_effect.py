@@ -604,8 +604,8 @@ def run_eval_pass(model, loader, eval_steps, autocast_ctx, pass_name):
                 last_log_time = now
 
 
-def print_routing_summary(summary):
-    print0("Routing summary:")
+def print_routing_summary(model_tag, summary):
+    print0(f"{model_tag} Routing summary:")
     print0(f"mean_normalized_load_entropy: {summary['mean_normalized_load_entropy']:.4f}")
     print0(f"mean_load_cv: {summary['mean_load_cv']:.4f}")
     print0(f"mean_router_probability_entropy: {summary['mean_router_probability_entropy']:.4f}")
@@ -713,7 +713,7 @@ def main():
         routing_loader = build_loader(tokenizer, args.device_batch_size, sequence_len, args.split, device)
         run_eval_pass(model, routing_loader, eval_steps, autocast_ctx, pass_name="Routing pass")
         routing_collector.reduce()
-        print_routing_summary(routing_collector.summary())
+        print_routing_summary(args.model_tag, routing_collector.summary())
         compute_cleanup()
         return
 
