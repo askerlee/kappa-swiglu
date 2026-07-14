@@ -1804,10 +1804,10 @@ while True:
         if is_last_step and ddp_rank == 0:
             model_slug = (
                 f"{output_dirname}_{step:06d}"
-                if args.chat_sft_every == 0
+                if args.chat_sft_every == -1
                 else f"{output_dirname}_mixed_{step:06d}"
             )
-            output_eval_dir = "base_eval" if args.chat_sft_every == 0 else "base_mixed_eval"
+            output_eval_dir = "base_eval" if args.chat_sft_every == -1 else "base_mixed_eval"
             output_csv_path = os.path.join(base_dir, output_eval_dir, f"{model_slug}.csv")
             os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
             with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:
