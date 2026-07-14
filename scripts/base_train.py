@@ -435,6 +435,8 @@ if args.kappa_start_layer is None:
         args.kappa_start_layer = min(args.moe_start_layer + 2, args.depth // 2, 5)
     else:
         args.kappa_start_layer = 0
+if args.constant_kappa_dense_layers:
+    args.kappa_start_layer = 0
 if args.kappa_start_layer < 0:
     raise ValueError("--kappa-start-layer must be >= 0")
 if args.max_auto_grad_accum_steps != -1 and args.max_auto_grad_accum_steps < 1:
