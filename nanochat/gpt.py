@@ -1907,20 +1907,37 @@ class MOELayer(nn.Module):
         flat_router_scores,
     ):
         valid_mask = flat_rank < exp_capacity
-        valid_token_indices = flat_token_indices[valid_mask]
-        valid_expert_indices = flat_top_k_indices[valid_mask]
-        valid_ranks = flat_rank[valid_mask]
-        expert_inputs = torch.index_put(
-            x_flat.new_zeros(self.n_exp, exp_capacity, x_flat.size(1)),
-            (valid_expert_indices, valid_ranks),
-            x_flat[valid_token_indices],
+        num_expert_slots = self.n_exp * exp_capacity
+        sentinel_slot = flat_rank.new_full((), num_expert_slots)
+        flat_expert_slots = torch.where(
+            valid_mask,
+            flat_top_k_indices * exp_capacity + flat_rank,
+            sentinel_slot,
+        )
+        valid_values = x_flat[flat_token_indices] * valid_mask.unsqueeze(1).to(dtype=x_flat.dtype)
+        expert_inputs_flat = torch.scatter_add(
+            x_flat.new_zeros(num_expert_slots + 1, x_flat.size(1)),
+            0,
+            flat_expert_slots.unsqueeze(1).expand_as(valid_values),
+            valid_values,
+        )
+        expert_inputs = expert_inputs_flat[:num_expert_slots].view(
+            self.n_exp,
+            exp_capacity,
+            x_flat.size(1),
         )
         expert_router_scores = None
         if self.use_qwen3_moe_mlp:
-            expert_router_scores = torch.index_put(
-                flat_router_scores.new_zeros(self.n_exp, exp_capacity),
-                (valid_expert_indices, valid_ranks),
-                flat_router_scores[valid_mask],
+            valid_router_scores = flat_router_scores * valid_mask.to(dtype=flat_router_scores.dtype)
+            expert_router_scores_flat = torch.scatter_add(
+                flat_router_scores.new_zeros(num_expert_slots + 1),
+                0,
+                flat_expert_slots,
+                valid_router_scores,
+            )
+            expert_router_scores = expert_router_scores_flat[:num_expert_slots].view(
+                self.n_exp,
+                exp_capacity,
             )
         return expert_inputs, expert_router_scores
 

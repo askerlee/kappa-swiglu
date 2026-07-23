@@ -467,6 +467,44 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
         assert block.mlp._expert_router_scores_cache is None
 
 
+def test_moe_functional_dispatch_drops_overflow_without_dynamic_shapes():
+    config = GPTConfig(
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=4,
+        use_qwen3_moe_mlp=True,
+        debug=False,
+    )
+    layer = MOELayer(config, layer_idx=0)
+    x_flat = torch.arange(16, dtype=torch.float32).view(4, 4).requires_grad_(True)
+    flat_rank = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3])
+    flat_token_indices = torch.arange(4).repeat_interleave(2)
+    flat_top_k_indices = torch.tensor([0, 1, 0, 1, 0, 1, 0, 1])
+    flat_router_scores = torch.arange(1, 9, dtype=torch.float32, requires_grad=True)
+
+    expert_inputs, expert_router_scores = layer._build_expert_inputs_functional(
+        x_flat,
+        flat_rank,
+        2,
+        flat_token_indices,
+        flat_top_k_indices,
+        flat_router_scores,
+    )
+
+    expected_inputs = torch.stack((x_flat[:2], x_flat[:2]))
+    expected_scores = torch.tensor([[1.0, 3.0], [2.0, 4.0]])
+    torch.testing.assert_close(expert_inputs, expected_inputs)
+    torch.testing.assert_close(expert_router_scores, expected_scores)
+
+    (expert_inputs.sum() + expert_router_scores.sum()).backward()
+    torch.testing.assert_close(x_flat.grad[:2], torch.full((2, 4), 2.0))
+    torch.testing.assert_close(x_flat.grad[2:], torch.zeros(2, 4))
+    torch.testing.assert_close(
+        flat_router_scores.grad,
+        torch.tensor([1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
+    )
+
+
 def test_gpt_sets_kappa_slope_max_scales_for_dense_and_moe_qwen3_mlps():
     config = GPTConfig(
         sequence_len=8,
