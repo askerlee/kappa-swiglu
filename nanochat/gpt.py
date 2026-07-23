@@ -845,7 +845,7 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False, dispatch_cache_slot=None):
         x = x + self.attn(
             norm(x),
             ve,
@@ -855,7 +855,12 @@ class Block(nn.Module):
             cache_layer_idx=cache_layer_idx,
             advance_kv_cache=advance_kv_cache,
         )
-        x = x + self.mlp(norm(x))
+        mlp_input = norm(x)
+        if isinstance(self.mlp, MOELayer):
+            mlp_output = self.mlp(mlp_input, dispatch_cache_slot=dispatch_cache_slot)
+        else:
+            mlp_output = self.mlp(mlp_input)
+        x = x + mlp_output
         return x
 
 # NOTE: MLPExperts is not used in our default settings. Instead, we always use Qwen3MLPExperts.
@@ -1827,6 +1832,8 @@ class MOELayer(nn.Module):
         self._expert_router_scores_cache_dtype = None
         self._expert_router_scores_cache_device = None
         self._expert_router_scores_cache_capacity = None
+        self._expert_inputs_grad_cache = {}
+        self._expert_router_scores_grad_cache = {}
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -1844,14 +1851,33 @@ class MOELayer(nn.Module):
             expert_router_scores[valid_expert_indices, valid_ranks] = flat_router_scores[valid_mask]
 
     @torch._dynamo.disable
-    def _get_expert_router_scores_buffer(self, exp_capacity, target_dtype, target_device):
+    def _get_expert_router_scores_buffer(self, exp_capacity, target_dtype, target_device, cache_slot=None):
         if torch.is_grad_enabled():
-            return torch.zeros(
-                self.n_exp,
-                exp_capacity,
-                dtype=target_dtype,
-                device=target_device,
-            )
+            if cache_slot is None:
+                return torch.zeros(
+                    self.n_exp,
+                    exp_capacity,
+                    dtype=target_dtype,
+                    device=target_device,
+                )
+            buffer = self._expert_router_scores_grad_cache.get(cache_slot)
+            if (
+                buffer is None
+                or buffer.dtype != target_dtype
+                or buffer.device != target_device
+                or buffer.size(1) != exp_capacity
+            ):
+                buffer = torch.empty(
+                    self.n_exp,
+                    exp_capacity,
+                    dtype=target_dtype,
+                    device=target_device,
+                )
+            else:
+                buffer = buffer.detach()
+            buffer.zero_()
+            self._expert_router_scores_grad_cache[cache_slot] = buffer
+            return buffer
 
         # Safe only when each forward using this buffer is backpropped before reuse.
         if (
@@ -1878,15 +1904,36 @@ class MOELayer(nn.Module):
         return self._expert_router_scores_cache
 
     @torch._dynamo.disable
-    def _get_expert_inputs_buffer(self, exp_capacity, target_dtype, target_device, hidden_size):
+    def _get_expert_inputs_buffer(self, exp_capacity, target_dtype, target_device, hidden_size, cache_slot=None):
         if torch.is_grad_enabled():
-            return torch.zeros(
-                self.n_exp,
-                exp_capacity,
-                hidden_size,
-                dtype=target_dtype,
-                device=target_device,
-            )
+            if cache_slot is None:
+                return torch.zeros(
+                    self.n_exp,
+                    exp_capacity,
+                    hidden_size,
+                    dtype=target_dtype,
+                    device=target_device,
+                )
+            buffer = self._expert_inputs_grad_cache.get(cache_slot)
+            if (
+                buffer is None
+                or buffer.dtype != target_dtype
+                or buffer.device != target_device
+                or buffer.size(1) != exp_capacity
+                or buffer.size(2) != hidden_size
+            ):
+                buffer = torch.empty(
+                    self.n_exp,
+                    exp_capacity,
+                    hidden_size,
+                    dtype=target_dtype,
+                    device=target_device,
+                )
+            else:
+                buffer = buffer.detach()
+            buffer.zero_()
+            self._expert_inputs_grad_cache[cache_slot] = buffer
+            return buffer
 
         # Safe only when each forward using this buffer is backpropped before reuse.
         if (
@@ -1990,7 +2037,7 @@ class MOELayer(nn.Module):
             f"Unsupported kappa_input: {self.kappa_input!r}"
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, dispatch_cache_slot=None):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
 
@@ -2018,6 +2065,7 @@ class MOELayer(nn.Module):
             x_flat.dtype,
             x_flat.device,
             x_flat.size(1),
+            cache_slot=dispatch_cache_slot,
         )
         selected_gate_confidence = self._select_gate_confidence(
             top_k_scores,
@@ -2031,6 +2079,7 @@ class MOELayer(nn.Module):
                 exp_capacity,
                 selected_gate_confidence.dtype,
                 selected_gate_confidence.device,
+                cache_slot=dispatch_cache_slot,
             )
         self._build_expert_inputs(
             x_flat,
@@ -2689,6 +2738,7 @@ class GPT(nn.Module):
                     kv_cache,
                     cache_layer_idx=cache_layer_idx,
                     advance_kv_cache=advance_kv_cache,
+                    dispatch_cache_slot=current_ut,
                 )
             x = norm(x)
 

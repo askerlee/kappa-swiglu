@@ -452,11 +452,26 @@ def test_gpt_total_ut_steps_moe_training_backward_reuses_no_dispatch_buffers():
     ids = torch.randint(0, config.vocab_size, (2, 5))
     targets = torch.randint(0, config.vocab_size, (2, 5))
 
-    loss, losses = model(ids, targets)
-    loss.backward()
+    first_loss, losses = model(ids, targets)
+    first_loss.backward()
+    first_buffer_ptrs = [
+        tuple(buffer.data_ptr() for buffer in block.mlp._expert_inputs_grad_cache.values())
+        for block in model.transformer.h
+    ]
 
-    assert torch.isfinite(loss)
+    model.zero_grad(set_to_none=True)
+    second_loss, _ = model(ids, targets)
+    second_loss.backward()
+    second_buffer_ptrs = [
+        tuple(buffer.data_ptr() for buffer in block.mlp._expert_inputs_grad_cache.values())
+        for block in model.transformer.h
+    ]
+
+    assert torch.isfinite(first_loss)
+    assert torch.isfinite(second_loss)
     assert losses['ntp_loss'].item() >= 0.0
+    assert first_buffer_ptrs == second_buffer_ptrs
+    assert all(len(buffer_ptrs) == config.total_ut_steps for buffer_ptrs in first_buffer_ptrs)
 
 
 def test_gpt_sets_kappa_slope_max_scales_for_dense_and_moe_qwen3_mlps():
