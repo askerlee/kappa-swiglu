@@ -13,6 +13,7 @@ CHECKPOINT_MODEL_SCRIPTS = (
     ROOT / "scripts" / "chat_eval.py",
     ROOT / "scripts" / "boolq_eval.py",
 )
+ALL_LOOP_SCRIPTS = FRESH_MODEL_SCRIPTS + CHECKPOINT_MODEL_SCRIPTS
 
 
 def _parse(path):
@@ -76,3 +77,10 @@ def test_checkpoint_scripts_wire_loop_into_load_model():
             _has_args_total_ut_steps_keyword(call)
             for call in _find_calls(tree, "load_model")
         ), path
+
+
+def test_loop_scripts_print_nondefault_loop_count():
+    for path in ALL_LOOP_SCRIPTS:
+        source = path.read_text(encoding="utf-8")
+        assert "if args.total_ut_steps > 1:" in source, path
+        assert 'print0(f"Loops = {args.total_ut_steps}")' in source, path

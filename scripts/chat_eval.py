@@ -227,6 +227,9 @@ if __name__ == "__main__":
         kappa_bias_fill_value=args.kappa_bias_fill_value,
         kappa_scale_fill_value=args.kappa_scale_fill_value,
     )
+    args.total_ut_steps = model.config.total_ut_steps
+    if args.total_ut_steps > 1:
+        print0(f"Loops = {args.total_ut_steps}")
     engine = Engine(model, tokenizer)
 
     # Get the tasks to evaluate on

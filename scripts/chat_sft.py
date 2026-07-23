@@ -194,6 +194,9 @@ model, tokenizer, meta = load_model(
     total_ut_steps=args.total_ut_steps,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
+args.total_ut_steps = model.config.total_ut_steps
+if args.total_ut_steps > 1:
+    print0(f"Loops = {args.total_ut_steps}")
 loaded_checkpoint_step = int(meta.get("step", 0))
 user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight
 if not use_dummy_wandb:

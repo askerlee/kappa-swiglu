@@ -348,6 +348,9 @@ def main():
             kappa_bias_fill_value=args.kappa_bias_fill_value,
             kappa_scale_fill_value=args.kappa_scale_fill_value,
         )
+        args.total_ut_steps = model.config.total_ut_steps
+        if args.total_ut_steps > 1:
+            print0(f"Loops = {args.total_ut_steps}")
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
         model_name = f"base_model (step {meta['step']})"

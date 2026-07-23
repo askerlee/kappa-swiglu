@@ -294,6 +294,9 @@ def main():
             kappa_bias_fill_value=args.kappa_bias_fill_value,
             kappa_scale_fill_value=args.kappa_scale_fill_value,
         )
+        args.total_ut_steps = model.config.total_ut_steps
+        if args.total_ut_steps > 1:
+            print0(f"Loops = {args.total_ut_steps}")
         model_name = f"{args.source}_model (step {meta['step']})"
         if args.eval_capacity is not None:
             model_name = f"{model_name}, eval_capacity={args.eval_capacity:g}"

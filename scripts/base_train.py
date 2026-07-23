@@ -829,6 +829,9 @@ print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_i
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)
 
+if args.total_ut_steps > 1:
+    print0(f"Loops = {args.total_ut_steps}")
+
 kappa_bias_delay_start_iterations = max(
     args.kappa_delay_start_min_iterations,
     math.ceil(num_iterations * args.kappa_delay_start_iteration_frac),
