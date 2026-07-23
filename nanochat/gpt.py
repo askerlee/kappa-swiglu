@@ -1845,6 +1845,14 @@ class MOELayer(nn.Module):
 
     @torch._dynamo.disable
     def _get_expert_router_scores_buffer(self, exp_capacity, target_dtype, target_device):
+        if torch.is_grad_enabled():
+            return torch.zeros(
+                self.n_exp,
+                exp_capacity,
+                dtype=target_dtype,
+                device=target_device,
+            )
+
         # Safe only when each forward using this buffer is backpropped before reuse.
         if (
             self._expert_router_scores_cache is None
@@ -1871,6 +1879,15 @@ class MOELayer(nn.Module):
 
     @torch._dynamo.disable
     def _get_expert_inputs_buffer(self, exp_capacity, target_dtype, target_device, hidden_size):
+        if torch.is_grad_enabled():
+            return torch.zeros(
+                self.n_exp,
+                exp_capacity,
+                hidden_size,
+                dtype=target_dtype,
+                device=target_device,
+            )
+
         # Safe only when each forward using this buffer is backpropped before reuse.
         if (
             self._expert_inputs_cache is None

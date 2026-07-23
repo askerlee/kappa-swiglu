@@ -426,6 +426,39 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
         assert v_layer[:, : ids.size(1)].abs().sum().item() > 0.0
 
 
+def test_gpt_total_ut_steps_moe_training_backward_reuses_no_dispatch_buffers():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        moe_start_layer=0,
+        num_moe_layers=-1,
+        moe_layer_stride=1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_qwen3_moe_mlp=True,
+        use_qwen3_dense_mlp=True,
+        debug=False,
+    )
+
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (2, 5))
+    targets = torch.randint(0, config.vocab_size, (2, 5))
+
+    loss, losses = model(ids, targets)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert losses['ntp_loss'].item() >= 0.0
+
+
 def test_gpt_sets_kappa_slope_max_scales_for_dense_and_moe_qwen3_mlps():
     config = GPTConfig(
         sequence_len=8,
