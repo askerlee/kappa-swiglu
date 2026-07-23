@@ -72,7 +72,7 @@ def run_one(engine, prompt_tokens, generate_kwargs, autocast_ctx, device_type):
     kv_model_kwargs = {
         "num_heads": m.n_kv_head,
         "head_dim": m.n_embd // m.n_head,
-        "num_layers": m.n_layer,
+        "num_layers": m.n_layer * getattr(m, "total_ut_steps", 1),
     }
 
     kv_cache_prefill = KVCache(

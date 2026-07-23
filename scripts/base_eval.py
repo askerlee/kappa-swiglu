@@ -281,6 +281,7 @@ def main():
     parser.add_argument('-i', '--source', type=str, default='base', required=True, 
                         help="Source of the model: base|sft|rl")
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
+    parser.add_argument('--loop', dest='total_ut_steps', type=int, default=None, help='Override the checkpoint Universal Transformer loop count')
     parser.add_argument('--max-per-task', type=int, default=-1, help='Max examples per CORE task (-1 = all)')
     parser.add_argument(
         '--boolq-tau-mode',
@@ -341,6 +342,7 @@ def main():
             phase="eval",
             model_tag=args.model_tag,
             step=args.step,
+            total_ut_steps=args.total_ut_steps,
             eval_capacity=args.eval_capacity,
             use_kappa_swiglu=args.use_kappa_swiglu,
             kappa_bias_fill_value=args.kappa_bias_fill_value,

@@ -195,6 +195,7 @@ if __name__ == "__main__":
     parser.add_argument('-b', '--batch-size', type=int, default=8, help='Batch size for categorical evaluation')
     parser.add_argument('-g', '--model-tag', type=str, default=None, help='Model tag to load')
     parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
+    parser.add_argument('--loop', dest='total_ut_steps', type=int, default=None, help='Override the checkpoint Universal Transformer loop count')
     parser.add_argument('-x', '--max-problems', type=int, default=None, help='Max problems to evaluate')
     parser.add_argument(
         '--kappa-bias-fill-value',
@@ -222,6 +223,7 @@ if __name__ == "__main__":
         phase="eval",
         model_tag=args.model_tag,
         step=args.step,
+        total_ut_steps=args.total_ut_steps,
         kappa_bias_fill_value=args.kappa_bias_fill_value,
         kappa_scale_fill_value=args.kappa_scale_fill_value,
     )

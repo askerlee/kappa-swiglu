@@ -497,7 +497,7 @@ class CausalSelfAttention(nn.Module):
         self.use_ve = has_ve(layer_idx, config.n_layer)
         self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False):
         B, T, C = x.size()
 
         # Project the input to get queries, keys, and values
@@ -526,7 +526,8 @@ class CausalSelfAttention(nn.Module):
             y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
         else:
             # Inference: use flash_attn_with_kvcache which handles cache management
-            k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            layer_cache_idx = self.layer_idx if cache_layer_idx is None else int(cache_layer_idx)
+            k_cache, v_cache = kv_cache.get_layer_cache(layer_cache_idx)
             y = flash_attn.flash_attn_with_kvcache(
                 q, k_cache, v_cache,
                 k=k, v=v,
@@ -534,8 +535,7 @@ class CausalSelfAttention(nn.Module):
                 causal=True,
                 window_size=window_size,
             )
-            # Advance position after last layer processes
-            if self.layer_idx == kv_cache.n_layers - 1:
+            if advance_kv_cache:
                 kv_cache.advance(T)
 
         # Re-assemble the heads and project back to residual stream
@@ -845,8 +845,16 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
-        x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False):
+        x = x + self.attn(
+            norm(x),
+            ve,
+            cos_sin,
+            window_size,
+            kv_cache,
+            cache_layer_idx=cache_layer_idx,
+            advance_kv_cache=advance_kv_cache,
+        )
         x = x + self.mlp(norm(x))
         return x
 
@@ -2069,6 +2077,7 @@ class GPT(nn.Module):
         """
         super().__init__()
         self.config = config
+        self.total_ut_steps = int(getattr(config, 'total_ut_steps', 1) or 1)
         # Compute per-layer window sizes for sliding window attention
         # window_size is (left, right) tuple: (-1, 0) for full context, (N, 0) for sliding window
         self.window_sizes = self._compute_window_sizes(config)
@@ -2394,7 +2403,7 @@ class GPT(nn.Module):
             window = window_size[0]  # (left, right) tuple, we use left
             effective_seq = t if window < 0 else min(window, t)
             attn_flops += 12 * h * q * effective_seq
-        num_flops_per_token = 6 * (nparams - nparams_exclude) + attn_flops
+        num_flops_per_token = self.total_ut_steps * (6 * (nparams - nparams_exclude) + attn_flops)
         return num_flops_per_token
 
     def num_scaling_params(self):
@@ -2621,7 +2630,7 @@ class GPT(nn.Module):
         return optimizer
 
     # Adapted from nanoMoE's forward() method.
-    # kv_cache hasn't been implemented in nanochat. So we can safely ignore it here.
+    # With total_ut_steps > 1, we repeat the full decoder stack Universal-Transformer style.
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
@@ -2639,16 +2648,32 @@ class GPT(nn.Module):
         x = norm(x)
         x0 = x  # save initial normalized embedding for x0 residual
         ve_placeholder = None
-        for i, block in enumerate(self.transformer.h):
-            x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
-            if str(i) in self.value_embeds:
-                ve = self.value_embeds[str(i)](idx)
-            else:
-                if ve_placeholder is None:
-                    ve_placeholder = x.new_zeros(B, T, self.value_embed_dim)
-                ve = ve_placeholder
-            x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
-        x = norm(x)
+        last_block_idx = len(self.transformer.h) - 1
+        for current_ut in range(self.total_ut_steps):
+            for i, block in enumerate(self.transformer.h):
+                x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
+                if str(i) in self.value_embeds:
+                    ve = self.value_embeds[str(i)](idx)
+                else:
+                    if ve_placeholder is None:
+                        ve_placeholder = x.new_zeros(B, T, self.value_embed_dim)
+                    ve = ve_placeholder
+                cache_layer_idx = current_ut * len(self.transformer.h) + i
+                advance_kv_cache = (
+                    kv_cache is not None
+                    and current_ut == self.total_ut_steps - 1
+                    and i == last_block_idx
+                )
+                x = block(
+                    x,
+                    ve,
+                    cos_sin,
+                    self.window_sizes[i],
+                    kv_cache,
+                    cache_layer_idx=cache_layer_idx,
+                    advance_kv_cache=advance_kv_cache,
+                )
+            x = norm(x)
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
@@ -3043,7 +3068,7 @@ class GPT(nn.Module):
         N = self.get_num_params()
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.sequence_len
-        flops_per_token = 6*N + 12*L*H*Q*T
+        flops_per_token = self.total_ut_steps * (6*N + 12*L*H*Q*T)
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
         flops_achieved = flops_per_iter * (1.0/dt) # per second

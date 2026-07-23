@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
+from nanochat.engine import KVCache
 from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
 from nanochat.manager import MOEManager
 
@@ -384,6 +385,45 @@ def test_gpt_sets_router_confidence_gate_bias_grad_scale_for_all_qwen3_moe_exper
             assert mlp.experts.router_confidence_gate_bias_grad_scale == 0.125
 
     assert found_experts == 2
+
+
+def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (1, 3))
+    cache = KVCache(
+        batch_size=1,
+        num_heads=config.n_kv_head,
+        seq_len=config.sequence_len,
+        head_dim=config.n_embd // config.n_head,
+        num_layers=config.n_layer * config.total_ut_steps,
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    logits = model(ids, kv_cache=cache)
+
+    assert logits.shape == (1, ids.size(1), config.vocab_size)
+    assert cache.get_pos() == ids.size(1)
+
+    for layer_idx in range(config.n_layer * config.total_ut_steps):
+        k_layer, v_layer = cache.get_layer_cache(layer_idx)
+        assert k_layer[:, : ids.size(1)].abs().sum().item() > 0.0
+        assert v_layer[:, : ids.size(1)].abs().sum().item() > 0.0
 
 
 def test_gpt_sets_kappa_slope_max_scales_for_dense_and_moe_qwen3_mlps():
