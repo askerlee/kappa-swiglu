@@ -467,6 +467,121 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
         assert block.mlp._expert_router_scores_cache is None
 
 
+def test_gpt_total_ut_steps_averages_repeated_manager_losses():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    loss_names = (
+        "aux_loss",
+        "router_z_loss",
+        "kappa_bias_l2_loss",
+        "kappa_scale_l2_loss",
+        "kappa_bias_ema_rms_reg_loss",
+        "kappa_scale_ema_rms_reg_loss",
+    )
+
+    for name in loss_names:
+        MANAGER.reset(name)
+        MANAGER.add(name, torch.tensor(2.0))
+        MANAGER.add(name, torch.tensor(4.0))
+
+        actual = model._aggregate_loop_averaged_loss(name)
+
+        torch.testing.assert_close(actual, torch.tensor(3.0))
+        assert MANAGER.aggregate(name) == 0
+
+
+def test_gpt_total_ut_steps_averages_kappa_l2_from_model_forward():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        moe_start_layer=0,
+        num_moe_layers=1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_kappa_swiglu=True,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        kappa_bias = model.transformer.h[0].mlp.experts.kappa_bias
+        kappa_bias[0].fill_(2.0)
+        kappa_bias[1].fill_(-2.0)
+
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
+    _, losses = model(idx, targets)
+
+    torch.testing.assert_close(losses["kappa_bias_l2_loss"], torch.tensor(4.0))
+
+
+def test_gpt_total_ut_steps_updates_kappa_ema_once_and_applies_loss_each_loop():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        moe_start_layer=0,
+        num_moe_layers=1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_kappa_swiglu=True,
+        kappa_bias_ema_rms_reg=True,
+        kappa_bias_l2_ema_beta=0.5,
+        kappa_bias_l2_ema_anchor_start=0.0,
+        kappa_bias_l2_ema_anchor_end=1.0,
+        kappa_bias_l2_ema_floor_frac=0.8,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    model.set_kappa_bias_ema_rms_reg_total_iterations(1)
+    experts = model.transformer.h[0].mlp.experts
+    with torch.no_grad():
+        experts.kappa_bias.fill_(2.0)
+    model.set_kappa_bias_ema_rms_reg_step(0)
+    model._update_kappa_ema_rms_targets()
+
+    with torch.no_grad():
+        experts.kappa_bias.fill_(0.5)
+    model.set_kappa_bias_ema_rms_reg_step(1)
+    idx = torch.randint(0, config.vocab_size, (2, 4))
+    targets = torch.randint(0, config.vocab_size, (2, 4))
+    _, losses = model(idx, targets)
+
+    torch.testing.assert_close(
+        experts.kappa_bias_ema_rms_reg_keeper.ema_rms,
+        torch.tensor(1.25),
+    )
+    torch.testing.assert_close(
+        losses["kappa_bias_ema_rms_reg_loss"],
+        torch.tensor(0.25),
+    )
+
+
 def test_moe_functional_dispatch_drops_overflow_without_dynamic_shapes():
     config = GPTConfig(
         n_exp=2,
@@ -820,14 +935,18 @@ def test_kappa_bias_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     MANAGER.reset("kappa_bias_ema_rms_reg_loss")
     experts.set_kappa_bias_ema_rms_reg_total_iterations(1)
     experts.set_kappa_bias_ema_rms_reg_step(0)
-    experts._accumulate_kappa_bias_l2_losses(torch.full((2, 16), 2.0))
+    first_value = torch.full((2, 16), 2.0)
+    experts.kappa_bias_ema_rms_reg_keeper.update(first_value, step=0)
+    experts._accumulate_kappa_bias_l2_losses(first_value)
     first_l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
     first_ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")
     MANAGER.reset("kappa_bias_l2_loss")
     MANAGER.reset("kappa_bias_ema_rms_reg_loss")
 
     experts.set_kappa_bias_ema_rms_reg_step(1)
-    experts._accumulate_kappa_bias_l2_losses(torch.full((2, 16), 0.5))
+    second_value = torch.full((2, 16), 0.5)
+    experts.kappa_bias_ema_rms_reg_keeper.update(second_value, step=1)
+    experts._accumulate_kappa_bias_l2_losses(second_value)
     second_l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
     second_ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")
     MANAGER.reset("kappa_bias_l2_loss")
@@ -892,7 +1011,9 @@ def test_kappa_bias_ema_target_error_includes_module_source():
     experts = Qwen3MLPExperts(config, layer_idx=3)
 
     with pytest.raises(RuntimeError, match=r"Qwen3MLPExperts\(layer=3, granularity=per-gate\)\.kappa_bias"):
-        experts._accumulate_kappa_bias_l2_losses(torch.full((2, 16), float('nan')))
+        with torch.no_grad():
+            experts.kappa_bias.fill_(float('nan'))
+        experts.update_kappa_ema_rms_targets()
 
 
 def test_kappa_bias_ema_target_loss_has_finite_gradient_at_zero():
@@ -933,14 +1054,18 @@ def test_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     MANAGER.reset("kappa_scale_ema_rms_reg_loss")
     experts.set_kappa_bias_ema_rms_reg_total_iterations(1)
     experts.set_kappa_bias_ema_rms_reg_step(0)
-    experts._accumulate_kappa_scale_l2_losses(torch.full((2, 16), 2.0))
+    first_value = torch.full((2, 16), 2.0)
+    experts.kappa_scale_ema_rms_reg_keeper.update(first_value, step=0)
+    experts._accumulate_kappa_scale_l2_losses(first_value)
     first_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
     first_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
     MANAGER.reset("kappa_scale_l2_loss")
     MANAGER.reset("kappa_scale_ema_rms_reg_loss")
 
     experts.set_kappa_bias_ema_rms_reg_step(1)
-    experts._accumulate_kappa_scale_l2_losses(torch.full((2, 16), 0.25))
+    second_value = torch.full((2, 16), 0.25)
+    experts.kappa_scale_ema_rms_reg_keeper.update(second_value, step=1)
+    experts._accumulate_kappa_scale_l2_losses(second_value)
     second_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
     second_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
     MANAGER.reset("kappa_scale_l2_loss")
@@ -971,14 +1096,18 @@ def test_dense_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
     MANAGER.reset("kappa_scale_ema_rms_reg_loss")
     mlp.set_kappa_bias_ema_rms_reg_total_iterations(1)
     mlp.set_kappa_bias_ema_rms_reg_step(0)
-    mlp._accumulate_kappa_scale_l2_losses(torch.full((16,), 2.0))
+    first_value = torch.full((16,), 2.0)
+    mlp.kappa_scale_ema_rms_reg_keeper.update(first_value, step=0)
+    mlp._accumulate_kappa_scale_l2_losses(first_value)
     first_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
     first_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
     MANAGER.reset("kappa_scale_l2_loss")
     MANAGER.reset("kappa_scale_ema_rms_reg_loss")
 
     mlp.set_kappa_bias_ema_rms_reg_step(1)
-    mlp._accumulate_kappa_scale_l2_losses(torch.full((16,), 0.25))
+    second_value = torch.full((16,), 0.25)
+    mlp.kappa_scale_ema_rms_reg_keeper.update(second_value, step=1)
+    mlp._accumulate_kappa_scale_l2_losses(second_value)
     second_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
     second_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
     MANAGER.reset("kappa_scale_l2_loss")
@@ -1065,6 +1194,7 @@ def test_kappa_bias_ema_rms_reg_is_zero_before_anchor():
     MANAGER.reset("kappa_bias_l2_loss")
     MANAGER.reset("kappa_bias_ema_rms_reg_loss")
     experts.set_kappa_bias_ema_rms_reg_step(0)
+    experts.kappa_bias_ema_rms_reg_keeper.update(value, step=0)
     experts._accumulate_kappa_bias_l2_losses(value)
     l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
     ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")

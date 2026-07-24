@@ -1111,15 +1111,21 @@ class Qwen3MLP(nn.Module):
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
+    def update_kappa_ema_rms_targets(self):
+        if self.kappa_bias_ema_rms_reg_keeper is None:
+            return
+        kappa_bias = self._materialize_kappa_bias().float()
+        self.kappa_bias_ema_rms_reg_keeper.update(
+            kappa_bias,
+            int(self.kappa_bias_ema_rms_reg_step.item()),
+            source=self._kappa_bias_debug_source("kappa_bias"),
+        )
+
+    @torch._dynamo.disable
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
         kappa_bias = kappa_bias.float()
         MANAGER.add("kappa_bias_l2_loss", kappa_bias.square().mean())
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            self.kappa_bias_ema_rms_reg_keeper.update(
-                kappa_bias,
-                int(self.kappa_bias_ema_rms_reg_step.item()),
-                source=self._kappa_bias_debug_source("kappa_bias"),
-            )
             MANAGER.add(
                 "kappa_bias_ema_rms_reg_loss",
                 self.kappa_bias_ema_rms_reg_keeper.loss(
@@ -1578,6 +1584,25 @@ class Qwen3MLPExperts(nn.Module):
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
+    def update_kappa_ema_rms_targets(self):
+        if self.kappa_bias_ema_rms_reg_keeper is None:
+            return
+        step = int(self.kappa_bias_ema_rms_reg_step.item())
+        kappa_bias = self._materialize_kappa_bias().float()
+        self.kappa_bias_ema_rms_reg_keeper.update(
+            kappa_bias,
+            step,
+            source=self._kappa_bias_debug_source("kappa_bias"),
+        )
+        if self.kappa_scale_ema_rms_reg_keeper is not None:
+            kappa_scale = self._materialize_kappa_scale().float()
+            self.kappa_scale_ema_rms_reg_keeper.update(
+                kappa_scale,
+                step,
+                source=self._kappa_bias_debug_source("kappa_scale"),
+            )
+
+    @torch._dynamo.disable
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
         kappa_bias = kappa_bias.float()
         MANAGER.add(
@@ -1585,11 +1610,6 @@ class Qwen3MLPExperts(nn.Module):
             kappa_bias.square().mean(),
         )
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            self.kappa_bias_ema_rms_reg_keeper.update(
-                kappa_bias,
-                int(self.kappa_bias_ema_rms_reg_step.item()),
-                source=self._kappa_bias_debug_source("kappa_bias"),
-            )
             MANAGER.add(
                 "kappa_bias_ema_rms_reg_loss",
                 self.kappa_bias_ema_rms_reg_keeper.loss(
@@ -1606,11 +1626,6 @@ class Qwen3MLPExperts(nn.Module):
             kappa_scale.square().mean(),
         )
         if self.kappa_scale_ema_rms_reg_keeper is not None:
-            self.kappa_scale_ema_rms_reg_keeper.update(
-                kappa_scale,
-                int(self.kappa_bias_ema_rms_reg_step.item()),
-                source=self._kappa_bias_debug_source("kappa_scale"),
-            )
             MANAGER.add(
                 "kappa_scale_ema_rms_reg_loss",
                 self.kappa_scale_ema_rms_reg_keeper.loss(
@@ -2217,10 +2232,24 @@ class GPT(nn.Module):
             'kappa_bias_ema_rms_reg_loss',
             'kappa_scale_ema_rms_reg_loss',
         ):
-            value = MANAGER.aggregate(name)
+            value = self._aggregate_loop_averaged_loss(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
-            MANAGER.reset(name)
         return losses
+
+    def _update_kappa_ema_rms_targets(self):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, Qwen3MLP):
+                mlp.update_kappa_ema_rms_targets()
+                continue
+            experts = getattr(mlp, 'experts', None)
+            if isinstance(experts, Qwen3MLPExperts):
+                experts.update_kappa_ema_rms_targets()
+
+    def _aggregate_loop_averaged_loss(self, name):
+        value = MANAGER.aggregate(name)
+        MANAGER.reset(name)
+        return None if value is None else value / self.total_ut_steps
 
     def set_kappa_bias_ema_rms_reg_step(self, step):
         step = int(step)
@@ -2689,6 +2718,9 @@ class GPT(nn.Module):
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
         B, T = idx.size()
 
+        if targets is not None:
+            self._update_kappa_ema_rms_targets()
+
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos.device}"
@@ -2966,14 +2998,12 @@ class GPT(nn.Module):
             losses['ntp_loss'] = loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
-                aux_loss = MANAGER.aggregate("aux_loss")
+                aux_loss = self._aggregate_loop_averaged_loss("aux_loss")
                 losses['aux_loss'] = aux_loss
-                MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
-                router_z_loss = MANAGER.aggregate("router_z_loss")
+                router_z_loss = self._aggregate_loop_averaged_loss("router_z_loss")
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
-                MANAGER.reset("router_z_loss")
 
             # Updates losses['kappa_bias_l2_loss'] and losses['kappa_scale_l2_loss'].
             losses.update(self.compute_kappa_slope_magnitude_losses())
