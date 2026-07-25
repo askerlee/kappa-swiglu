@@ -1,6 +1,12 @@
+import ast
+from pathlib import Path
+
 from datasets import Dataset
 
 from tasks import ultradata
+
+
+CHAT_SFT = Path(__file__).resolve().parents[1] / "scripts" / "chat_sft.py"
 
 
 def test_has_only_english_user_questions_filters_non_english_questions():
@@ -53,3 +59,36 @@ def test_ultradata_sft_if_loads_expected_slice_and_filters_before_shuffle(monkey
     assert load_calls == [("openbmb/UltraData-SFT-2605", "IF", "no_think")]
     assert len(task) == 1
     assert task[0]["messages"][0]["content"] == "List three uses for a paper clip."
+
+
+def test_chat_sft_ultradata_flag_defaults_true_and_guards_dataset_construction():
+    tree = ast.parse(CHAT_SFT.read_text(), filename=str(CHAT_SFT))
+    flag_call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--use-ultradata-sft-if"
+    )
+    defaults = {
+        keyword.arg: keyword.value.value
+        for keyword in flag_call.keywords
+        if isinstance(keyword.value, ast.Constant)
+    }
+    guard = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and node.test.attr == "use_ultradata_sft_if"
+    )
+
+    assert defaults["default"] is True
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "UltraDataSFTIF"
+        for statement in guard.body
+        for node in ast.walk(statement)
+    )
