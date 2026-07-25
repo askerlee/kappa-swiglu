@@ -41,6 +41,7 @@ from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.tulu3 import Tulu3SFTMixture
+from tasks.ultradata import UltraDataSFTIF
 from tasks.customjson import CustomJSON
 from tasks.spellingbee import SimpleSpelling, SpellingBee
 
@@ -338,6 +339,9 @@ train_tasks = [
 if args.use_tulu3_sft_mixture:
     # allenai/tulu-3-sft-mixture: 939,344 samples
     train_tasks.append(Tulu3SFTMixture(split="train"))
+# openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before English filtering
+train_tasks.append(UltraDataSFTIF())
+
 for repeat_idx in range(args.train_mixture_repeats):
     simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
     spellingbee_start = repeat_idx * spellingbee_rows_per_repeat
