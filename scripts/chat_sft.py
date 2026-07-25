@@ -40,7 +40,7 @@ from tasks.common import TaskMixture
 from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
-from tasks.tulu3 import Tulu3SFTMixture
+from tasks.tulu3 import Tulu3SFTMixture, Tulu3SFTPersonaIF
 from tasks.ultradata import UltraDataSFTIF
 from tasks.customjson import CustomJSON
 from tasks.spellingbee import SimpleSpelling, SpellingBee
@@ -339,6 +339,8 @@ train_tasks = [
 if args.use_tulu3_sft_mixture:
     # allenai/tulu-3-sft-mixture: 939,344 samples
     train_tasks.append(Tulu3SFTMixture(split="train"))
+    # Adds a second exposure to the 30k focused Persona-IF examples.
+    train_tasks.append(Tulu3SFTPersonaIF(split="train"))
 # openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before English filtering
 train_tasks.append(UltraDataSFTIF())
 

@@ -28,3 +28,28 @@ class Tulu3SFTMixture(Task):
             assert "content" in message, "Message missing 'content' field"
             assert isinstance(message["content"], str), "Content must be a string"
         return {"messages": messages}
+
+
+class Tulu3SFTPersonaIF(Task):
+    """Focused 29,980-example Persona-IF subset already present in the full mixture."""
+
+    def __init__(self, split="train", **kwargs):
+        super().__init__(**kwargs)
+        assert split == "train", "Tulu3SFTPersonaIF split must be train"
+        self.ds = load_dataset(
+            "allenai/tulu-3-sft-personas-instruction-following",
+            split=split,
+        ).shuffle(seed=42)
+        self.length = len(self.ds)
+
+    def num_examples(self):
+        return self.length
+
+    def get_example(self, index):
+        messages = self.ds[index]["messages"]
+        assert len(messages) >= 2, "Tulu3SFTPersonaIF messages must have at least 2 messages"
+        for message in messages:
+            assert "role" in message, "Message missing 'role' field"
+            assert "content" in message, "Message missing 'content' field"
+            assert isinstance(message["content"], str), "Content must be a string"
+        return {"messages": messages}
