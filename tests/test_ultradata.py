@@ -48,15 +48,15 @@ def test_ultradata_sft_if_loads_expected_slice_and_filters_before_shuffle(monkey
     }
     load_calls = []
 
-    def fake_load_dataset(path, config, split):
-        load_calls.append((path, config, split))
+    def fake_load_dataset(path, config, split, token):
+        load_calls.append((path, config, split, token))
         return Dataset.from_dict(rows)
 
     monkeypatch.setattr(ultradata, "load_dataset", fake_load_dataset)
 
     task = ultradata.UltraDataSFTIF()
 
-    assert load_calls == [("openbmb/UltraData-SFT-2605", "IF", "no_think")]
+    assert load_calls == [("openbmb/UltraData-SFT-2605", "IF", "no_think", True)]
     assert len(task) == 1
     assert task[0]["messages"][0]["content"] == "List three uses for a paper clip."
 

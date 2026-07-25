@@ -50,6 +50,7 @@ class UltraDataSFTIF(Task):
             "openbmb/UltraData-SFT-2605",
             "IF",
             split="no_think",
+            token=True,
         ).filter(has_only_english_user_questions).shuffle(seed=42)
         self.length = len(self.ds)
 
