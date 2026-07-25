@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH -p testqueue
 #SBATCH -A aicloud-testgroup
-#SBATCH -t 03:00:00
+#SBATCH -t 05:00:00
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
 
