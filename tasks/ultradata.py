@@ -15,6 +15,10 @@ DetectorFactory.seed = 42
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
+def print_row_count(label: str, ds) -> None:
+    print(f"{label}: {len(ds)} rows")
+
+
 def is_english_question(text: str, max_cjk_ratio: float = 0.1) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
@@ -46,12 +50,16 @@ class UltraDataSFTIF(Task):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.ds = load_dataset(
+        raw_ds = load_dataset(
             "openbmb/UltraData-SFT-2605",
             "IF",
             split="no_think",
             token=True,
-        ).filter(has_only_english_user_questions).shuffle(seed=42)
+        )
+        print_row_count("UltraDataSFTIF rows before filtering", raw_ds)
+        filtered_ds = raw_ds.filter(has_only_english_user_questions)
+        print_row_count("UltraDataSFTIF rows after filtering", filtered_ds)
+        self.ds = filtered_ds.shuffle(seed=42)
         self.length = len(self.ds)
 
     def num_examples(self):
