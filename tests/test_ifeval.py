@@ -45,3 +45,15 @@ def test_ifeval_repeat_prompt_uses_the_instruction_argument():
         "Unrelated user prompt",
         "Repeat exactly this, then answer.",
     )
+
+
+def test_ifeval_response_language_handles_matches_and_undetectable_text():
+    instruction_id = "language:response_language"
+    english = "This is a sufficiently long English response with several ordinary words."
+    french = "Ceci est une réponse française suffisamment longue avec plusieurs mots ordinaires."
+
+    assert _check_instruction(instruction_id, {"language": "en"}, "", english)
+    assert not _check_instruction(instruction_id, {"language": "fr"}, "", english)
+    assert _check_instruction(instruction_id, {"language": "fr"}, "", french)
+    assert not _check_instruction(instruction_id, {"language": "en"}, "", "")
+    assert not _check_instruction(instruction_id, {"language": "en"}, "", "12345 !!!")
