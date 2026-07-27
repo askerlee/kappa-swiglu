@@ -496,21 +496,33 @@ def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_e
     def run_model(model):
         MANAGER.reset_all()
         loss, losses = model(idx, targets)
+        selected_scores_rows_before_backward = MANAGER._selected_scores_size
         objective = loss + model.config.aux_loss_weight * losses["aux_loss"]
         objective.backward()
+        selected_scores_rows_after_backward = MANAGER._selected_scores_size
         gradients = {
             name: parameter.grad.detach().clone()
             for name, parameter in model.named_parameters()
             if parameter.grad is not None
         }
-        return loss.detach(), losses, gradients
+        return (
+            loss.detach(),
+            losses,
+            gradients,
+            selected_scores_rows_before_backward,
+            selected_scores_rows_after_backward,
+        )
 
-    reference_loss, reference_losses, reference_gradients = run_model(reference_model)
-    checkpoint_loss, checkpoint_losses, checkpoint_gradients = run_model(checkpoint_model)
+    reference_loss, reference_losses, reference_gradients, reference_rows_before, reference_rows_after = run_model(reference_model)
+    checkpoint_loss, checkpoint_losses, checkpoint_gradients, checkpoint_rows_before, checkpoint_rows_after = run_model(checkpoint_model)
 
     torch.testing.assert_close(checkpoint_loss, reference_loss)
     for name in ("aux_loss", "router_z_loss"):
         torch.testing.assert_close(checkpoint_losses[name], reference_losses[name])
+    torch.testing.assert_close(
+        checkpoint_losses["selected_scores"],
+        reference_losses["selected_scores"],
+    )
     assert checkpoint_gradients.keys() == reference_gradients.keys()
     for name in checkpoint_gradients:
         torch.testing.assert_close(
@@ -519,12 +531,47 @@ def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_e
             rtol=1e-5,
             atol=1e-6,
         )
-    for name in MANAGER._values:
-        value = MANAGER.aggregate(name)
-        if name in MANAGER.tensor_var_names:
-            assert value is None
-        else:
-            assert value == 0
+    assert reference_rows_before == reference_rows_after == 0
+    assert checkpoint_rows_before == checkpoint_rows_after == 0
+
+
+def test_gpt_ut_checkpointing_does_not_replay_aux_free_router_counts():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        num_moe_layers=-1,
+        n_exp=2,
+        moe_top_k=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_aux_free_load_balancing=True,
+        use_router_z_loss=False,
+        ut_checkpointing=True,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    idx = torch.randint(0, config.vocab_size, (2, 5))
+    targets = torch.randint(0, config.vocab_size, (2, 5))
+
+    loss, _ = model(idx, targets)
+    counters_before_backward = [
+        block.mlp.router.tokens_per_expert_counter.clone()
+        for block in model.transformer.h
+    ]
+    loss.backward()
+
+    for block, expected_counts in zip(model.transformer.h, counters_before_backward):
+        torch.testing.assert_close(
+            block.mlp.router.tokens_per_expert_counter,
+            expected_counts,
+        )
+        assert expected_counts.sum().item() == idx.numel() * config.total_ut_steps
 
 
 def test_gpt_total_ut_steps_averages_repeated_manager_losses():

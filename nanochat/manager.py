@@ -9,7 +9,6 @@ class MOEManager:
     def __init__(self):
         self.collect_load_balancing_stats = False
         self.collect_backward_stats = False
-        self.is_checkpoint_recomputing = False
         self._values = {
             "aux_loss": [],
             "router_z_loss": [],
@@ -121,7 +120,7 @@ class MOEManager:
 
     @torch._dynamo.disable
     def add(self, name, value):
-        if self.is_checkpoint_recomputing:
+        if torch.compiler.is_compiling():
             return
         if name == "drop_rate_per_ks":
             with torch.inference_mode(False):

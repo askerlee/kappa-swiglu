@@ -21,7 +21,6 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
-from torch.utils._python_dispatch import TorchDispatchMode
 
 try:
     from .manager import MANAGER
@@ -34,24 +33,55 @@ from nanochat.optim import AuroraAdamW, DistAuroraAdamW, MuonAdamW, DistMuonAdam
 from nanochat.flash_attention import flash_attn
 
 
-class _UTCheckpointRecomputeMode(TorchDispatchMode):
-    def __enter__(self):
-        self._previous = MANAGER.is_checkpoint_recomputing
-        MANAGER.is_checkpoint_recomputing = True
-        return super().__enter__()
+# ---------------------------------------------------------------------------
+# Loss accumulator: a pure data carrier for differentiable auxiliary losses
+# produced inside a checkpointed UT pass. No global state is mutated, making
+# it safe under torch.utils.checkpoint. The caller commits losses to MANAGER
+# after the checkpoint boundary, so backward recomputation cannot double-count.
+# ---------------------------------------------------------------------------
+_UT_LOSS_NAMES = (
+    "aux_loss",
+    "router_z_loss",
+    "kappa_bias_l2_loss",
+    "kappa_scale_l2_loss",
+    "kappa_bias_ema_rms_reg_loss",
+    "kappa_scale_ema_rms_reg_loss",
+)
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            MANAGER.is_checkpoint_recomputing = self._previous
 
-    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-        return func(*args, **({} if kwargs is None else kwargs))
+class _UTLossAccum:
+    __slots__ = ('losses', 'router_counts', 'selected_scores')
 
+    def __init__(self, reference, n_layer, n_exp):
+        self.losses = [reference.new_zeros((), dtype=torch.float32) for _ in _UT_LOSS_NAMES]
+        self.router_counts = reference.new_zeros((n_layer, n_exp), dtype=torch.float32)
+        self.selected_scores = reference.new_zeros((n_layer, n_exp), dtype=torch.float32)
 
-def _ut_checkpoint_context_fn():
-    return nullcontext(), _UTCheckpointRecomputeMode()
+    def add(self, name, value):
+        loss_idx = _UT_LOSS_NAMES.index(name)
+        self.losses[loss_idx] = self.losses[loss_idx] + value
+
+    def add_router_counts(self, layer_idx, top_k_indices):
+        counts = F.one_hot(top_k_indices, num_classes=self.router_counts.size(1)).sum(dim=(0, 1))
+        layer_mask = F.one_hot(
+            torch.as_tensor(layer_idx, device=top_k_indices.device),
+            num_classes=self.router_counts.size(0),
+        ).to(dtype=self.router_counts.dtype)
+        self.router_counts = self.router_counts + layer_mask.unsqueeze(1) * counts.to(
+            dtype=self.router_counts.dtype
+        ).unsqueeze(0)
+
+    def add_selected_scores(self, layer_idx, scores):
+        layer_mask = F.one_hot(
+            torch.as_tensor(layer_idx, device=scores.device),
+            num_classes=self.selected_scores.size(0),
+        ).to(dtype=self.selected_scores.dtype)
+        self.selected_scores = self.selected_scores + layer_mask.unsqueeze(1) * scores.to(
+            dtype=self.selected_scores.dtype
+        ).unsqueeze(0)
+
+    def as_tuple(self):
+        return (*self.losses, self.router_counts, self.selected_scores)
 
 def scale_grad(x, alpha):
     if torch.is_tensor(alpha) and alpha.requires_grad:
@@ -624,7 +654,7 @@ class Router(nn.Module):
 
     @torch.no_grad()
     def _accumulate_aux_free_load_balancing_counts(self, top_k_indices):
-        if MANAGER.is_checkpoint_recomputing or not self.use_aux_free_load_balancing:
+        if not self.use_aux_free_load_balancing:
             return
         token_counts = torch.bincount(top_k_indices.reshape(-1), minlength=self.n_exp)
         token_counts = token_counts.to(
@@ -650,11 +680,15 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def forward(self, x):
+    def forward(self, x, loss_accum=None, router_layer_idx=None):
         """
         Computes routing information for tokens, including which experts to use,
         the weights for their outputs, and their position within the expert's batch.
         This implementation is memory-efficient and avoids quadratic scaling with batch size.
+
+        When loss_accum is provided, differentiable losses (aux_loss, router_z_loss)
+        are accumulated into it instead of MANAGER, making this safe inside
+        torch.utils.checkpoint.
         """
         # The router can be sensitive to precision issues, so we can run it in full float32.
         device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -680,7 +714,10 @@ class Router(nn.Module):
             if self.training:
                 selection_scores = self._get_selection_scores(logits)
                 _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
-                self._accumulate_aux_free_load_balancing_counts(top_k_indices)
+                if loss_accum is not None:
+                    loss_accum.add_router_counts(router_layer_idx, top_k_indices)
+                else:
+                    self._accumulate_aux_free_load_balancing_counts(top_k_indices)
 
                 logits_for_router = logits
 
@@ -698,7 +735,10 @@ class Router(nn.Module):
                     router_z_loss = compute_z_loss(logits_for_z_loss.view(B, T, -1), 
                                                    demean_logits=self.z_loss_demean_logits,
                                                    z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
-                    MANAGER.add("router_z_loss", router_z_loss)
+                    if loss_accum is not None:
+                        loss_accum.add("router_z_loss", router_z_loss)
+                    else:
+                        MANAGER.add("router_z_loss", router_z_loss)
 
                 # Find top-k choices for each token
                 top_k_logits = logits_for_router.gather(-1, top_k_indices) # [B*T, k]
@@ -710,9 +750,13 @@ class Router(nn.Module):
                     # a meaningful gradient signal even when top_k = 1.
                     all_probs = F.softmax(logits_for_router, dim=-1)
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
-                    MANAGER.add("aux_loss", aux_loss)
-                    self.expert_probs = all_probs.view(B, T, -1).detach().clone()
-                    self.top_k_indices = top_k_indices.view(B, T, -1).clone()
+                    if loss_accum is not None:
+                        loss_accum.add("aux_loss", aux_loss)
+                    else:
+                        MANAGER.add("aux_loss", aux_loss)
+                    if loss_accum is None:
+                        self.expert_probs = all_probs.view(B, T, -1).detach().clone()
+                        self.top_k_indices = top_k_indices.view(B, T, -1).clone()
             else:
                 # At inference, we just need the top-k
                 selection_scores = self._get_selection_scores(logits)
@@ -724,7 +768,10 @@ class Router(nn.Module):
 
             if self.training or MANAGER.collect_load_balancing_stats:
                 selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
-                MANAGER.add("selected_scores", selected_scores.detach())
+                if loss_accum is not None:
+                    loss_accum.add_selected_scores(router_layer_idx, selected_scores.detach())
+                elif not torch.compiler.is_compiling():
+                    MANAGER.add("selected_scores", selected_scores.detach())
 
             # 3. COMPUTE ROUTER PROBABILITIES
             # --------------------------------
@@ -850,7 +897,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, loss_accum=None, router_layer_idx=None):
         x = self.c_fc(x)
         x = F.relu(x).square()
         x = self.c_proj(x)
@@ -867,7 +914,7 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False, loss_accum=None, router_layer_idx=None):
         x = x + self.attn(
             norm(x),
             ve,
@@ -877,7 +924,7 @@ class Block(nn.Module):
             cache_layer_idx=cache_layer_idx,
             advance_kv_cache=advance_kv_cache,
         )
-        x = x + self.mlp(norm(x))
+        x = x + self.mlp(norm(x), loss_accum=loss_accum, router_layer_idx=router_layer_idx)
         return x
 
 # NOTE: MLPExperts is not used in our default settings. Instead, we always use Qwen3MLPExperts.
@@ -894,7 +941,7 @@ class MLPExperts(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
 
-    def forward(self, x, selected_router_scores=None):
+    def forward(self, x, selected_router_scores=None, loss_accum=None, router_layer_idx=None):
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -1066,7 +1113,6 @@ class Qwen3MLP(nn.Module):
             return kappa_bias
         return self._shared_kappa_bias
 
-    @torch._dynamo.disable
     def _materialize_kappa_bias(self):
         if not self.has_active_kappa_bias:
             return self.disabled_kappa_bias.detach().requires_grad_(True)
@@ -1143,35 +1189,36 @@ class Qwen3MLP(nn.Module):
             source=self._kappa_bias_debug_source("kappa_bias"),
         )
 
-    @torch._dynamo.disable
-    def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
+    def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None):
         kappa_bias = kappa_bias.float()
-        MANAGER.add("kappa_bias_l2_loss", kappa_bias.square().mean())
+        loss = kappa_bias.square().mean()
+        ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            MANAGER.add(
-                "kappa_bias_ema_rms_reg_loss",
-                self.kappa_bias_ema_rms_reg_keeper.loss(
-                    kappa_bias,
-                    source=self._kappa_bias_debug_source("kappa_bias"),
-                ),
-            )
+            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(
+                kappa_bias, source=self._kappa_bias_debug_source("kappa_bias"))
+        if loss_accum is not None:
+            loss_accum.add("kappa_bias_l2_loss", loss)
+            loss_accum.add("kappa_bias_ema_rms_reg_loss", ema_loss)
+        else:
+            MANAGER.add("kappa_bias_l2_loss", loss)
+            MANAGER.add("kappa_bias_ema_rms_reg_loss", ema_loss)
 
-    def _accumulate_kappa_scale_l2_losses(self, kappa_scale):
+    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None):
         kappa_scale = kappa_scale.float()
-        MANAGER.add("kappa_scale_l2_loss", kappa_scale.square().mean())
+        loss = kappa_scale.square().mean()
+        ema_loss = torch.zeros((), device=kappa_scale.device, dtype=torch.float32)
         if self.kappa_scale_ema_rms_reg_keeper is not None:
             self.kappa_scale_ema_rms_reg_keeper.update(
-                kappa_scale,
-                int(self.kappa_bias_ema_rms_reg_step.item()),
-                source=self._kappa_bias_debug_source("kappa_scale"),
-            )
-            MANAGER.add(
-                "kappa_scale_ema_rms_reg_loss",
-                self.kappa_scale_ema_rms_reg_keeper.loss(
-                    kappa_scale,
-                    source=self._kappa_bias_debug_source("kappa_scale"),
-                ),
-            )
+                kappa_scale, int(self.kappa_bias_ema_rms_reg_step.item()),
+                source=self._kappa_bias_debug_source("kappa_scale"))
+            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(
+                kappa_scale, source=self._kappa_bias_debug_source("kappa_scale"))
+        if loss_accum is not None:
+            loss_accum.add("kappa_scale_l2_loss", loss)
+            loss_accum.add("kappa_scale_ema_rms_reg_loss", ema_loss)
+        else:
+            MANAGER.add("kappa_scale_l2_loss", loss)
+            MANAGER.add("kappa_scale_ema_rms_reg_loss", ema_loss)
 
     @torch._dynamo.disable
     def _update_kappa_slope_scale_stats(self, slope_scales):
@@ -1203,7 +1250,7 @@ class Qwen3MLP(nn.Module):
         )
         MANAGER.add("kappa_slope_scale_abs_mean_normalized", slope_scale_mean)
 
-    def forward(self, x):
+    def forward(self, x, loss_accum=None, router_layer_idx=None):
         gate_out_raw = self.gate_proj(x)
         kappa_bias = self._materialize_kappa_bias()
         if self.training:
@@ -1214,8 +1261,9 @@ class Qwen3MLP(nn.Module):
                 gate_out_raw.device,
             )
         if self.training:
-            self._accumulate_kappa_bias_l2_losses(kappa_bias)
-        self._update_kappa_slope_scale_stats(slope_scales)
+            self._accumulate_kappa_bias_l2_losses(kappa_bias, loss_accum=loss_accum)
+        if MANAGER.collect_load_balancing_stats:
+            self._update_kappa_slope_scale_stats(slope_scales)
         gate_out = gate_out_raw * torch.sigmoid(
             gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
         )
@@ -1395,7 +1443,6 @@ class Qwen3MLPExperts(nn.Module):
     @torch._dynamo.disable keeps Dynamo from tracing across those representation
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
-    @torch._dynamo.disable
     def _materialize_kappa_bias(self):
         if not self.use_kappa_swiglu:
             return self.disabled_kappa_bias.detach().requires_grad_(True)
@@ -1408,7 +1455,6 @@ class Qwen3MLPExperts(nn.Module):
             return kappa_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    @torch._dynamo.disable
     def _materialize_kappa_scale(self):
         if not self.use_kappa_scale:
             return self.disabled_kappa_scale.detach().requires_grad_(True)
@@ -1541,7 +1587,8 @@ class Qwen3MLPExperts(nn.Module):
         else:
             slope_work = slope_work * kappa_bias
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
-        self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
+        if MANAGER.collect_load_balancing_stats:
+            self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)
 
@@ -1624,37 +1671,33 @@ class Qwen3MLPExperts(nn.Module):
                 source=self._kappa_bias_debug_source("kappa_scale"),
             )
 
-    @torch._dynamo.disable
-    def _accumulate_kappa_bias_l2_losses(self, kappa_bias):
+    def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None):
         kappa_bias = kappa_bias.float()
-        MANAGER.add(
-            "kappa_bias_l2_loss",
-            kappa_bias.square().mean(),
-        )
+        loss = kappa_bias.square().mean()
+        ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            MANAGER.add(
-                "kappa_bias_ema_rms_reg_loss",
-                self.kappa_bias_ema_rms_reg_keeper.loss(
-                    kappa_bias,
-                    source=self._kappa_bias_debug_source("kappa_bias"),
-                ),
-            )
+            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(
+                kappa_bias, source=self._kappa_bias_debug_source("kappa_bias"))
+        if loss_accum is not None:
+            loss_accum.add("kappa_bias_l2_loss", loss)
+            loss_accum.add("kappa_bias_ema_rms_reg_loss", ema_loss)
+        else:
+            MANAGER.add("kappa_bias_l2_loss", loss)
+            MANAGER.add("kappa_bias_ema_rms_reg_loss", ema_loss)
 
-    @torch._dynamo.disable
-    def _accumulate_kappa_scale_l2_losses(self, kappa_scale):
+    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None):
         kappa_scale = kappa_scale.float()
-        MANAGER.add(
-            "kappa_scale_l2_loss",
-            kappa_scale.square().mean(),
-        )
+        loss = kappa_scale.square().mean()
+        ema_loss = torch.zeros((), device=kappa_scale.device, dtype=torch.float32)
         if self.kappa_scale_ema_rms_reg_keeper is not None:
-            MANAGER.add(
-                "kappa_scale_ema_rms_reg_loss",
-                self.kappa_scale_ema_rms_reg_keeper.loss(
-                    kappa_scale,
-                    source=self._kappa_bias_debug_source("kappa_scale"),
-                ),
-            )
+            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(
+                kappa_scale, source=self._kappa_bias_debug_source("kappa_scale"))
+        if loss_accum is not None:
+            loss_accum.add("kappa_scale_l2_loss", loss)
+            loss_accum.add("kappa_scale_ema_rms_reg_loss", ema_loss)
+        else:
+            MANAGER.add("kappa_scale_l2_loss", loss)
+            MANAGER.add("kappa_scale_ema_rms_reg_loss", ema_loss)
 
     def _update_gate_stats(self, gate_out_acts):
         if not MANAGER.collect_load_balancing_stats:
@@ -1791,7 +1834,7 @@ class Qwen3MLPExperts(nn.Module):
             ).detach(),
         )
 
-    def forward(self, x, selected_router_scores=None, router_weight=None):
+    def forward(self, x, selected_router_scores=None, router_weight=None, loss_accum=None):
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
@@ -1800,7 +1843,7 @@ class Qwen3MLPExperts(nn.Module):
         if selected_router_scores is not None and self.use_kappa_swiglu:
             if self.training:
                 kappa_bias = self._materialize_kappa_bias()
-                self._accumulate_kappa_bias_l2_losses(kappa_bias)
+                self._accumulate_kappa_bias_l2_losses(kappa_bias, loss_accum=loss_accum)
             else:
                 kappa_bias = self._materialize_kappa_bias_for_eval(
                     gate_out_raw.dtype,
@@ -1809,7 +1852,7 @@ class Qwen3MLPExperts(nn.Module):
             kappa_scale = None
             if self.training and self.use_kappa_scale:
                 kappa_scale = self._materialize_kappa_scale()
-                self._accumulate_kappa_scale_l2_losses(kappa_scale)
+                self._accumulate_kappa_scale_l2_losses(kappa_scale, loss_accum=loss_accum)
             scaled_selected_router_scores = scale_grad(
                 selected_router_scores,
                 self.router_confidence_gate_bias_grad_scale,
@@ -1822,9 +1865,10 @@ class Qwen3MLPExperts(nn.Module):
             )
         else:
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
-        if selected_router_scores is not None:
+        if selected_router_scores is not None and MANAGER.collect_load_balancing_stats:
             self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
-        self._update_gate_stats(gate_out_acts)
+        if MANAGER.collect_load_balancing_stats:
+            self._update_gate_stats(gate_out_acts)
 
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
@@ -1978,18 +2022,21 @@ class MOELayer(nn.Module):
             )
         return expert_inputs, expert_router_scores
 
-    @torch._dynamo.disable
     def _combine_expert_outputs(self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, router_probs, rank):
         valid_mask = flat_rank < exp_capacity
-        valid_token_indices = flat_token_indices[valid_mask]
-        valid_expert_indices = flat_top_k_indices[valid_mask]
-        valid_ranks = flat_rank[valid_mask]
+        safe_ranks = flat_rank.clamp_max(exp_capacity - 1)
         output_flat = torch.zeros_like(x_flat)
-        gated_expert_outputs = expert_outputs[valid_expert_indices, valid_ranks]
-        valid_router_probs = router_probs.view(-1)[valid_mask].unsqueeze(1).to(dtype=x_flat.dtype)
-        weighted_outputs = gated_expert_outputs * valid_router_probs
-        output_flat.scatter_add_(0, valid_token_indices.unsqueeze(1).expand_as(weighted_outputs), weighted_outputs)
-        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
+        gated_expert_outputs = expert_outputs[flat_top_k_indices, safe_ranks]
+        router_weights = router_probs.view(-1).unsqueeze(1).to(dtype=x_flat.dtype)
+        weighted_outputs = gated_expert_outputs * router_weights * valid_mask.unsqueeze(1)
+        output_flat.scatter_add_(
+            0,
+            flat_token_indices.unsqueeze(1).expand_as(weighted_outputs),
+            weighted_outputs,
+        )
+        if MANAGER.collect_load_balancing_stats:
+            valid_expert_indices = flat_top_k_indices[valid_mask]
+            self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
         return output_flat
 
     def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
@@ -2054,16 +2101,16 @@ class MOELayer(nn.Module):
             f"Unsupported kappa_input: {self.kappa_input!r}"
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, loss_accum=None, router_layer_idx=None):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
 
         # --- Get routing information ---
-        # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
-        # and return routing info shaped for a flattened list of tokens.
-        # top_k_scores: [B*T, k], raw selected router scores and one possible
-        # gate-bias confidence input. router_probs is the other possible input.
-        expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(x)
+        expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(
+            x,
+            loss_accum=loss_accum,
+            router_layer_idx=router_layer_idx,
+        )
 
         # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
         # Now, flatten the input tensor for the dispatch operation
@@ -2122,6 +2169,7 @@ class MOELayer(nn.Module):
             expert_inputs,
             selected_router_scores=expert_router_scores,
             router_weight=self.router.w_g.weight,
+            loss_accum=loss_accum,
         ) # [n_exp, exp_capacity, C]
 
         # --- Combine expert outputs (the "gather" part) ---
@@ -2141,7 +2189,7 @@ class MOELayer(nn.Module):
 
     @torch._dynamo.disable
     def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
-        if MANAGER.collect_load_balancing_stats:
+        if MANAGER.collect_load_balancing_stats and not torch.compiler.is_compiling():
             slot_served = (rank < exp_capacity)                     # [B*T, k]
             # Since k=2, drop_rate_per_k = [drop_rate_0_step, drop_rate_1_step].
             # drop_rate_0_step: fraction of tokens whose top-1 expert assignment overflowed capacity.
@@ -2758,8 +2806,13 @@ class GPT(nn.Module):
         ve_placeholder = None
         last_block_idx = len(self.transformer.h) - 1
 
-        def run_ut_step(x, x0, current_ut):
+        def run_ut_step(x, x0, current_ut, capture_state):
             nonlocal ve_placeholder
+            loss_accum = (
+                _UTLossAccum(x, len(self.transformer.h), self.config.n_exp)
+                if capture_state
+                else None
+            )
             for i, block in enumerate(self.transformer.h):
                 x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
                 if str(i) in self.value_embeds:
@@ -2782,8 +2835,13 @@ class GPT(nn.Module):
                     kv_cache,
                     cache_layer_idx=cache_layer_idx,
                     advance_kv_cache=advance_kv_cache,
+                    loss_accum=loss_accum,
+                    router_layer_idx=i,
                 )
-            return norm(x)
+            x = norm(x)
+            if loss_accum is None:
+                return x
+            return (x, *loss_accum.as_tuple())
 
         use_ut_checkpointing = (
             bool(getattr(self.config, 'ut_checkpointing', False))
@@ -2791,19 +2849,44 @@ class GPT(nn.Module):
             and torch.is_grad_enabled()
             and targets is not None
             and kv_cache is None
+            and not MANAGER.collect_load_balancing_stats
+            and not MANAGER.collect_backward_stats
         )
+        checkpoint_loss_totals = None
+        checkpoint_router_counts = None
+        checkpoint_selected_scores = []
         for current_ut in range(self.total_ut_steps):
             if use_ut_checkpointing:
-                x = checkpoint(
+                step_outputs = checkpoint(
                     run_ut_step,
                     x,
                     x0,
                     current_ut,
+                    True,
                     use_reentrant=False,
-                    context_fn=_ut_checkpoint_context_fn,
                 )
+                x = step_outputs[0]
+                step_losses = step_outputs[1:1 + len(_UT_LOSS_NAMES)]
+                step_router_counts = step_outputs[-2]
+                checkpoint_selected_scores.append(step_outputs[-1])
+                if checkpoint_loss_totals is None:
+                    checkpoint_loss_totals = list(step_losses)
+                    checkpoint_router_counts = step_router_counts
+                else:
+                    checkpoint_loss_totals = [
+                        total + value for total, value in zip(checkpoint_loss_totals, step_losses)
+                    ]
+                    checkpoint_router_counts = checkpoint_router_counts + step_router_counts
             else:
-                x = run_ut_step(x, x0, current_ut)
+                x = run_ut_step(x, x0, current_ut, False)
+
+        if checkpoint_router_counts is not None:
+            with torch.no_grad():
+                for layer_idx, block in enumerate(self.transformer.h):
+                    mlp = getattr(block, 'mlp', None)
+                    router = getattr(mlp, 'router', None)
+                    if router is not None and router.use_aux_free_load_balancing:
+                        router.tokens_per_expert_counter.add_(checkpoint_router_counts[layer_idx])
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
@@ -2847,6 +2930,12 @@ class GPT(nn.Module):
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
+        if checkpoint_selected_scores:
+            moe_layer_indices = get_moe_layer_indices(self.config)
+            losses['selected_scores'] = torch.cat(
+                [scores[moe_layer_indices] for scores in checkpoint_selected_scores],
+                dim=0,
+            ).detach()
         gate_grad_scale_mean = MANAGER.aggregate("gate_grad_scale_mean")
         losses['gate_grad_scale_mean'] = (
             gate_grad_scale_mean.detach()
@@ -3042,15 +3131,34 @@ class GPT(nn.Module):
             losses['ntp_loss'] = loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
-                aux_loss = self._aggregate_loop_averaged_loss("aux_loss")
+                aux_loss = (
+                    checkpoint_loss_totals[_UT_LOSS_NAMES.index("aux_loss")] / self.total_ut_steps
+                    if checkpoint_loss_totals is not None
+                    else self._aggregate_loop_averaged_loss("aux_loss")
+                )
                 losses['aux_loss'] = aux_loss
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
-                router_z_loss = self._aggregate_loop_averaged_loss("router_z_loss")
+                router_z_loss = (
+                    checkpoint_loss_totals[_UT_LOSS_NAMES.index("router_z_loss")] / self.total_ut_steps
+                    if checkpoint_loss_totals is not None
+                    else self._aggregate_loop_averaged_loss("router_z_loss")
+                )
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
 
             # Updates losses['kappa_bias_l2_loss'] and losses['kappa_scale_l2_loss'].
-            losses.update(self.compute_kappa_slope_magnitude_losses())
+            if checkpoint_loss_totals is not None:
+                losses.update({
+                    name: checkpoint_loss_totals[_UT_LOSS_NAMES.index(name)] / self.total_ut_steps
+                    for name in (
+                        'kappa_bias_l2_loss',
+                        'kappa_scale_l2_loss',
+                        'kappa_bias_ema_rms_reg_loss',
+                        'kappa_scale_ema_rms_reg_loss',
+                    )
+                })
+            else:
+                losses.update(self.compute_kappa_slope_magnitude_losses())
         else:
             return logits
 

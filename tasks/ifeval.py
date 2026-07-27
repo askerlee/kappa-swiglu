@@ -4,6 +4,7 @@ import json
 import re
 
 from datasets import load_dataset
+from langdetect import LangDetectException
 
 from tasks.common import Task
 
@@ -106,9 +107,15 @@ def _check_instruction(instruction_id, kwargs, prompt, response):
     if instruction_id == "language:response_language":
         try:
             from langdetect import detect
-            return detect(response) == kwargs["language"]
         except ImportError as error:
             raise RuntimeError("IFEval language checks require the langdetect package.") from error
+        if not response.strip():
+            return False
+        try:
+            return detect(response) == kwargs["language"]
+        except LangDetectException:
+            # No detectable language features (e.g., only symbols/numbers); cannot match.
+            return False
     raise ValueError(f"Unsupported IFEval instruction: {instruction_id}")
 
 
