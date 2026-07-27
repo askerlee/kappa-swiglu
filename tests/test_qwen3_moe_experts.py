@@ -467,6 +467,66 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
         assert block.mlp._expert_router_scores_cache is None
 
 
+def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_effects():
+    torch.manual_seed(0)
+    base_config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        num_moe_layers=-1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=True,
+        use_router_z_loss=True,
+        debug=False,
+    )
+    checkpoint_config = deepcopy(base_config)
+    checkpoint_config.ut_checkpointing = True
+    reference_model = GPT(base_config)
+    reference_model.init_weights()
+    checkpoint_model = GPT(checkpoint_config)
+    checkpoint_model.load_state_dict(reference_model.state_dict())
+    idx = torch.randint(0, base_config.vocab_size, (2, 5))
+    targets = torch.randint(0, base_config.vocab_size, (2, 5))
+
+    def run_model(model):
+        MANAGER.reset_all()
+        loss, losses = model(idx, targets)
+        objective = loss + model.config.aux_loss_weight * losses["aux_loss"]
+        objective.backward()
+        gradients = {
+            name: parameter.grad.detach().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.grad is not None
+        }
+        return loss.detach(), losses, gradients
+
+    reference_loss, reference_losses, reference_gradients = run_model(reference_model)
+    checkpoint_loss, checkpoint_losses, checkpoint_gradients = run_model(checkpoint_model)
+
+    torch.testing.assert_close(checkpoint_loss, reference_loss)
+    for name in ("aux_loss", "router_z_loss"):
+        torch.testing.assert_close(checkpoint_losses[name], reference_losses[name])
+    assert checkpoint_gradients.keys() == reference_gradients.keys()
+    for name in checkpoint_gradients:
+        torch.testing.assert_close(
+            checkpoint_gradients[name],
+            reference_gradients[name],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+    for name in MANAGER._values:
+        value = MANAGER.aggregate(name)
+        if name in MANAGER.tensor_var_names:
+            assert value is None
+        else:
+            assert value == 0
+
+
 def test_gpt_total_ut_steps_averages_repeated_manager_losses():
     config = GPTConfig(
         sequence_len=8,

@@ -20,6 +20,8 @@ import torch._dynamo
 import torch.distributed as dist
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
+from torch.utils._python_dispatch import TorchDispatchMode
 
 try:
     from .manager import MANAGER
@@ -30,6 +32,26 @@ from nanochat.common import get_dist_info, print0
 from nanochat.optim import AuroraAdamW, DistAuroraAdamW, MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
+
+
+class _UTCheckpointRecomputeMode(TorchDispatchMode):
+    def __enter__(self):
+        self._previous = MANAGER.is_checkpoint_recomputing
+        MANAGER.is_checkpoint_recomputing = True
+        return super().__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            MANAGER.is_checkpoint_recomputing = self._previous
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        return func(*args, **({} if kwargs is None else kwargs))
+
+
+def _ut_checkpoint_context_fn():
+    return nullcontext(), _UTCheckpointRecomputeMode()
 
 def scale_grad(x, alpha):
     if torch.is_tensor(alpha) and alpha.requires_grad:
@@ -602,7 +624,7 @@ class Router(nn.Module):
 
     @torch.no_grad()
     def _accumulate_aux_free_load_balancing_counts(self, top_k_indices):
-        if not self.use_aux_free_load_balancing:
+        if MANAGER.is_checkpoint_recomputing or not self.use_aux_free_load_balancing:
             return
         token_counts = torch.bincount(top_k_indices.reshape(-1), minlength=self.n_exp)
         token_counts = token_counts.to(
@@ -2735,7 +2757,9 @@ class GPT(nn.Module):
         x0 = x  # save initial normalized embedding for x0 residual
         ve_placeholder = None
         last_block_idx = len(self.transformer.h) - 1
-        for current_ut in range(self.total_ut_steps):
+
+        def run_ut_step(x, x0, current_ut):
+            nonlocal ve_placeholder
             for i, block in enumerate(self.transformer.h):
                 x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
                 if str(i) in self.value_embeds:
@@ -2759,7 +2783,27 @@ class GPT(nn.Module):
                     cache_layer_idx=cache_layer_idx,
                     advance_kv_cache=advance_kv_cache,
                 )
-            x = norm(x)
+            return norm(x)
+
+        use_ut_checkpointing = (
+            bool(getattr(self.config, 'ut_checkpointing', False))
+            and self.training
+            and torch.is_grad_enabled()
+            and targets is not None
+            and kv_cache is None
+        )
+        for current_ut in range(self.total_ut_steps):
+            if use_ut_checkpointing:
+                x = checkpoint(
+                    run_ut_step,
+                    x,
+                    x0,
+                    current_ut,
+                    use_reentrant=False,
+                    context_fn=_ut_checkpoint_context_fn,
+                )
+            else:
+                x = run_ut_step(x, x0, current_ut)
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]

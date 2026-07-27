@@ -71,6 +71,8 @@ parser.add_argument("--model-tag", type=str, default=None, help="model tag to lo
 parser.add_argument("--model-save-tag", type=str, default=None, help="extra model tag to append to the saved folder")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=None, help="override the checkpoint Universal Transformer loop count")
+parser.add_argument("--ut-checkpointing", dest="ut_checkpointing", type=str2bool, nargs='?', const=True, default=None,
+                    help="override checkpoint UT-pass activation checkpointing")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -194,6 +196,7 @@ model, tokenizer, meta = load_model(
     model_tag=args.model_tag,
     step=args.model_step,
     total_ut_steps=args.total_ut_steps,
+    ut_checkpointing=args.ut_checkpointing,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 args.total_ut_steps = model.config.total_ut_steps

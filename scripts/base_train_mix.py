@@ -244,6 +244,8 @@ parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=False,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
+parser.add_argument("--ut-checkpointing", dest="ut_checkpointing", type=str2bool, nargs='?', const=True, default=False,
+                    help="checkpoint each Universal Transformer pass to reduce activation memory at the cost of recomputation")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
 parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
@@ -622,6 +624,7 @@ def build_model_meta(depth):
         z_loss_penalize_mean_logits=args.z_loss_penalize_mean_logits,
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
+        ut_checkpointing=args.ut_checkpointing,
         loss_chunk_tokens=resolved_loss_chunk_tokens,
         loss_recompute_backward=args.loss_recompute_backward,
         debug=args.debug
