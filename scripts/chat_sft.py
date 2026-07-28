@@ -143,7 +143,6 @@ if args.kappa_bias_lr_warmup_iterations < 0:
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
-kappa_scale_l2_loss_weight_scale_was_specified = arg_was_explicitly_set(sys.argv[1:], '--kappa-scale-l2-loss-weight-scale')
 
 
 def drop_none_log_values(log_data):
@@ -211,19 +210,12 @@ if not use_dummy_wandb:
         },
         allow_val_change=True,
     )
-if kappa_scale_l2_loss_weight_scale_was_specified:
-    print0(
-        "Specified kappa_scale_l2_loss_weight_scale: "
-        f"{args.kappa_scale_l2_loss_weight_scale}"
-    )
-else:
-    args.kappa_scale_l2_loss_weight_scale = meta.get("user_config", {}).get(
-        "kappa_scale_l2_loss_weight_scale", 1.0
-    )
-    print0(
-        "Inherited kappa_scale_l2_loss_weight_scale: "
-        f"{args.kappa_scale_l2_loss_weight_scale}"
-    )
+    
+print0(
+    "kappa_scale_l2_loss_weight_scale: "
+    f"{args.kappa_scale_l2_loss_weight_scale}"
+)
+
 user_config["kappa_scale_l2_loss_weight_scale"] = args.kappa_scale_l2_loss_weight_scale
 if not use_dummy_wandb:
     wandb_run.config.update(
