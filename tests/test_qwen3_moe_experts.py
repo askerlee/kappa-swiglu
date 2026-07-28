@@ -1107,6 +1107,23 @@ def test_kappa_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss():
         keeper.loss(torch.tensor([1.0]))
 
 
+def test_kappa_bias_ema_target_keeper_loss_compiles_without_readiness_graph_break():
+    keeper = GateProjBiasEmaTargetKeeper(
+        beta=0.99,
+        anchor_start=0.0,
+        anchor_end=1.0,
+        floor_frac=0.8,
+    )
+    keeper.target_rms.fill_(2.0)
+    compiled_loss = torch.compile(keeper.loss, fullgraph=True, backend="eager")
+
+    keeper.target_ready.fill_(False)
+    torch.testing.assert_close(compiled_loss(torch.ones(4)), torch.tensor(0.0))
+
+    keeper.target_ready.fill_(True)
+    torch.testing.assert_close(compiled_loss(torch.ones(4)), torch.tensor(0.36))
+
+
 def test_kappa_bias_ema_target_error_includes_module_source():
     config = GPTConfig(
         n_exp=2,

@@ -963,7 +963,14 @@ class GateProjBiasEmaTargetKeeper(nn.Module):
         self.register_buffer("target_ready", torch.zeros((), dtype=torch.bool))
         self.register_buffer("total_iterations", torch.ones((), dtype=torch.int64), persistent=False)
 
+    # If compiled, _raise_if_nonfinite() will become a no-op, 
+    # Although torch.isfinite() itself is graph-compatible, this diagnostic
+    # uses data-dependent Python control flow and converts tensor values to
+    # Python objects, which would cause graph breaks or fail with fullgraph=True.
+    # Skip the eager-only diagnostic while tracing or executing compiled graphs.
     def _raise_if_nonfinite(self, tensor, label, source=None):
+        if torch.compiler.is_compiling():
+            return
         if torch.isfinite(tensor).all():
             return
         bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
@@ -1012,7 +1019,7 @@ class GateProjBiasEmaTargetKeeper(nn.Module):
 
     def loss(self, value):
         self._raise_if_nonfinite(value, "value")
-        if not bool(self.target_ready.item()):
+        if not torch.compiler.is_compiling() and not bool(self.target_ready.item()):
             loss = value.new_zeros((), dtype=torch.float32)
             self._raise_if_nonfinite(loss, "loss")
             return loss
@@ -1022,6 +1029,8 @@ class GateProjBiasEmaTargetKeeper(nn.Module):
         floor = self.target_rms.detach() * self.floor_frac
         self._raise_if_nonfinite(floor, "floor")
         loss = torch.relu(floor - current_rms).square()
+        if torch.compiler.is_compiling():
+            loss = torch.where(self.target_ready, loss, torch.zeros_like(loss))
         self._raise_if_nonfinite(loss, "loss")
         return loss
 
