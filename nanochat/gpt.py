@@ -1010,19 +1010,19 @@ class GateProjBiasEmaTargetKeeper(nn.Module):
         # and target_ready is still True, so that the regularization remains stable.
         self._raise_if_nonfinite(self.target_rms, "target_rms", source=source)
 
-    def loss(self, value, source=None):
-        self._raise_if_nonfinite(value, "value", source=source)
+    def loss(self, value):
+        self._raise_if_nonfinite(value, "value")
         if not bool(self.target_ready.item()):
             loss = value.new_zeros((), dtype=torch.float32)
-            self._raise_if_nonfinite(loss, "loss", source=source)
+            self._raise_if_nonfinite(loss, "loss")
             return loss
         value_f = value.float()
         current_rms = self._compute_rms(value_f)
-        self._raise_if_nonfinite(current_rms, "current_rms", source=source)
+        self._raise_if_nonfinite(current_rms, "current_rms")
         floor = self.target_rms.detach() * self.floor_frac
-        self._raise_if_nonfinite(floor, "floor", source=source)
+        self._raise_if_nonfinite(floor, "floor")
         loss = torch.relu(floor - current_rms).square()
-        self._raise_if_nonfinite(loss, "loss", source=source)
+        self._raise_if_nonfinite(loss, "loss")
         return loss
 
 # Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
@@ -1194,8 +1194,7 @@ class Qwen3MLP(nn.Module):
         loss = kappa_bias.square().mean()
         ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(
-                kappa_bias, source=self._kappa_bias_debug_source("kappa_bias"))
+            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(kappa_bias)
         if loss_accum is not None:
             loss_accum.add("kappa_bias_l2_loss", loss)
             loss_accum.add("kappa_bias_ema_rms_reg_loss", ema_loss)
@@ -1211,8 +1210,7 @@ class Qwen3MLP(nn.Module):
             self.kappa_scale_ema_rms_reg_keeper.update(
                 kappa_scale, int(self.kappa_bias_ema_rms_reg_step.item()),
                 source=self._kappa_bias_debug_source("kappa_scale"))
-            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(
-                kappa_scale, source=self._kappa_bias_debug_source("kappa_scale"))
+            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(kappa_scale)
         if loss_accum is not None:
             loss_accum.add("kappa_scale_l2_loss", loss)
             loss_accum.add("kappa_scale_ema_rms_reg_loss", ema_loss)
@@ -1676,8 +1674,7 @@ class Qwen3MLPExperts(nn.Module):
         loss = kappa_bias.square().mean()
         ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
         if self.kappa_bias_ema_rms_reg_keeper is not None:
-            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(
-                kappa_bias, source=self._kappa_bias_debug_source("kappa_bias"))
+            ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(kappa_bias)
         if loss_accum is not None:
             loss_accum.add("kappa_bias_l2_loss", loss)
             loss_accum.add("kappa_bias_ema_rms_reg_loss", ema_loss)
@@ -1690,8 +1687,7 @@ class Qwen3MLPExperts(nn.Module):
         loss = kappa_scale.square().mean()
         ema_loss = torch.zeros((), device=kappa_scale.device, dtype=torch.float32)
         if self.kappa_scale_ema_rms_reg_keeper is not None:
-            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(
-                kappa_scale, source=self._kappa_bias_debug_source("kappa_scale"))
+            ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(kappa_scale)
         if loss_accum is not None:
             loss_accum.add("kappa_scale_l2_loss", loss)
             loss_accum.add("kappa_scale_ema_rms_reg_loss", ema_loss)
@@ -2035,8 +2031,9 @@ class MOELayer(nn.Module):
             weighted_outputs,
         )
         if MANAGER.collect_load_balancing_stats:
-            valid_expert_indices = flat_top_k_indices[valid_mask]
-            self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
+            self._maybe_collect_load_balancing_stats(
+                rank, flat_top_k_indices, valid_mask, exp_capacity
+            )
         return output_flat
 
     def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
@@ -2188,8 +2185,11 @@ class MOELayer(nn.Module):
         return output_flat.view(B, T, C)
 
     @torch._dynamo.disable
-    def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
+    def _maybe_collect_load_balancing_stats(
+        self, rank, flat_top_k_indices, valid_mask, exp_capacity
+    ):
         if MANAGER.collect_load_balancing_stats and not torch.compiler.is_compiling():
+            valid_expert_indices = flat_top_k_indices[valid_mask]
             slot_served = (rank < exp_capacity)                     # [B*T, k]
             # Since k=2, drop_rate_per_k = [drop_rate_0_step, drop_rate_1_step].
             # drop_rate_0_step: fraction of tokens whose top-1 expert assignment overflowed capacity.

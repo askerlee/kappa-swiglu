@@ -1443,13 +1443,15 @@ while True:
         and args.eval_every > 0
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.eval_every == 0))
     ):
-        model.eval()
+        orig_model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-        with disable_fp8(model), autocast_ctx:
-            # val_bpb: Compute summed loss over targets, but normalize by the number of bytes 
+        with disable_fp8(orig_model), autocast_ctx:
+            # val_bpb: Compute summed loss over targets, but normalize by the number of bytes
             # of the target text, not tokens.
-            val_bpb, ntp_loss = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+            # Use orig_model (uncompiled) to avoid grad_mode recompilation of the
+            # compiled training wrapper, which is compiled under grad-enabled mode.
+            val_bpb, ntp_loss = evaluate_bpb(orig_model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -1461,7 +1463,7 @@ while True:
             "val/bpb": val_bpb,
             "val/loss": ntp_loss,
         }), step=step)
-        model.train()
+        orig_model.train()
         MANAGER.reset_all()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
