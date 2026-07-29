@@ -315,7 +315,7 @@ parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate 
 parser.add_argument("--target-param-data-ratio", type=float, default=5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?', const=True, default=True,
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
-parser.add_argument("--chat-sft-every", type=int, default=-1, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
+parser.add_argument("--chat-sft-every", type=int, default=100, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
                     help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
