@@ -54,7 +54,8 @@ from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
 from tasks.smoltalk import SmolTalk
 from tasks.spellingbee import SimpleSpelling, SpellingBee
-from tasks.tulu3 import Tulu3SFTMixture
+from tasks.tulu3 import Tulu3SFTMixture, Tulu3SFTPersonaIF
+from tasks.ultradata import UltraDataSFTIF
 torch.set_printoptions(sci_mode=False)
 
 # print_banner()
@@ -318,6 +319,8 @@ parser.add_argument("--chat-sft-every", type=int, default=-1, help="run one chat
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
                     help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
+parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True,
+                    help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
@@ -956,7 +959,12 @@ if resuming and load_optimizer_state:
 
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
-def build_chat_sft_train_dataset(train_mixture_repeats, identity_conversations_filepath, use_tulu3_sft_mixture=False):
+def build_chat_sft_train_dataset(
+    train_mixture_repeats,
+    identity_conversations_filepath,
+    use_tulu3_sft_mixture=False,
+    use_ultradata_sft_if=False,
+):
     smoltalk_rows_per_repeat = 50000
     simple_spelling_rows_per_repeat = 200000
     spellingbee_rows_per_repeat = 80000
@@ -973,6 +981,9 @@ def build_chat_sft_train_dataset(train_mixture_repeats, identity_conversations_f
     ]
     if use_tulu3_sft_mixture:
         train_tasks.append(Tulu3SFTMixture(split="train"))
+        train_tasks.append(Tulu3SFTPersonaIF(split="train"))
+    if use_ultradata_sft_if:
+        train_tasks.append(UltraDataSFTIF())
     for repeat_idx in range(train_mixture_repeats):
         simple_spelling_start = repeat_idx * simple_spelling_rows_per_repeat
         spellingbee_start = repeat_idx * spellingbee_rows_per_repeat
@@ -1114,6 +1125,7 @@ chat_sft_train_dataset = build_chat_sft_train_dataset(
     args.chat_sft_train_mixture_repeats,
     identity_conversations_filepath,
     use_tulu3_sft_mixture=args.use_tulu3_sft_mixture,
+    use_ultradata_sft_if=args.use_ultradata_sft_if,
 )
 chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(
     chat_sft_train_dataset,

@@ -41,3 +41,50 @@ def test_mixed_script_logs_chat_sft_loss_separately_from_base_loss():
 
     assert 'log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses[\'ntp_loss\'])' in source
     assert 'log_data["train/loss_step"] = debiased_smooth_loss' in source
+
+
+def test_mixed_script_adds_focused_chat_sft_datasets():
+    tree = ast.parse(BASE_TRAIN_MIX.read_text(), filename=str(BASE_TRAIN_MIX))
+    flag_call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--use-ultradata-sft-if"
+    )
+    defaults = {
+        keyword.arg: keyword.value.value
+        for keyword in flag_call.keywords
+        if isinstance(keyword.value, ast.Constant)
+    }
+    builder = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_chat_sft_train_dataset"
+    )
+    guarded_calls = {
+        node.test.id: {
+            call.func.id
+            for statement in node.body
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        }
+        for node in builder.body
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+    }
+    builder_call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_chat_sft_train_dataset"
+    )
+    call_keywords = {keyword.arg: keyword.value for keyword in builder_call.keywords}
+
+    assert defaults["default"] is True
+    assert {"Tulu3SFTMixture", "Tulu3SFTPersonaIF"} <= guarded_calls["use_tulu3_sft_mixture"]
+    assert "UltraDataSFTIF" in guarded_calls["use_ultradata_sft_if"]
+    assert isinstance(call_keywords["use_ultradata_sft_if"], ast.Attribute)
+    assert call_keywords["use_ultradata_sft_if"].attr == "use_ultradata_sft_if"
