@@ -109,6 +109,101 @@ class TaskSequence(Task):
             index -= task_length
 
 
+def normalize_conversation(messages):
+    """
+    Normalize a list of messages into the strict user/assistant alternating form
+    expected by render_conversation.
+
+    Rules:
+    1. An optional leading system message is kept as-is (render_conversation handles it).
+    2. After (optionally) stripping the system message, messages must strictly alternate
+       starting with "user", e.g. user, assistant, user, assistant, ...
+    3. If two consecutive messages share the same role, they are merged into one.
+       (e.g. two consecutive assistant turns become a single assistant message.)
+    4. String content is concatenated; lists of parts are concatenated; mixed types
+       are coerced to a list of parts.
+    5. Messages with empty content after merging are dropped (unless that leaves no
+       messages at all).
+
+    Returns the (possibly rewritten) list of messages.
+    """
+    messages = list(messages)
+
+    # Peel off an optional leading system message (keep it for render_conversation to handle).
+    system_message = None
+    if messages and messages[0]["role"] == "system":
+        system_message = messages[0]
+        rest = messages[1:]
+    else:
+        rest = messages
+
+    if not rest:
+        # Degenerate: only a system message (or nothing). Return as-is so downstream asserts fire.
+        return messages
+
+    # Coerce every message content to a comparable form: list of parts.
+    def to_parts(content):
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}] if content else []
+        if isinstance(content, list):
+            return list(content)
+        if content is None:
+            return []
+        return [{"type": "text", "text": str(content)}]
+
+    # Merge consecutive messages that share the same role.
+    merged = []
+    for msg in rest:
+        role = msg["role"]
+        parts = to_parts(msg["content"])
+        if merged and merged[-1]["role"] == role:
+            merged[-1]["content"].extend(parts)
+        else:
+            merged.append({"role": role, "content": parts})
+
+    # Drop messages whose content became empty after merging, then re-merge in case of gaps.
+    merged = [msg for msg in merged if len(msg["content"]) > 0]
+
+    # Re-merge after dropping empties (could create new adjacent same-role pairs).
+    final = []
+    for msg in merged:
+        if final and final[-1]["role"] == msg["role"]:
+            final[-1]["content"].extend(msg["content"])
+        else:
+            final.append({"role": msg["role"], "content": list(msg["content"])})
+
+    # Re-coerce: single text-part messages become plain strings for cleanliness.
+    for msg in final:
+        parts = msg["content"]
+        if msg["role"] == "user":
+            # User messages must be plain strings (render_conversation asserts this).
+            # Concatenate all text parts into a single string.
+            text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
+            msg["content"] = "\n\n".join(t for t in text_parts if t)
+            if not msg["content"]:
+                msg["content"] = "..."
+        elif len(parts) == 1 and parts[0].get("type") == "text":
+            msg["content"] = parts[0]["text"]
+        else:
+            msg["content"] = parts
+
+    # Ensure alternation starting with user. If the first role is assistant, prepend a
+    # minimal user turn so the conversation is well-formed.
+    if final and final[0]["role"] != "user":
+        final.insert(0, {"role": "user", "content": "..."})
+
+    # If we have an odd number of messages (e.g. trailing user with no reply), drop the last one.
+    if len(final) % 2 == 1 and final and final[-1]["role"] == "user":
+        final = final[:-1]
+
+    if not final:
+        # Nothing survived normalization; return original so downstream error is clearer.
+        return messages
+
+    result = ([system_message] if system_message else []) + final
+    return result
+
+
 def render_mc(question, letters, choices):
     """
     The common multiple choice rendering format we will use.

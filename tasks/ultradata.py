@@ -8,7 +8,7 @@ import re
 from datasets import load_dataset
 from langdetect import DetectorFactory, LangDetectException, detect
 
-from tasks.common import Task
+from tasks.common import Task, normalize_conversation
 
 
 DetectorFactory.seed = 42
@@ -71,4 +71,4 @@ class UltraDataSFTIF(Task):
         for message in messages:
             assert message["role"] in ("system", "user", "assistant"), "Unexpected message role"
             assert isinstance(message["content"], str), "Content must be a string"
-        return {"messages": messages}
+        return {"messages": normalize_conversation(messages)}

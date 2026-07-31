@@ -4,7 +4,7 @@ https://huggingface.co/datasets/allenai/tulu-3-sft-mixture
 """
 
 from datasets import load_dataset
-from tasks.common import Task
+from tasks.common import Task, normalize_conversation
 
 
 class Tulu3SFTMixture(Task):
@@ -27,7 +27,7 @@ class Tulu3SFTMixture(Task):
             assert "role" in message, "Message missing 'role' field"
             assert "content" in message, "Message missing 'content' field"
             assert isinstance(message["content"], str), "Content must be a string"
-        return {"messages": messages}
+        return {"messages": normalize_conversation(messages)}
 
 
 class Tulu3SFTPersonaIF(Task):
@@ -52,4 +52,4 @@ class Tulu3SFTPersonaIF(Task):
             assert "role" in message, "Message missing 'role' field"
             assert "content" in message, "Message missing 'content' field"
             assert isinstance(message["content"], str), "Content must be a string"
-        return {"messages": messages}
+        return {"messages": normalize_conversation(messages)}

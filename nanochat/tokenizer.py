@@ -279,6 +279,16 @@ class RustBPETokenizer:
             ids.extend(token_ids)
             mask.extend([mask_val] * len(token_ids))
 
+        # Defense-in-depth: normalize the conversation so messages strictly alternate
+        # user,assistant,user,assistant,... (after an optional leading system message).
+        # This protects against tasks/datasets that emit consecutive same-role turns
+        # (e.g. Tulu3, UltraData), which would otherwise trip the assert below.
+        try:
+            from tasks.common import normalize_conversation
+            conversation = {"messages": normalize_conversation(conversation["messages"])}
+        except Exception:
+            pass # fall back to the original handling below if normalization is unavailable
+
         # sometimes the first message is a system message...
         # => just merge it with the second (user) message
         if conversation["messages"][0]["role"] == "system":
