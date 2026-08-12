@@ -467,6 +467,43 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
         assert block.mlp._expert_router_scores_cache is None
 
 
+def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (2, 5))
+    targets = torch.randint(0, config.vocab_size, (2, 5))
+    loop_logits = []
+
+    def capture_logits(_module, _inputs, output):
+        loop_logits.append(output.detach()[..., :config.vocab_size])
+
+    handle = model.lm_head.register_forward_hook(capture_logits)
+    loss, losses = model(ids, targets)
+    handle.remove()
+
+    assert len(loop_logits) == config.total_ut_steps
+    per_loop_losses = [
+        F.cross_entropy(15 * torch.tanh(logits / 15), targets.reshape(-1))
+        for logits in loop_logits
+    ]
+    expected_loss = torch.stack(per_loop_losses).mean()
+    torch.testing.assert_close(loss, expected_loss)
+    torch.testing.assert_close(losses["ntp_loss"], expected_loss)
+
+
 def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_effects():
     torch.manual_seed(0)
     base_config = GPTConfig(

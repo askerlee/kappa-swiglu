@@ -2864,6 +2864,13 @@ class GPT(nn.Module):
         checkpoint_loss_totals = None
         checkpoint_router_counts = None
         checkpoint_selected_scores = []
+        softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
+        ntp_loss_total = None
+        loss_chunk_tokens = (
+            _get_loss_chunk_tokens(self.config, B * T)
+            if targets is not None
+            else None
+        )
         for current_ut in range(self.total_ut_steps):
             if use_ut_checkpointing:
                 step_outputs = checkpoint(
@@ -2889,6 +2896,23 @@ class GPT(nn.Module):
             else:
                 x = run_ut_step(x, x0, current_ut, False)
 
+            if targets is not None:
+                step_ntp_loss = _chunked_cross_entropy(
+                    x,
+                    targets,
+                    self.lm_head,
+                    self.config.vocab_size,
+                    softcap,
+                    loss_reduction,
+                    loss_chunk_tokens,
+                    recompute_backward=bool(getattr(self.config, 'loss_recompute_backward', False)),
+                )
+                ntp_loss_total = (
+                    step_ntp_loss
+                    if ntp_loss_total is None
+                    else ntp_loss_total + step_ntp_loss
+                )
+
         if checkpoint_router_counts is not None:
             with torch.no_grad():
                 for layer_idx, block in enumerate(self.transformer.h):
@@ -2898,7 +2922,6 @@ class GPT(nn.Module):
                         router.tokens_per_expert_counter.add_(checkpoint_router_counts[layer_idx])
 
         # Forward the lm_head (compute logits)
-        softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
         logits = None
         if targets is None:
             # Always compute logits for all positions at inference time (HuggingFace standard)
@@ -3127,16 +3150,8 @@ class GPT(nn.Module):
             losses[f'entropy_gate_{layer_idx}'] = experts.last_gate_stats['entropy'].item()
         
         if targets is not None:
-            loss = _chunked_cross_entropy(
-                x,
-                targets,
-                self.lm_head,
-                self.config.vocab_size,
-                softcap,
-                loss_reduction,
-                _get_loss_chunk_tokens(self.config, x.size(0) * x.size(1)),
-                recompute_backward=bool(getattr(self.config, 'loss_recompute_backward', False)),
-            )
+            assert ntp_loss_total is not None
+            loss = ntp_loss_total / self.total_ut_steps
             losses['ntp_loss'] = loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
