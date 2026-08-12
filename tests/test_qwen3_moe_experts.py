@@ -1387,10 +1387,12 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
         [1.0, 0.5],
         [0.0, 0.0],
     ], requires_grad=True)
-    slope_scales = experts._compute_kappa_slope_scales(
-        experts.kappa_bias,
-        selected_router_scores,
-    )
+    expected_scale_1 = math.exp(math.log(4.0) * math.tanh(-2.0))
+    expected_scale_2 = math.exp(math.log(4.0) * math.tanh(-1.0))
+    slope_scales = torch.tensor([
+        [[expected_scale_1] * experts.intermediate_size, [expected_scale_2] * experts.intermediate_size],
+        [[1.0] * experts.intermediate_size, [1.0] * experts.intermediate_size],
+    ], dtype=torch.bfloat16)
     old_collect = MANAGER.collect_load_balancing_stats
     MANAGER.collect_load_balancing_stats = True
     try:
@@ -1401,9 +1403,7 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     shift_abs_mean = MANAGER.aggregate("kappa_slope_scale_abs_mean")
     normalized_shift_abs_mean = MANAGER.aggregate("kappa_slope_scale_abs_mean_normalized")
 
-    expected_scale_1 = math.exp(math.log(4.0) * math.tanh(-2.0))
-    expected_scale_2 = math.exp(math.log(4.0) * math.tanh(-1.0))
-    expected_mean = torch.tensor([(expected_scale_1 + expected_scale_2) / 2.0])
+    expected_mean = slope_scales[0].float().mean().reshape(1)
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
     MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
@@ -1490,11 +1490,11 @@ def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric():
     assert losses['kappa_slope_scale_abs_mean_normalized'].item() >= 0.0
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean'],
-        torch.tensor(losses['kappa_slope_scale_abs_mean_1']),
+        torch.tensor([losses['kappa_slope_scale_abs_mean_1']]),
     )
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean_normalized'],
-        torch.tensor(losses['kappa_slope_scale_abs_mean_normalized_1']),
+        torch.tensor([losses['kappa_slope_scale_abs_mean_normalized_1']]),
     )
 
 
@@ -1541,11 +1541,11 @@ def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric_in_slope_scaler_m
     assert losses['kappa_slope_scale_abs_mean_normalized'].item() >= 0.0
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean'],
-        torch.tensor(losses['kappa_slope_scale_abs_mean_1']),
+        torch.tensor([losses['kappa_slope_scale_abs_mean_1']]),
     )
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean_normalized'],
-        torch.tensor(losses['kappa_slope_scale_abs_mean_normalized_1']),
+        torch.tensor([losses['kappa_slope_scale_abs_mean_normalized_1']]),
     )
 
 

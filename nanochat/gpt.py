@@ -1587,9 +1587,9 @@ class Qwen3MLPExperts(nn.Module):
         else:
             slope_work = slope_work * kappa_bias
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
+        slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         if MANAGER.collect_load_balancing_stats:
             self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
-        slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)
 
     def _apply_kappa_slope_scaled_activation_inference(
@@ -1734,14 +1734,17 @@ class Qwen3MLPExperts(nn.Module):
         ):
             return
 
-        active_mask = selected_router_scores.detach().float().abs() > 0
+        active_mask = selected_router_scores.detach().ne(0)
         if not active_mask.any():
             return
 
-        slope_scales = slope_scales.detach().float()
-        active_mask_f = active_mask.to(dtype=slope_scales.dtype)
+        slope_scales = slope_scales.detach()
+        active_mask_f = active_mask.float()
         active_token_counts = active_mask_f.sum(dim=1)
-        slope_scale_sum_per_expert = (slope_scales * active_mask_f.unsqueeze(-1)).sum(dim=(1, 2))
+        slope_scale_sum_per_token = slope_scales.sum(dim=2, dtype=torch.float32)
+        slope_scale_sum_per_expert = (
+            slope_scale_sum_per_token * active_mask_f
+        ).sum(dim=1)
         slope_scale_mean_per_expert = slope_scale_sum_per_expert / (
             active_token_counts.clamp_min(1) * slope_scales.size(-1)
         )
@@ -1750,26 +1753,26 @@ class Qwen3MLPExperts(nn.Module):
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
         MANAGER.add("kappa_slope_scale_abs_mean", slope_scale_mean.detach())
-        # slope_scales: [n_exp, capacity, intermediate_size]
-        slope_scales_flat = slope_scales.reshape(slope_scales.size(0), -1)
-        active_slope_mask_flat = active_mask.unsqueeze(-1).expand_as(slope_scales).reshape(slope_scales.size(0), -1)
+        top_means = []
+        bottom_means = []
+        for expert_slope_scales, expert_active_mask in zip(slope_scales, active_mask):
+            active_slope_scales = expert_slope_scales[expert_active_mask].reshape(-1)
+            if active_slope_scales.numel() == 0:
+                continue
+            top_means.append(
+                _mean_extreme_percentile(active_slope_scales, fraction=0.05, largest=True).float()
+            )
+            bottom_means.append(
+                _mean_extreme_percentile(active_slope_scales, fraction=0.05, largest=False).float()
+            )
+        zero = slope_scale_mean.new_zeros(())
         MANAGER.add(
             "kappa_slope_scale_abs_top5p_mean",
-            _mean_extreme_percentile_per_row(
-                slope_scales_flat,
-                active_slope_mask_flat,
-                fraction=0.05,
-                largest=True,
-            ).detach(),
+            (torch.stack(top_means).mean() if top_means else zero).detach(),
         )
         MANAGER.add(
             "kappa_slope_scale_abs_bottom5p_mean",
-            _mean_extreme_percentile_per_row(
-                slope_scales_flat,
-                active_slope_mask_flat,
-                fraction=0.05,
-                largest=False,
-            ).detach(),
+            (torch.stack(bottom_means).mean() if bottom_means else zero).detach(),
         )
         active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
         total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
