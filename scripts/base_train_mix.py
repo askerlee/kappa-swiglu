@@ -247,9 +247,9 @@ parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward",
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
 parser.add_argument("--ut-checkpointing", dest="ut_checkpointing", type=str2bool, nargs='?', const=True, default=False,
                     help="checkpoint each Universal Transformer pass to reduce activation memory at the cost of recomputation")
-parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
+parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=4.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
-parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
+parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=4.0,
                     help="maximum slope scale used by dense kappa_bias modulation")
 parser.add_argument("--kappa-slope-max-scale-warmup-iteration-frac",
                     dest="kappa_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
