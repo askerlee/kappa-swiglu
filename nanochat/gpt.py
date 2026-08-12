@@ -247,8 +247,6 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             chunk_hidden = hidden_flat[chunk_start:chunk_end]
             chunk_targets = targets_flat[chunk_start:chunk_end]
             chunk_valid_mask = chunk_targets.ne(-1)
-            if not bool(chunk_valid_mask.any().item()):
-                continue
 
             logits = F.linear(chunk_hidden, weight_vocab_for_mm)
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits, softcap)
@@ -290,11 +288,8 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
         grad_hidden = torch.zeros_like(hidden_flat) if ctx.needs_input_grad[0] else None
         grad_weight = torch.zeros_like(weight) if ctx.needs_input_grad[2] else None
 
-        if not bool((valid_tokens > 0).item()):
-            return grad_hidden, None, grad_weight, None, None, None, None
-
         if loss_reduction == 'mean':
-            base_scale = grad_output / valid_tokens.to(device=grad_output.device, dtype=grad_output.dtype)
+            base_scale = grad_output / valid_tokens.clamp_min(1).to(device=grad_output.device, dtype=grad_output.dtype)
         elif loss_reduction == 'sum':
             base_scale = grad_output
         else:
@@ -305,8 +300,6 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
             chunk_hidden = hidden_flat[chunk_start:chunk_end]
             chunk_targets = targets_flat[chunk_start:chunk_end]
             chunk_valid_mask = chunk_targets.ne(-1)
-            if not bool(chunk_valid_mask.any().item()):
-                continue
 
             logits_raw = F.linear(chunk_hidden, weight_vocab_for_mm)
             logits = ChunkedLinearCrossEntropy._softcap_logits_(logits_raw, softcap)
@@ -2865,12 +2858,7 @@ class GPT(nn.Module):
         checkpoint_router_counts = None
         checkpoint_selected_scores = []
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
-        ntp_loss_total = None
-        loss_chunk_tokens = (
-            _get_loss_chunk_tokens(self.config, B * T)
-            if targets is not None
-            else None
-        )
+        ut_hidden_states = []
         for current_ut in range(self.total_ut_steps):
             if use_ut_checkpointing:
                 step_outputs = checkpoint(
@@ -2897,15 +2885,25 @@ class GPT(nn.Module):
                 x = run_ut_step(x, x0, current_ut, False)
 
             if targets is not None:
+                ut_hidden_states.append(x)
+
+        ntp_loss_total = None
+        if targets is not None:
+            loss_chunk_tokens = _get_loss_chunk_tokens(self.config, B * T)
+            recompute_loss_backward = (
+                self.total_ut_steps > 1
+                or bool(getattr(self.config, 'loss_recompute_backward', False))
+            )
+            for ut_hidden_state in ut_hidden_states:
                 step_ntp_loss = _chunked_cross_entropy(
-                    x,
+                    ut_hidden_state,
                     targets,
                     self.lm_head,
                     self.config.vocab_size,
                     softcap,
                     loss_reduction,
                     loss_chunk_tokens,
-                    recompute_backward=bool(getattr(self.config, 'loss_recompute_backward', False)),
+                    recompute_backward=recompute_loss_backward,
                 )
                 ntp_loss_total = (
                     step_ntp_loss

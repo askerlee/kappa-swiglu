@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.engine import KVCache
-from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, scale_grad
+from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, scale_grad
 from nanochat.manager import MOEManager
 
 
@@ -467,7 +467,7 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
         assert block.mlp._expert_router_scores_cache is None
 
 
-def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop():
+def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop(monkeypatch):
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -485,21 +485,22 @@ def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop():
     model.init_weights()
     ids = torch.randint(0, config.vocab_size, (2, 5))
     targets = torch.randint(0, config.vocab_size, (2, 5))
-    loop_logits = []
+    loop_losses = []
+    recompute_backward_values = []
+    original_chunked_cross_entropy = _chunked_cross_entropy
 
-    def capture_logits(_module, _inputs, output):
-        loop_logits.append(output.detach()[..., :config.vocab_size])
+    def capture_loop_loss(*args, **kwargs):
+        recompute_backward_values.append(kwargs["recompute_backward"])
+        loop_loss = original_chunked_cross_entropy(*args, **kwargs)
+        loop_losses.append(loop_loss.detach())
+        return loop_loss
 
-    handle = model.lm_head.register_forward_hook(capture_logits)
+    monkeypatch.setattr("nanochat.gpt._chunked_cross_entropy", capture_loop_loss)
     loss, losses = model(ids, targets)
-    handle.remove()
 
-    assert len(loop_logits) == config.total_ut_steps
-    per_loop_losses = [
-        F.cross_entropy(15 * torch.tanh(logits / 15), targets.reshape(-1))
-        for logits in loop_logits
-    ]
-    expected_loss = torch.stack(per_loop_losses).mean()
+    assert len(loop_losses) == config.total_ut_steps
+    assert recompute_backward_values == [True] * config.total_ut_steps
+    expected_loss = torch.stack(loop_losses).mean()
     torch.testing.assert_close(loss, expected_loss)
     torch.testing.assert_close(losses["ntp_loss"], expected_loss)
 
