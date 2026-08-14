@@ -2897,7 +2897,7 @@ class GPT(nn.Module):
         if targets is not None:
             loss_chunk_tokens = _get_loss_chunk_tokens(self.config, B * T)
             recompute_loss_backward = (
-                len(ut_hidden_states) > 1
+                self.total_ut_steps > 1
                 or bool(getattr(self.config, 'loss_recompute_backward', False))
             )
             for ut_hidden_state in ut_hidden_states:

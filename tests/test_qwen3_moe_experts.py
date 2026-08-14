@@ -538,7 +538,7 @@ def test_gpt_total_ut_steps_can_compute_ntp_loss_only_on_final_loop(monkeypatch)
     loss, losses = model(ids, targets)
 
     assert len(loop_losses) == 1
-    assert recompute_backward_values == [False]
+    assert recompute_backward_values == [True]
     torch.testing.assert_close(loss, loop_losses[0])
     torch.testing.assert_close(losses["ntp_loss"], loop_losses[0])
 

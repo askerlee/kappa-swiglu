@@ -104,7 +104,7 @@ def test_requested_scripts_wire_ut_everypass_ntp():
             )
         ]
         assert len(argument_calls) == 1, path
-        expected_default = None if path.name == "chat_sft.py" else True
+        expected_default = False if path.name == "chat_sft.py" else True
         keywords = {keyword.arg: keyword.value for keyword in argument_calls[0].keywords}
         assert ast.literal_eval(keywords["dest"]) == "ut_everypass_ntp"
         assert ast.literal_eval(keywords["default"]) is expected_default
