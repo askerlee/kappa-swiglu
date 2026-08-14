@@ -2887,14 +2887,17 @@ class GPT(nn.Module):
             else:
                 x = run_ut_step(x, x0, current_ut, False)
 
-            if targets is not None:
+            if targets is not None and (
+                self.config.ut_everypass_ntp
+                or current_ut == self.total_ut_steps - 1
+            ):
                 ut_hidden_states.append(x)
 
         ntp_loss_total = None
         if targets is not None:
             loss_chunk_tokens = _get_loss_chunk_tokens(self.config, B * T)
             recompute_loss_backward = (
-                self.total_ut_steps > 1
+                len(ut_hidden_states) > 1
                 or bool(getattr(self.config, 'loss_recompute_backward', False))
             )
             for ut_hidden_state in ut_hidden_states:
@@ -3152,7 +3155,7 @@ class GPT(nn.Module):
         
         if targets is not None:
             assert ntp_loss_total is not None
-            loss = ntp_loss_total / self.total_ut_steps
+            loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:

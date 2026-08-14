@@ -505,6 +505,44 @@ def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop(monkeypatch):
     torch.testing.assert_close(losses["ntp_loss"], expected_loss)
 
 
+def test_gpt_total_ut_steps_can_compute_ntp_loss_only_on_final_loop(monkeypatch):
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        ut_everypass_ntp=False,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (2, 5))
+    targets = torch.randint(0, config.vocab_size, (2, 5))
+    loop_losses = []
+    recompute_backward_values = []
+    original_chunked_cross_entropy = _chunked_cross_entropy
+
+    def capture_loop_loss(*args, **kwargs):
+        recompute_backward_values.append(kwargs["recompute_backward"])
+        loop_loss = original_chunked_cross_entropy(*args, **kwargs)
+        loop_losses.append(loop_loss.detach())
+        return loop_loss
+
+    monkeypatch.setattr("nanochat.gpt._chunked_cross_entropy", capture_loop_loss)
+    loss, losses = model(ids, targets)
+
+    assert len(loop_losses) == 1
+    assert recompute_backward_values == [False]
+    torch.testing.assert_close(loss, loop_losses[0])
+    torch.testing.assert_close(losses["ntp_loss"], loop_losses[0])
+
+
 def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_effects():
     torch.manual_seed(0)
     base_config = GPTConfig(

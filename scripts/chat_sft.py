@@ -71,6 +71,8 @@ parser.add_argument("--model-tag", type=str, default=None, help="model tag to lo
 parser.add_argument("--model-save-tag", type=str, default=None, help="extra model tag to append to the saved folder")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=None, help="override the checkpoint Universal Transformer loop count")
+parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=False,
+                    help="override whether NTP loss is computed at every UT pass or only the final pass")
 parser.add_argument("--ut-checkpointing", dest="ut_checkpointing", type=str2bool, nargs='?', const=True, default=None,
                     help="override checkpoint UT-pass activation checkpointing")
 # Training horizon
@@ -195,10 +197,12 @@ model, tokenizer, meta = load_model(
     model_tag=args.model_tag,
     step=args.model_step,
     total_ut_steps=args.total_ut_steps,
+    ut_everypass_ntp=args.ut_everypass_ntp,
     ut_checkpointing=args.ut_checkpointing,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 args.total_ut_steps = model.config.total_ut_steps
+args.ut_everypass_ntp = model.config.ut_everypass_ntp
 if args.total_ut_steps > 1:
     print0(f"Loops = {args.total_ut_steps}")
 loaded_checkpoint_step = int(meta.get("step", 0))

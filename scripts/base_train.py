@@ -210,6 +210,8 @@ parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["ro
 # Model architecture
 parser.add_argument("--depth", type=int, default=8, help="depth of the Transformer model")
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=1, help="number of Universal Transformer passes through the full layer stack")
+parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=True,
+                    help="compute and average NTP loss at every UT pass; disable to supervise only the final pass")
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of MoE layers to instantiate from --moe-start-layer onward (-1 = all eligible layers)")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
@@ -569,6 +571,7 @@ def build_model_meta(depth):
     config = GPTConfig(
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, total_ut_steps=args.total_ut_steps,
+        ut_everypass_ntp=args.ut_everypass_ntp,
         moe_start_layer=args.moe_start_layer,
         num_moe_layers=args.num_moe_layers,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,

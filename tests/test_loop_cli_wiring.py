@@ -14,6 +14,9 @@ CHECKPOINT_MODEL_SCRIPTS = (
     ROOT / "scripts" / "boolq_eval.py",
 )
 ALL_LOOP_SCRIPTS = FRESH_MODEL_SCRIPTS + CHECKPOINT_MODEL_SCRIPTS
+EVERYPASS_NTP_SCRIPTS = FRESH_MODEL_SCRIPTS + (
+    ROOT / "scripts" / "chat_sft.py",
+)
 
 
 def _parse(path):
@@ -84,3 +87,37 @@ def test_loop_scripts_print_nondefault_loop_count():
         source = path.read_text(encoding="utf-8")
         assert "if args.total_ut_steps > 1:" in source, path
         assert 'print0(f"Loops = {args.total_ut_steps}")' in source, path
+
+
+def test_requested_scripts_wire_ut_everypass_ntp():
+    for path in EVERYPASS_NTP_SCRIPTS:
+        tree = _parse(path)
+        argument_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and any(
+                isinstance(arg, ast.Constant) and arg.value == "--ut-everypass-ntp"
+                for arg in node.args
+            )
+        ]
+        assert len(argument_calls) == 1, path
+        expected_default = None if path.name == "chat_sft.py" else True
+        keywords = {keyword.arg: keyword.value for keyword in argument_calls[0].keywords}
+        assert ast.literal_eval(keywords["dest"]) == "ut_everypass_ntp"
+        assert ast.literal_eval(keywords["default"]) is expected_default
+
+        target_function = "load_model" if path.name == "chat_sft.py" else "GPTConfig"
+        assert any(
+            any(
+                keyword.arg == "ut_everypass_ntp"
+                and isinstance(keyword.value, ast.Attribute)
+                and isinstance(keyword.value.value, ast.Name)
+                and keyword.value.value.id == "args"
+                and keyword.value.attr == "ut_everypass_ntp"
+                for keyword in call.keywords
+            )
+            for call in _find_calls(tree, target_function)
+        ), path
