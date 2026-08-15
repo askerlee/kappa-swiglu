@@ -27,6 +27,34 @@ def test_get_annealed_loss_weight_drops_to_floor_in_first_500_steps_then_stays_t
     assert get_annealed_loss_weight(0.002, 900, final_weight=0.001) == 0.001
 
 
+def test_interval_throughput_averages_all_steps_since_previous_log():
+    get_interval_throughput = load_function_from_script("get_interval_throughput")
+
+    average_dt, tok_per_sec, mfu = get_interval_throughput(
+        total_batch_size=1_000,
+        num_flops_per_token=2_000,
+        gpu_peak_flops=10_000_000,
+        ddp_world_size=2,
+        interval_steps=4,
+        interval_time=2.0,
+    )
+
+    assert average_dt == 0.5
+    assert tok_per_sec == 2_000
+    assert mfu == 20.0
+
+
+def test_logged_throughput_uses_interval_values_and_resets_window():
+    source = BASE_TRAIN.read_text()
+
+    assert '"tok_per_sec": logged_tok_per_sec' in source
+    assert '"mfu": logged_mfu' in source
+    assert '"dt": logged_dt' in source
+    assert "throughput_interval_steps += 1" in source
+    assert "throughput_interval_steps = 0" in source
+    assert "throughput_interval_time = 0.0" in source
+
+
 def test_kappa_bias_l2_two_stage_schedule_uses_half_run_then_decays_to_final_floor():
     get_two_stage_annealed_loss_weight = load_function_from_script("get_two_stage_annealed_loss_weight")
 

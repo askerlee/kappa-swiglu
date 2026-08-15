@@ -157,6 +157,17 @@ router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--rou
 def drop_none_log_values(log_data):
     return {key: value for key, value in log_data.items() if value is not None}
 
+
+def get_interval_throughput(total_batch_size, num_flops_per_token, gpu_peak_flops, ddp_world_size, interval_steps, interval_time):
+    if interval_steps <= 0 or interval_time <= 0:
+        raise ValueError("Throughput interval must contain at least one step with positive elapsed time")
+
+    average_dt = interval_time / interval_steps
+    tok_per_sec = int(total_batch_size * interval_steps / interval_time)
+    flops_per_sec = num_flops_per_token * total_batch_size * interval_steps / interval_time
+    mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+    return average_dt, tok_per_sec, mfu
+
 # Compute init
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
@@ -727,6 +738,8 @@ ema_beta = 0.9 # EMA decay factor
 total_training_time = 0 # total wall-clock time of training
 latest_chat_eval_results = None
 latest_chat_eval_step = None
+throughput_interval_steps = 0
+throughput_interval_time = 0.0
 step = 0
 while True:
     if args.eval_only and step == 0 and master_process:
@@ -943,6 +956,8 @@ while True:
     flops_per_sec = num_flops_per_token * args.total_batch_size / dt
     promised_flops_per_sec_h100 = 989e12 * ddp_world_size # bfloat16 H100 SXM and without 2:4 sparsity
     mfu = 100 * flops_per_sec / promised_flops_per_sec_h100 # in %
+    throughput_interval_steps += 1
+    throughput_interval_time += dt
     if step > 10:
         total_training_time += dt # only count the time after the first 10 steps
     print0(
@@ -952,6 +967,14 @@ while True:
         f"total time: {total_training_time/60:.2f}m"
     )
     if step % args.log_interval == 0:
+        logged_dt, logged_tok_per_sec, logged_mfu = get_interval_throughput(
+            args.total_batch_size,
+            num_flops_per_token,
+            989e12,
+            ddp_world_size,
+            throughput_interval_steps,
+            throughput_interval_time,
+        )
         log_data = {
             "step": step,
             "total_training_flops": flops_so_far,
@@ -970,9 +993,9 @@ while True:
             "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,
-            "train/dt": dt,
-            "train/tok_per_sec": tok_per_sec,
-            "train/mfu": mfu,
+            "train/dt": logged_dt,
+            "train/tok_per_sec": logged_tok_per_sec,
+            "train/mfu": logged_mfu,
             "train/epoch": current_epoch,
             "train/seen_conversations": train_seen_conversations,
             "train/skipped_conversations": train_skipped_conversations,
@@ -1057,6 +1080,8 @@ while True:
             if f'selected_scores_bottom_{i}' in losses:
                 log_data[f"inspect/selected_scores_bottom_{i}"] = losses[f'selected_scores_bottom_{i}']
         wandb_run.log(drop_none_log_values(log_data), step=step)
+        throughput_interval_steps = 0
+        throughput_interval_time = 0.0
 
 # print a few more stats
 print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")

@@ -1,8 +1,51 @@
+import ast
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_SFT = ROOT / "scripts" / "chat_sft.py"
+
+
+def load_function_from_script(function_name):
+    source = CHAT_SFT.read_text(encoding="utf-8")
+    module = ast.parse(source, filename=str(CHAT_SFT))
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            function_module = ast.Module(body=[node], type_ignores=[])
+            namespace = {}
+            exec(compile(function_module, filename=str(CHAT_SFT), mode="exec"), namespace)
+            return namespace[function_name]
+    raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
+
+
+def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
+    get_interval_throughput = load_function_from_script("get_interval_throughput")
+
+    average_dt, tok_per_sec, mfu = get_interval_throughput(
+        total_batch_size=1_000,
+        num_flops_per_token=2_000,
+        gpu_peak_flops=10_000_000,
+        ddp_world_size=2,
+        interval_steps=4,
+        interval_time=2.0,
+    )
+
+    assert average_dt == 0.5
+    assert tok_per_sec == 2_000
+    assert mfu == 20.0
+
+
+def test_chat_sft_logged_throughput_uses_interval_values_and_resets_window():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert '"train/tok_per_sec": logged_tok_per_sec' in source
+    assert '"train/mfu": logged_mfu' in source
+    assert '"train/dt": logged_dt' in source
+    assert "throughput_interval_steps += 1" in source
+    assert "throughput_interval_steps = 0" in source
+    assert "throughput_interval_time = 0.0" in source
+
+
 def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
     source = CHAT_SFT.read_text(encoding="utf-8")
 

@@ -1280,6 +1280,17 @@ def drop_none_log_values(log_data):
     return {key: value for key, value in log_data.items() if value is not None}
 
 
+def get_interval_throughput(total_batch_size, num_flops_per_token, gpu_peak_flops, ddp_world_size, interval_steps, interval_time):
+    if interval_steps <= 0 or interval_time <= 0:
+        raise ValueError("Throughput interval must contain at least one step with positive elapsed time")
+
+    average_dt = interval_time / interval_steps
+    tok_per_sec = int(total_batch_size * interval_steps / interval_time)
+    flops_per_sec = num_flops_per_token * total_batch_size * interval_steps / interval_time
+    mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+    return average_dt, tok_per_sec, mfu
+
+
 def should_use_chat_sft_step(step, every_n_steps):
     return every_n_steps > 0 and step > 0 and step % every_n_steps == 0
 
@@ -1600,6 +1611,8 @@ if args.mockup_mode:
 core_results = {}
 prev_exp_gate_implicit_bias_signs = {}
 has_rebuilt_compile_after_eval = False
+throughput_interval_steps = 0
+throughput_interval_time = 0.0
 
 signal.signal(signal.SIGTERM, handle_shutdown_signal)
 signal.signal(signal.SIGINT, handle_shutdown_signal)
@@ -2103,6 +2116,8 @@ while True:
     tok_per_sec = int(total_batch_size / dt)
     flops_per_sec = num_flops_per_token * total_batch_size / dt
     mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+    throughput_interval_steps += 1
+    throughput_interval_time += dt
     if step > 10:
         total_training_time += dt # only count the time after the first 10 steps
     # Calculate ETA based on average time per step (excluding first 10 steps)
@@ -2120,6 +2135,14 @@ while True:
         epoch = dataloader_state_dict["epoch"]
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | source: {train_source} | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
     if step % args.log_interval == 0:
+        logged_dt, logged_tok_per_sec, logged_mfu = get_interval_throughput(
+            total_batch_size,
+            num_flops_per_token,
+            gpu_peak_flops,
+            ddp_world_size,
+            throughput_interval_steps,
+            throughput_interval_time,
+        )
         prev_exp_gate_implicit_bias_signs = collect_exp_gate_implicit_bias_flip_rates(
             orig_model,
             moe_layer_indices,
@@ -2149,9 +2172,9 @@ while True:
             "train/routed_token_router_weight_cosine_bottom5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_bottom5p_mean'].mean()),
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "lrm": lrm,
-            "dt": dt,
-            "tok_per_sec": tok_per_sec,
-            "mfu": mfu,
+            "dt": logged_dt,
+            "tok_per_sec": logged_tok_per_sec,
+            "mfu": logged_mfu,
             "epoch": epoch,
             "train/is_chat_sft_step": 1.0 if train_source == "chat_sft" else 0.0,
         }
@@ -2301,6 +2324,8 @@ while True:
                 log_data.update({f"inspect/kappa_slope_scale_abs_mean_normalized_{i}": losses[f'kappa_slope_scale_abs_mean_normalized_{i}']})
 
         wandb_run.log(drop_none_log_values(log_data), step=step)
+        throughput_interval_steps = 0
+        throughput_interval_time = 0.0
 
     # state update
     first_step_of_run = (step == 0) or (resuming and step == args.resume_from_step)

@@ -28,6 +28,34 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
+def test_mixed_interval_throughput_averages_all_steps_since_previous_log():
+    get_interval_throughput = load_function_from_script("get_interval_throughput")
+
+    average_dt, tok_per_sec, mfu = get_interval_throughput(
+        total_batch_size=1_000,
+        num_flops_per_token=2_000,
+        gpu_peak_flops=10_000_000,
+        ddp_world_size=2,
+        interval_steps=4,
+        interval_time=2.0,
+    )
+
+    assert average_dt == 0.5
+    assert tok_per_sec == 2_000
+    assert mfu == 20.0
+
+
+def test_mixed_logged_throughput_uses_interval_values_and_resets_window():
+    source = BASE_TRAIN_MIX.read_text()
+
+    assert '"tok_per_sec": logged_tok_per_sec' in source
+    assert '"mfu": logged_mfu' in source
+    assert '"dt": logged_dt' in source
+    assert "throughput_interval_steps += 1" in source
+    assert "throughput_interval_steps = 0" in source
+    assert "throughput_interval_time = 0.0" in source
+
+
 def test_mixed_script_persists_separate_chat_sft_loader_state():
     source = BASE_TRAIN_MIX.read_text()
 
