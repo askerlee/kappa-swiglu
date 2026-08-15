@@ -18,8 +18,14 @@ import math
 import os
 import sys
 
+allocator_conf = os.environ.get(
+    "PYTORCH_ALLOC_CONF",
+    os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+)
+os.environ["PYTORCH_ALLOC_CONF"] = allocator_conf
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = allocator_conf
+
 from tasks.arc import ARC
-os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time, re
 import wandb
 import torch

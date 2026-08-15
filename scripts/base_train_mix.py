@@ -21,7 +21,12 @@ not just assistant-loss tokens.
 """
 
 import os
-os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+allocator_conf = os.environ.get(
+    "PYTORCH_ALLOC_CONF",
+    os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+)
+os.environ["PYTORCH_ALLOC_CONF"] = allocator_conf
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = allocator_conf
 import gc
 import json
 import time
