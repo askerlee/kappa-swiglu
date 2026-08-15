@@ -233,6 +233,9 @@ parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward",
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing",
                     type=str2bool, nargs='?', const=True, default=False,
                     help="checkpoint each full transformer-stack pass to reduce activation memory at the cost of recomputation")
+parser.add_argument("--activation-offload", dest="activation_offload",
+                    type=str2bool, nargs='?', const=True, default=False,
+                    help="store transformer activations in pinned CPU memory instead of recomputing them")
 parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=4.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
 parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=3.0,
@@ -365,6 +368,8 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 
+if args.activation_checkpointing and args.activation_offload:
+    raise ValueError("--activation-checkpointing and --activation-offload are mutually exclusive")
 if args.activation_checkpointing and args.log_grad_stats:
     print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
     args.log_grad_stats = False
@@ -606,6 +611,7 @@ def build_model_meta(depth):
         n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
         window_pattern=args.window_pattern,
         activation_checkpointing=args.activation_checkpointing,
+        activation_offload=args.activation_offload,
         loss_chunk_tokens=resolved_loss_chunk_tokens,
         loss_recompute_backward=args.loss_recompute_backward,
         debug=args.debug

@@ -2862,41 +2862,54 @@ class GPT(nn.Module):
             and not MANAGER.collect_load_balancing_stats
             and not MANAGER.collect_backward_stats
         )
+        use_activation_offload = (
+            bool(getattr(self.config, 'activation_offload', False))
+            and self.training
+            and torch.is_grad_enabled()
+            and targets is not None
+            and kv_cache is None
+        )
         checkpoint_loss_totals = None
         checkpoint_router_counts = None
         checkpoint_selected_scores = []
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
         ut_hidden_states = []
-        for current_ut in range(self.total_ut_steps):
-            if use_activation_checkpointing:
-                step_outputs = checkpoint(
-                    run_ut_step,
-                    x,
-                    x0,
-                    current_ut,
-                    True,
-                    use_reentrant=False,
-                )
-                x = step_outputs[0]
-                step_losses = step_outputs[1:1 + len(_UT_LOSS_NAMES)]
-                step_router_counts = step_outputs[-2]
-                checkpoint_selected_scores.append(step_outputs[-1])
-                if checkpoint_loss_totals is None:
-                    checkpoint_loss_totals = list(step_losses)
-                    checkpoint_router_counts = step_router_counts
+        activation_context = (
+            torch.autograd.graph.save_on_cpu(pin_memory=True, device_type=x.device.type)
+            if use_activation_offload
+            else nullcontext()
+        )
+        with activation_context:
+            for current_ut in range(self.total_ut_steps):
+                if use_activation_checkpointing:
+                    step_outputs = checkpoint(
+                        run_ut_step,
+                        x,
+                        x0,
+                        current_ut,
+                        True,
+                        use_reentrant=False,
+                    )
+                    x = step_outputs[0]
+                    step_losses = step_outputs[1:1 + len(_UT_LOSS_NAMES)]
+                    step_router_counts = step_outputs[-2]
+                    checkpoint_selected_scores.append(step_outputs[-1])
+                    if checkpoint_loss_totals is None:
+                        checkpoint_loss_totals = list(step_losses)
+                        checkpoint_router_counts = step_router_counts
+                    else:
+                        checkpoint_loss_totals = [
+                            total + value for total, value in zip(checkpoint_loss_totals, step_losses)
+                        ]
+                        checkpoint_router_counts = checkpoint_router_counts + step_router_counts
                 else:
-                    checkpoint_loss_totals = [
-                        total + value for total, value in zip(checkpoint_loss_totals, step_losses)
-                    ]
-                    checkpoint_router_counts = checkpoint_router_counts + step_router_counts
-            else:
-                x = run_ut_step(x, x0, current_ut, False)
+                    x = run_ut_step(x, x0, current_ut, False)
 
-            if targets is not None and (
-                self.config.ut_everypass_ntp
-                or current_ut == self.total_ut_steps - 1
-            ):
-                ut_hidden_states.append(x)
+                if targets is not None and (
+                    self.config.ut_everypass_ntp
+                    or current_ut == self.total_ut_steps - 1
+                ):
+                    ut_hidden_states.append(x)
 
         ntp_loss_total = None
         if targets is not None:

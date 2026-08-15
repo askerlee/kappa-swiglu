@@ -64,6 +64,7 @@ class GPTConfig:
         total_ut_steps: int = 1,
         ut_everypass_ntp: bool = True,
         activation_checkpointing: bool = False,
+        activation_offload: bool = False,
         loss_chunk_tokens: int | None = None,
         loss_recompute_backward: bool = False,
         debug: bool = False,
@@ -186,6 +187,9 @@ class GPTConfig:
             raise ValueError(f"total_ut_steps must be > 0, got {total_ut_steps}")
         self.ut_everypass_ntp = bool(ut_everypass_ntp)
         self.activation_checkpointing = bool(activation_checkpointing)
+        self.activation_offload = bool(activation_offload)
+        if self.activation_checkpointing and self.activation_offload:
+            raise ValueError("activation_checkpointing and activation_offload are mutually exclusive")
         self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
         self.loss_recompute_backward = bool(loss_recompute_backward)
         self.debug = debug

@@ -697,6 +697,64 @@ def test_gpt_activation_checkpointing_does_not_replay_aux_free_router_counts():
         assert expected_counts.sum().item() == idx.numel() * config.total_ut_steps
 
 
+def test_gpt_activation_offload_matches_loss_and_gradients():
+    torch.manual_seed(0)
+    base_config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        num_moe_layers=-1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=True,
+        use_router_z_loss=True,
+        debug=False,
+    )
+    offload_config = deepcopy(base_config)
+    offload_config.activation_offload = True
+    reference_model = GPT(base_config)
+    reference_model.init_weights()
+    offload_model = GPT(offload_config)
+    offload_model.load_state_dict(reference_model.state_dict())
+    idx = torch.randint(0, base_config.vocab_size, (2, 5))
+    targets = torch.randint(0, base_config.vocab_size, (2, 5))
+
+    def run_model(model):
+        MANAGER.reset_all()
+        loss, losses = model(idx, targets)
+        objective = loss + model.config.aux_loss_weight * losses["aux_loss"]
+        objective.backward()
+        gradients = {
+            name: parameter.grad.detach().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.grad is not None
+        }
+        return loss.detach(), losses, gradients
+
+    reference_loss, reference_losses, reference_gradients = run_model(reference_model)
+    offload_loss, offload_losses, offload_gradients = run_model(offload_model)
+
+    torch.testing.assert_close(offload_loss, reference_loss)
+    for name in ("aux_loss", "router_z_loss", "selected_scores"):
+        torch.testing.assert_close(offload_losses[name], reference_losses[name])
+    assert offload_gradients.keys() == reference_gradients.keys()
+    for name in offload_gradients:
+        torch.testing.assert_close(
+            offload_gradients[name],
+            reference_gradients[name],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+def test_gpt_rejects_checkpointing_with_activation_offload():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        GPTConfig(activation_checkpointing=True, activation_offload=True)
+
+
 def test_gpt_total_ut_steps_averages_repeated_manager_losses():
     config = GPTConfig(
         sequence_len=8,

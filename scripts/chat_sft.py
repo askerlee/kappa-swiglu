@@ -75,6 +75,8 @@ parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool
                     help="override whether NTP loss is computed at every UT pass or only the final pass")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=None,
                     help="override activation checkpointing for each full transformer-stack pass")
+parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=None,
+                    help="override storing transformer activations in pinned CPU memory")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -136,6 +138,8 @@ parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, de
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
+if args.activation_checkpointing and args.activation_offload:
+    raise ValueError("--activation-checkpointing and --activation-offload are mutually exclusive")
 if args.activation_checkpointing and args.log_grad_stats:
     print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
     args.log_grad_stats = False
@@ -202,6 +206,7 @@ model, tokenizer, meta = load_model(
     total_ut_steps=args.total_ut_steps,
     ut_everypass_ntp=args.ut_everypass_ntp,
     activation_checkpointing=args.activation_checkpointing,
+    activation_offload=args.activation_offload,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 args.total_ut_steps = model.config.total_ut_steps
