@@ -426,6 +426,44 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
         assert v_layer[:, : ids.size(1)].abs().sum().item() > 0.0
 
 
+def test_gpt_value_embedding_inputs_have_consistent_grad_state():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=3,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (1, 3))
+    ve_requires_grad = []
+    hooks = [
+        block.register_forward_pre_hook(
+            lambda _module, args: ve_requires_grad.append(args[1].requires_grad)
+        )
+        for block in model.transformer.h
+    ]
+
+    model.train()
+    model(ids, targets=ids)
+    assert ve_requires_grad == [True] * config.n_layer
+
+    ve_requires_grad.clear()
+    model.eval()
+    with torch.inference_mode():
+        model(ids)
+    assert ve_requires_grad == [False] * config.n_layer
+
+    for hook in hooks:
+        hook.remove()
+
+
 def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffers():
     torch.manual_seed(0)
     config = GPTConfig(

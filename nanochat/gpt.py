@@ -2824,7 +2824,12 @@ class GPT(nn.Module):
                     ve = self.value_embeds[str(i)](idx)
                 else:
                     if ve_placeholder is None:
-                        ve_placeholder = x.new_zeros(B, T, self.value_embed_dim)
+                        ve_placeholder = x.new_zeros(
+                            B,
+                            T,
+                            self.value_embed_dim,
+                            requires_grad=x.requires_grad,
+                        )
                     ve = ve_placeholder
                 cache_layer_idx = current_ut * len(self.transformer.h) + i
                 advance_kv_cache = (
