@@ -20,14 +20,14 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_8_mib():
+def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():
     auto_args = SimpleNamespace(loss_chunk_tokens=-1, compile=True)
     explicit_args = SimpleNamespace(loss_chunk_tokens=256, compile=True)
 
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         resolve_loss_chunk_tokens = load_function_from_script("resolve_loss_chunk_tokens", script)
-        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=1, vocab_size=32768) == (128, True)
-        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=2, vocab_size=32768) == (128, True)
+        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=1, vocab_size=32768) == (512, True)
+        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=2, vocab_size=32768) == (512, True)
         assert resolve_loss_chunk_tokens(explicit_args, ddp_world_size=2, vocab_size=32768) == (256, False)
 
 
