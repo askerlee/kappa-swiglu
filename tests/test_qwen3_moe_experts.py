@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.engine import KVCache
-from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, scale_grad
+from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, _save_activations_on_cpu, scale_grad
 from nanochat.manager import MOEManager
 
 
@@ -753,6 +753,32 @@ def test_gpt_activation_offload_matches_loss_and_gradients():
 def test_gpt_rejects_checkpointing_with_activation_offload():
     with pytest.raises(ValueError, match="mutually exclusive"):
         GPTConfig(activation_checkpointing=True, activation_offload=True)
+
+
+def test_activation_offload_preserves_saved_tensor_strides():
+    class SaveNarrowView(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, value):
+            ctx.save_for_backward(value)
+            return value.sum()
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            (value,) = ctx.saved_tensors
+            assert value.stride() == (12, 1)
+            return grad_output.expand_as(value)
+
+    base = torch.randn(8, 12, requires_grad=True)
+    narrow = base[:, :4]
+    config = GPTConfig(activation_offload=True)
+
+    with _save_activations_on_cpu(base.device.type):
+        loss = SaveNarrowView.apply(narrow)
+    loss.backward()
+
+    assert config.activation_offload
+    torch.testing.assert_close(base.grad[:, :4], torch.ones_like(narrow))
+    torch.testing.assert_close(base.grad[:, 4:], torch.zeros_like(base[:, 4:]))
 
 
 def test_gpt_total_ut_steps_averages_repeated_manager_losses():

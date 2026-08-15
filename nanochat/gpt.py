@@ -49,6 +49,51 @@ _UT_LOSS_NAMES = (
 )
 
 
+def _save_activations_on_cpu(device_type):
+    device_module = getattr(torch, device_type, torch.cuda)
+    pin_memory = device_module.is_available()
+
+    @torch._dynamo.disable
+    def pack_to_cpu(tensor):
+        preserve_strides = (
+            tensor.layout == torch.strided
+            and torch._debug_has_internal_overlap(tensor) != 1
+            and not tensor.is_contiguous()
+        )
+        if preserve_strides:
+            storage_size = 1 + sum(
+                (size - 1) * stride
+                for size, stride in zip(tensor.size(), tensor.stride())
+            )
+            packed_storage = torch.empty(
+                storage_size,
+                dtype=tensor.dtype,
+                device="cpu",
+                pin_memory=pin_memory,
+            )
+            packed = packed_storage.as_strided(tensor.size(), tensor.stride())
+        else:
+            packed = torch.empty(
+                tensor.size(),
+                dtype=tensor.dtype,
+                layout=tensor.layout,
+                device="cpu",
+                pin_memory=pin_memory and not tensor.is_sparse,
+            )
+        packed.copy_(tensor)
+        return tensor.device, packed, tensor.size(), tensor.stride(), preserve_strides
+
+    @torch._dynamo.disable
+    def unpack_from_cpu(packed_state):
+        device, packed, size, stride, preserve_strides = packed_state
+        if not preserve_strides:
+            return packed.to(device, non_blocking=pin_memory)
+        restored_storage = packed._base.to(device, non_blocking=pin_memory)
+        return restored_storage.as_strided(size, stride)
+
+    return torch.autograd.graph.saved_tensors_hooks(pack_to_cpu, unpack_from_cpu)
+
+
 class _UTLossAccum:
     __slots__ = ('losses', 'router_counts', 'selected_scores')
 
@@ -2875,7 +2920,7 @@ class GPT(nn.Module):
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
         ut_hidden_states = []
         activation_context = (
-            torch.autograd.graph.save_on_cpu(pin_memory=True, device_type=x.device.type)
+            _save_activations_on_cpu(x.device.type)
             if use_activation_offload
             else nullcontext()
         )
