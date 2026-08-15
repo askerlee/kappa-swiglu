@@ -79,6 +79,8 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=None, help="override the checkpoint Universal Transformer loop count")
 parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=False,
                     help="override whether NTP loss is computed at every UT pass or only the final pass")
+parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=True,
+                    help="override recomputing lm_head loss chunks during backward to reduce retained vocab-logit memory")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=None,
                     help="override activation checkpointing for each full transformer-stack pass")
 parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=None,
@@ -222,6 +224,7 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     total_ut_steps=args.total_ut_steps,
     ut_everypass_ntp=args.ut_everypass_ntp,
+    loss_recompute_backward=args.loss_recompute_backward,
     activation_checkpointing=args.activation_checkpointing,
     activation_offload=args.activation_offload,
     refresh_kappa_bias_references=refresh_kappa_bias_references,

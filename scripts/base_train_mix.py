@@ -250,7 +250,7 @@ parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
-parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=True,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=False,
                     help="checkpoint each full transformer-stack pass to reduce activation memory at the cost of recomputation")

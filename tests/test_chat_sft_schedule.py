@@ -46,6 +46,13 @@ def test_chat_sft_logged_throughput_uses_interval_values_and_resets_window():
     assert "throughput_interval_time = 0.0" in source
 
 
+def test_loss_recompute_backward_cli_is_wired_into_loaded_model_config():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs=' in source
+    assert "loss_recompute_backward=args.loss_recompute_backward" in source
+
+
 def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
