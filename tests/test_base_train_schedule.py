@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,16 @@ def load_function_from_script(function_name):
             exec(compile(function_module, filename=str(BASE_TRAIN), mode="exec"), namespace)
             return namespace[function_name]
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
+
+
+def test_resolve_loss_chunk_tokens_limits_compiled_ddp_logits_to_32_mib():
+    resolve_loss_chunk_tokens = load_function_from_script("resolve_loss_chunk_tokens")
+
+    auto_args = SimpleNamespace(loss_chunk_tokens=-1, compile=True)
+    explicit_args = SimpleNamespace(loss_chunk_tokens=256, compile=True)
+
+    assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=2, vocab_size=32768) == (512, True)
+    assert resolve_loss_chunk_tokens(explicit_args, ddp_world_size=2, vocab_size=32768) == (256, False)
 
 
 def test_get_annealed_loss_weight_drops_to_floor_in_first_500_steps_then_stays_there():
