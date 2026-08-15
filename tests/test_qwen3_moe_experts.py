@@ -443,22 +443,30 @@ def test_gpt_value_embedding_inputs_have_consistent_grad_state():
     model.init_weights()
     ids = torch.randint(0, config.vocab_size, (1, 3))
     ve_requires_grad = []
+    router_layer_indices = []
+
+    def capture_block_inputs(_module, args, kwargs):
+        ve_requires_grad.append(args[1].requires_grad)
+        router_layer_indices.append(kwargs["router_layer_idx"])
+
     hooks = [
-        block.register_forward_pre_hook(
-            lambda _module, args: ve_requires_grad.append(args[1].requires_grad)
-        )
+        block.register_forward_pre_hook(capture_block_inputs, with_kwargs=True)
         for block in model.transformer.h
     ]
 
     model.train()
     model(ids, targets=ids)
     assert ve_requires_grad == [True] * config.n_layer
+    assert all(torch.is_tensor(layer_idx) for layer_idx in router_layer_indices)
+    assert [layer_idx.item() for layer_idx in router_layer_indices] == list(range(config.n_layer))
 
     ve_requires_grad.clear()
+    router_layer_indices.clear()
     model.eval()
     with torch.inference_mode():
         model(ids)
     assert ve_requires_grad == [False] * config.n_layer
+    assert [layer_idx.item() for layer_idx in router_layer_indices] == list(range(config.n_layer))
 
     for hook in hooks:
         hook.remove()

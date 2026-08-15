@@ -2846,7 +2846,7 @@ class GPT(nn.Module):
                     cache_layer_idx=cache_layer_idx,
                     advance_kv_cache=advance_kv_cache,
                     loss_accum=loss_accum,
-                    router_layer_idx=i,
+                    router_layer_idx=torch.as_tensor(i, device=x.device),
                 )
             x = norm(x)
             if loss_accum is None:
