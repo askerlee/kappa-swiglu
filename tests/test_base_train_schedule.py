@@ -5,11 +5,12 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_TRAIN = ROOT / "scripts" / "base_train.py"
+BASE_TRAIN_MIX = ROOT / "scripts" / "base_train_mix.py"
 
 
-def load_function_from_script(function_name):
-    source = BASE_TRAIN.read_text()
-    module = ast.parse(source, filename=str(BASE_TRAIN))
+def load_function_from_script(function_name, script=BASE_TRAIN):
+    source = script.read_text()
+    module = ast.parse(source, filename=str(script))
     for node in module.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             function_module = ast.Module(body=[node], type_ignores=[])
@@ -19,15 +20,15 @@ def load_function_from_script(function_name):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():
-    resolve_loss_chunk_tokens = load_function_from_script("resolve_loss_chunk_tokens")
-
+def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_8_mib():
     auto_args = SimpleNamespace(loss_chunk_tokens=-1, compile=True)
     explicit_args = SimpleNamespace(loss_chunk_tokens=256, compile=True)
 
-    assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=1, vocab_size=32768) == (512, True)
-    assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=2, vocab_size=32768) == (512, True)
-    assert resolve_loss_chunk_tokens(explicit_args, ddp_world_size=2, vocab_size=32768) == (256, False)
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        resolve_loss_chunk_tokens = load_function_from_script("resolve_loss_chunk_tokens", script)
+        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=1, vocab_size=32768) == (128, True)
+        assert resolve_loss_chunk_tokens(auto_args, ddp_world_size=2, vocab_size=32768) == (128, True)
+        assert resolve_loss_chunk_tokens(explicit_args, ddp_world_size=2, vocab_size=32768) == (256, False)
 
 
 def test_get_annealed_loss_weight_drops_to_floor_in_first_500_steps_then_stays_there():

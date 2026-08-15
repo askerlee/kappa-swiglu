@@ -188,3 +188,9 @@ def test_get_loss_chunk_tokens_uses_configured_cap():
 
     assert _get_loss_chunk_tokens(config, total_tokens=1024) == 256
     assert _get_loss_chunk_tokens(config, total_tokens=128) == 128
+
+
+def test_get_loss_chunk_tokens_defaults_to_8_mib_logits():
+    config = GPTConfig(vocab_size=32768, loss_chunk_tokens=None)
+
+    assert _get_loss_chunk_tokens(config, total_tokens=1024) == 128

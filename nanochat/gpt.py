@@ -389,9 +389,9 @@ def _get_loss_chunk_tokens(config, total_tokens: int) -> int:
             raise ValueError("loss_chunk_tokens must be a positive integer")
         return min(total_tokens, chunk_tokens)
 
-    max_logit_elements = 64 * 1024 * 1024
-    # vocab_size: 50304. If loss_chunk_tokens is None, then
-    # chunk_tokens = 64 * 1024 * 1024 // 50304 = 1334.
+    max_logit_elements = 4 * 1024 * 1024
+    # vocab_size: 32768. If loss_chunk_tokens is None, then
+    # chunk_tokens = 4 * 1024 * 1024 // 32768 = 128.
     chunk_tokens = max(1, max_logit_elements // int(config.vocab_size))
     return min(total_tokens, chunk_tokens)
 
