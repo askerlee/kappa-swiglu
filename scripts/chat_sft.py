@@ -73,8 +73,8 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=None, help="override the checkpoint Universal Transformer loop count")
 parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=False,
                     help="override whether NTP loss is computed at every UT pass or only the final pass")
-parser.add_argument("--ut-checkpointing", dest="ut_checkpointing", type=str2bool, nargs='?', const=True, default=None,
-                    help="override checkpoint UT-pass activation checkpointing")
+parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=None,
+                    help="override activation checkpointing for each full transformer-stack pass")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -198,7 +198,7 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     total_ut_steps=args.total_ut_steps,
     ut_everypass_ntp=args.ut_everypass_ntp,
-    ut_checkpointing=args.ut_checkpointing,
+    activation_checkpointing=args.activation_checkpointing,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 args.total_ut_steps = model.config.total_ut_steps

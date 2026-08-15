@@ -63,7 +63,7 @@ class GPTConfig:
         window_pattern: str = "SSSL",
         total_ut_steps: int = 1,
         ut_everypass_ntp: bool = True,
-        ut_checkpointing: bool = False,
+        activation_checkpointing: bool = False,
         loss_chunk_tokens: int | None = None,
         loss_recompute_backward: bool = False,
         debug: bool = False,
@@ -185,7 +185,7 @@ class GPTConfig:
         if self.total_ut_steps <= 0:
             raise ValueError(f"total_ut_steps must be > 0, got {total_ut_steps}")
         self.ut_everypass_ntp = bool(ut_everypass_ntp)
-        self.ut_checkpointing = bool(ut_checkpointing)
+        self.activation_checkpointing = bool(activation_checkpointing)
         self.loss_chunk_tokens = None if loss_chunk_tokens is None else int(loss_chunk_tokens)
         self.loss_recompute_backward = bool(loss_recompute_backward)
         self.debug = debug

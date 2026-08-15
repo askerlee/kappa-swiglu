@@ -2848,8 +2848,8 @@ class GPT(nn.Module):
                 return x
             return (x, *loss_accum.as_tuple())
 
-        use_ut_checkpointing = (
-            bool(getattr(self.config, 'ut_checkpointing', False))
+        use_activation_checkpointing = (
+            bool(getattr(self.config, 'activation_checkpointing', False))
             and self.training
             and torch.is_grad_enabled()
             and targets is not None
@@ -2863,7 +2863,7 @@ class GPT(nn.Module):
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
         ut_hidden_states = []
         for current_ut in range(self.total_ut_steps):
-            if use_ut_checkpointing:
+            if use_activation_checkpointing:
                 step_outputs = checkpoint(
                     run_ut_step,
                     x,

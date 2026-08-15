@@ -543,7 +543,8 @@ def test_gpt_total_ut_steps_can_compute_ntp_loss_only_on_final_loop(monkeypatch)
     torch.testing.assert_close(losses["ntp_loss"], loop_losses[0])
 
 
-def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_effects():
+@pytest.mark.parametrize("total_ut_steps", [1, 2])
+def test_gpt_activation_checkpointing_matches_losses_and_gradients_without_replay_side_effects(total_ut_steps):
     torch.manual_seed(0)
     base_config = GPTConfig(
         sequence_len=8,
@@ -555,13 +556,13 @@ def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_e
         moe_top_k=2,
         n_embd=32,
         n_head=4,
-        total_ut_steps=2,
+        total_ut_steps=total_ut_steps,
         use_aux_loss=True,
         use_router_z_loss=True,
         debug=False,
     )
     checkpoint_config = deepcopy(base_config)
-    checkpoint_config.ut_checkpointing = True
+    checkpoint_config.activation_checkpointing = True
     reference_model = GPT(base_config)
     reference_model.init_weights()
     checkpoint_model = GPT(checkpoint_config)
@@ -611,7 +612,7 @@ def test_gpt_ut_checkpointing_matches_losses_and_gradients_without_replay_side_e
     assert checkpoint_rows_before == checkpoint_rows_after == 0
 
 
-def test_gpt_ut_checkpointing_does_not_replay_aux_free_router_counts():
+def test_gpt_activation_checkpointing_does_not_replay_aux_free_router_counts():
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -627,7 +628,7 @@ def test_gpt_ut_checkpointing_does_not_replay_aux_free_router_counts():
         use_aux_loss=False,
         use_aux_free_load_balancing=True,
         use_router_z_loss=False,
-        ut_checkpointing=True,
+        activation_checkpointing=True,
         debug=False,
     )
     model = GPT(config)
