@@ -486,9 +486,9 @@ def resolve_loss_chunk_tokens(args, ddp_world_size, vocab_size):
         return args.loss_chunk_tokens, False
 
     max_logit_elements = 64 * 1024 * 1024
-    # Compiled multi-GPU runs keep extra CUDA state per rank. Bound BF16 logits
-    # to about 32 MiB so the loss can run near the model's activation peak.
-    if args.compile and ddp_world_size >= 2:
+    # Compiled runs keep extra CUDA state. Bound BF16 logits to about 32 MiB so
+    # the loss can run near the model's activation peak.
+    if args.compile:
         max_logit_elements = 16 * 1024 * 1024
 
     chunk_tokens = max(1, max_logit_elements // int(vocab_size))
