@@ -388,6 +388,10 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 
+if args.activation_checkpointing and args.log_grad_stats:
+    print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
+    args.log_grad_stats = False
+
 #if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
 #    args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
 

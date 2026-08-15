@@ -136,6 +136,9 @@ parser.add_argument("--log-grad-stats", type=str2bool, nargs='?', const=True, de
 parser.add_argument("--log-interval", type=int, default=10, help="interval (in steps) for logging train and grad stats")
 
 args = parser.parse_args()
+if args.activation_checkpointing and args.log_grad_stats:
+    print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
+    args.log_grad_stats = False
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
