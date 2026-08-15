@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N base_train_mix2u
-#PBS -q aiq1
+#PBS -q normal
 #PBS -P 11610002
 #PBS -l select=1:ngpus=2
 #PBS -l walltime=24:00:00
