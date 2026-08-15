@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N chat_train
-#PBS -q normal
+#PBS -q aiq1
 #PBS -P 11610002
 #PBS -l select=1:ngpus=1
 #PBS -l walltime=12:00:00
