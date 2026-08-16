@@ -1355,17 +1355,17 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             losses[f'kappa_bias_mean_{i}'] = kappa_bias.mean().float().item()
             losses[f'kappa_bias_abs_mean_{i}'] = kappa_bias.abs().mean().float().item()
 
-    router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
+    router_grad_norms = torch.stack(router_grad_norms, dim=0).detach().cpu() if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
-    router_row_norms = torch.stack(router_row_norms, dim=0) if router_row_norms else None
+    router_row_norms = torch.stack(router_row_norms, dim=0).detach().cpu() if router_row_norms else None
     losses['router_row_norms'] = router_row_norms
-    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
+    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0).detach().cpu() if router_grad_self_alignments else None
     losses['router_grad_self_alignments'] = router_grad_self_alignments
-    router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0) if router_weight_exp_gate_alignments else None
+    router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0).detach().cpu() if router_weight_exp_gate_alignments else None
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
-    gate_proj_row_mean_component_ratios = torch.stack(gate_proj_row_mean_component_ratios, dim=0) if gate_proj_row_mean_component_ratios else None
+    gate_proj_row_mean_component_ratios = torch.stack(gate_proj_row_mean_component_ratios, dim=0).detach().cpu() if gate_proj_row_mean_component_ratios else None
     losses['gate_proj_row_mean_component_ratios'] = gate_proj_row_mean_component_ratios
-    exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
+    exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0).detach().cpu() if exp_gate_grad_norms else None
     losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
 # -----------------------------------------------------------------------------

@@ -183,6 +183,10 @@ def _mean_extreme_percentile(values: torch.Tensor, fraction: float, largest: boo
     return values.topk(k, largest=largest).values.mean()
 
 
+def _diagnostic_to_cpu(value: torch.Tensor) -> torch.Tensor:
+    return value.detach().to(device="cpu")
+
+
 def _mean_extreme_percentile_per_row(
     values: torch.Tensor,
     active_mask: torch.Tensor,
@@ -809,7 +813,7 @@ class Router(nn.Module):
                 if loss_accum is not None:
                     loss_accum.add_selected_scores(router_layer_idx, selected_scores.detach())
                 elif not torch.compiler.is_compiling():
-                    MANAGER.add("selected_scores", selected_scores.detach())
+                    MANAGER.add("selected_scores", _diagnostic_to_cpu(selected_scores))
 
             # 3. COMPUTE ROUTER PROBABILITIES
             # --------------------------------
@@ -1274,26 +1278,30 @@ class Qwen3MLP(nn.Module):
         flat_slope_scales = slope_scales.reshape(1, -1)
         flat_mask = torch.ones_like(flat_slope_scales, dtype=torch.bool)
         slope_scale_mean = slope_scales.mean()
-        MANAGER.add("kappa_slope_scale_abs_mean", slope_scale_mean)
+        MANAGER.add("kappa_slope_scale_abs_mean", _diagnostic_to_cpu(slope_scale_mean))
         MANAGER.add(
             "kappa_slope_scale_abs_top5p_mean",
-            _mean_extreme_percentile_per_row(
-                flat_slope_scales,
-                flat_mask,
-                fraction=0.05,
-                largest=True,
-            ).squeeze(0),
+            _diagnostic_to_cpu(
+                _mean_extreme_percentile_per_row(
+                    flat_slope_scales,
+                    flat_mask,
+                    fraction=0.05,
+                    largest=True,
+                ).squeeze(0)
+            ),
         )
         MANAGER.add(
             "kappa_slope_scale_abs_bottom5p_mean",
-            _mean_extreme_percentile_per_row(
-                flat_slope_scales,
-                flat_mask,
-                fraction=0.05,
-                largest=False,
-            ).squeeze(0),
+            _diagnostic_to_cpu(
+                _mean_extreme_percentile_per_row(
+                    flat_slope_scales,
+                    flat_mask,
+                    fraction=0.05,
+                    largest=False,
+                ).squeeze(0)
+            ),
         )
-        MANAGER.add("kappa_slope_scale_abs_mean_normalized", slope_scale_mean)
+        MANAGER.add("kappa_slope_scale_abs_mean_normalized", _diagnostic_to_cpu(slope_scale_mean))
 
     def forward(self, x, loss_accum=None, router_layer_idx=None):
         gate_out_raw = self.gate_proj(x)
@@ -1764,10 +1772,10 @@ class Qwen3MLPExperts(nn.Module):
                 / safe_abs_gate_sum
             )
             self.last_gate_stats = {
-                'mean_abs_gate': abs_gate.float().mean().detach(),
-                'active_frac': abs_gate.gt(self.gate_stats_threshold).float().mean().detach(),
-                'topk_share': topk_share.mean().detach(),
-                'entropy': entropy.mean().detach(),
+                'mean_abs_gate': _diagnostic_to_cpu(abs_gate.float().mean()),
+                'active_frac': _diagnostic_to_cpu(abs_gate.gt(self.gate_stats_threshold).float().mean()),
+                'topk_share': _diagnostic_to_cpu(topk_share.mean()),
+                'entropy': _diagnostic_to_cpu(entropy.mean()),
             }
 
     @torch._dynamo.disable
@@ -1797,7 +1805,7 @@ class Qwen3MLPExperts(nn.Module):
         slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts
         ).sum() / total_active_tokens.clamp_min(1)
-        MANAGER.add("kappa_slope_scale_abs_mean", slope_scale_mean.detach())
+        MANAGER.add("kappa_slope_scale_abs_mean", _diagnostic_to_cpu(slope_scale_mean))
         top_means = []
         bottom_means = []
         for expert_slope_scales, expert_active_mask in zip(slope_scales, active_mask):
@@ -1813,18 +1821,21 @@ class Qwen3MLPExperts(nn.Module):
         zero = slope_scale_mean.new_zeros(())
         MANAGER.add(
             "kappa_slope_scale_abs_top5p_mean",
-            (torch.stack(top_means).mean() if top_means else zero).detach(),
+            _diagnostic_to_cpu(torch.stack(top_means).mean() if top_means else zero),
         )
         MANAGER.add(
             "kappa_slope_scale_abs_bottom5p_mean",
-            (torch.stack(bottom_means).mean() if bottom_means else zero).detach(),
+            _diagnostic_to_cpu(torch.stack(bottom_means).mean() if bottom_means else zero),
         )
         active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
         total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
         normalized_slope_scale_mean = (
             slope_scale_mean_per_expert * active_token_counts_sqrt
         ).sum() / total_active_tokens_sqrt
-        MANAGER.add("kappa_slope_scale_abs_mean_normalized", normalized_slope_scale_mean.detach())
+        MANAGER.add(
+            "kappa_slope_scale_abs_mean_normalized",
+            _diagnostic_to_cpu(normalized_slope_scale_mean),
+        )
 
     @torch._dynamo.disable
     def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
@@ -1847,37 +1858,45 @@ class Qwen3MLPExperts(nn.Module):
         active_cosines = routed_token_router_cosine[active_mask]
         MANAGER.add(
             "routed_token_router_weight_cosine_mean",
-            active_cosines.mean().detach(),
+            _diagnostic_to_cpu(active_cosines.mean()),
         )
         MANAGER.add(
             "routed_token_router_weight_cosine_top5p_mean",
-            _mean_extreme_percentile(active_cosines, fraction=0.05, largest=True).detach(),
+            _diagnostic_to_cpu(
+                _mean_extreme_percentile(active_cosines, fraction=0.05, largest=True)
+            ),
         )
         MANAGER.add(
             "routed_token_router_weight_cosine_bottom5p_mean",
-            _mean_extreme_percentile(active_cosines, fraction=0.05, largest=False).detach(),
+            _diagnostic_to_cpu(
+                _mean_extreme_percentile(active_cosines, fraction=0.05, largest=False)
+            ),
         )
         exp_gate_parallel_coeff = (self.gate_proj.detach().float() * router_weight.unsqueeze(-1)).sum(dim=1)
         input_parallel = (x * router_weight.unsqueeze(1)).sum(dim=2)
         MANAGER.add(
             "implicit_gate_proj_bias_top5p_mean",
-            _mean_extreme_outer_product_percentile_per_row(
-                input_parallel,
-                exp_gate_parallel_coeff,
-                active_mask,
-                fraction=0.05,
-                largest=True,
-            ).detach(),
+            _diagnostic_to_cpu(
+                _mean_extreme_outer_product_percentile_per_row(
+                    input_parallel,
+                    exp_gate_parallel_coeff,
+                    active_mask,
+                    fraction=0.05,
+                    largest=True,
+                )
+            ),
         )
         MANAGER.add(
             "implicit_gate_proj_bias_bottom5p_mean",
-            _mean_extreme_outer_product_percentile_per_row(
-                input_parallel,
-                exp_gate_parallel_coeff,
-                active_mask,
-                fraction=0.05,
-                largest=False,
-            ).detach(),
+            _diagnostic_to_cpu(
+                _mean_extreme_outer_product_percentile_per_row(
+                    input_parallel,
+                    exp_gate_parallel_coeff,
+                    active_mask,
+                    fraction=0.05,
+                    largest=False,
+                )
+            ),
         )
 
     def forward(self, x, selected_router_scores=None, router_weight=None, loss_accum=None):
@@ -2251,11 +2270,11 @@ class MOELayer(nn.Module):
             # if top-1 overflows and top-2 fits, only top-2 contributes
             # if both overflow, the token gets no MoE contribution from that layer            
             drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
-            MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
+            MANAGER.add("drop_rate_per_ks", _diagnostic_to_cpu(drop_rate_per_k))
             # Derive expert utilities: fraction of buffers used per expert.
             expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
             expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
-            MANAGER.add("expert_utilities", expert_utilities.detach())
+            MANAGER.add("expert_utilities", _diagnostic_to_cpu(expert_utilities))
 
 class GPT(nn.Module):
     def __init__(self, config, pad_vocab_size_to=64):

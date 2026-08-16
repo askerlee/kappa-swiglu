@@ -727,15 +727,15 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                         losses[f'selected_scores_top_{i}']    = top_selected_scores
                         losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
 
-    router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
+    router_grad_norms = torch.stack(router_grad_norms, dim=0).detach().cpu() if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
-    router_row_norms = torch.stack(router_row_norms, dim=0) if router_row_norms else None
+    router_row_norms = torch.stack(router_row_norms, dim=0).detach().cpu() if router_row_norms else None
     losses['router_row_norms'] = router_row_norms
-    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
+    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0).detach().cpu() if router_grad_self_alignments else None
     losses['router_grad_self_alignments'] = router_grad_self_alignments
-    router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0) if router_weight_exp_gate_alignments else None
+    router_weight_exp_gate_alignments = torch.stack(router_weight_exp_gate_alignments, dim=0).detach().cpu() if router_weight_exp_gate_alignments else None
     losses['router_weight_exp_gate_alignments'] = router_weight_exp_gate_alignments
-    exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
+    exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0).detach().cpu() if exp_gate_grad_norms else None
     losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
 # -----------------------------------------------------------------------------
