@@ -28,6 +28,15 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
+def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():
+    get_compile_rebuild_plan = load_function_from_script("get_compile_rebuild_plan")
+
+    assert get_compile_rebuild_plan(False, False, False, False) == (False, False)
+    assert get_compile_rebuild_plan(True, True, False, False) == (True, False)
+    assert get_compile_rebuild_plan(True, False, True, False) == (False, True)
+    assert get_compile_rebuild_plan(True, False, True, True) == (False, False)
+
+
 def test_chat_sft_continuation_inherits_compatible_base_batch_shape():
     build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
 

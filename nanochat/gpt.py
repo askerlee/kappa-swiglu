@@ -2337,6 +2337,15 @@ class GPT(nn.Module):
         self.register_buffer("cos", cos, persistent=False) # persistent=False means it's not saved to the checkpoint
         self.register_buffer("sin", sin, persistent=False)
 
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            for module in self.modules():
+                for name in tuple(vars(module)):
+                    if name.startswith('_eval_kappa_'):
+                        setattr(module, name, None)
+        return self
+
     def _configure_kappa_bias_sharing(self):
         if getattr(self.config, 'global_kappa_bias_granularity', 'per-gate') != 'global':
             return

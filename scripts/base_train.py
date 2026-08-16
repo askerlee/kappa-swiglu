@@ -786,7 +786,7 @@ def get_compile_rebuild_plan(
     if not compile_enabled:
         return False, False
     if rebuild_after_eval:
-        return False, True
+        return True, False
     if rebuild_after_first_eval_only and not has_rebuilt_compile_after_eval:
         return False, True
     return False, False

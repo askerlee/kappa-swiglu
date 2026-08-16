@@ -387,6 +387,35 @@ def test_gpt_sets_router_confidence_gate_bias_grad_scale_for_all_qwen3_moe_exper
     assert found_experts == 2
 
 
+def test_gpt_train_clears_kappa_evaluation_caches():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        num_moe_layers=1,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_kappa_swiglu=True,
+        debug=False,
+    )
+    model = GPT(config)
+    cache_attributes = [
+        (module, name)
+        for module in model.modules()
+        for name in vars(module)
+        if name.startswith('_eval_kappa_')
+    ]
+    assert cache_attributes
+    for module, name in cache_attributes:
+        setattr(module, name, object())
+
+    model.train()
+
+    assert all(getattr(module, name) is None for module, name in cache_attributes)
+
+
 def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
     torch.manual_seed(0)
     config = GPTConfig(
