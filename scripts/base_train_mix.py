@@ -232,6 +232,8 @@ DEFAULT_SEED = 26
 AUX_LOSS_WEIGHT_DEFAULT = 1e-3
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
+parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
+                    help="compute, model parameter, and optimizer-state dtype")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
 # FP8 training
@@ -538,7 +540,8 @@ def trace_rank(message):
     print(f"[{timestamp}] rank {ddp_rank}/{ddp_world_size} | {message}", file=sys.stderr, flush=True)
 
 
-autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16) if device_type == "cuda" else nullcontext()
+ptdtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
+autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 if device_type == "cuda":
@@ -711,6 +714,9 @@ if resuming:
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data # free up this memory after the copy
 
+cast_model_parameters(model, ptdtype)
+print0(f"Model parameter and optimizer-state storage dtype: {ptdtype}")
+
 # -----------------------------------------------------------------------------
 # FP8 training initialization and management (this has to be done before torch.compile)
 
@@ -719,8 +725,6 @@ if args.fp8:
     if device_type != "cuda":
         print0("Warning: FP8 training requires CUDA, ignoring --fp8 flag")
     else:
-        cast_model_parameters(model, torch.bfloat16)
-        print0("FP8 model parameter and optimizer-state storage dtype: torch.bfloat16")
         from torchao.float8 import Float8LinearConfig, convert_to_float8_training
         import torch.nn as nn
 

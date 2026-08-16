@@ -20,18 +20,21 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_fp8_casts_parameters_before_conversion_and_optimizer_setup():
+def test_base_train_dtype_controls_autocast_parameter_and_optimizer_storage():
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         source = script.read_text()
 
+        dtype_arg_index = source.index('parser.add_argument("--dtype"')
+        dtype_resolution_index = source.index('ptdtype = torch.float32 if args.dtype == "float32" else torch.bfloat16')
+        autocast_index = source.index('dtype=ptdtype')
+        cast_index = source.index("cast_model_parameters(model, ptdtype)")
         fp8_guard_index = source.index("if args.fp8:")
-        cuda_guard_index = source.index('if device_type != "cuda":', fp8_guard_index)
-        cast_index = source.index("cast_model_parameters(model, torch.bfloat16)", cuda_guard_index)
-        convert_index = source.index("convert_to_float8_training(model", cast_index)
+        convert_index = source.index("convert_to_float8_training(model", fp8_guard_index)
         optimizer_index = source.index("optimizer = model.setup_optimizer(", convert_index)
 
-        assert source.count("cast_model_parameters(model, torch.bfloat16)") == 1
-        assert fp8_guard_index < cuda_guard_index < cast_index < convert_index < optimizer_index
+        assert source.count("cast_model_parameters(model, ptdtype)") == 1
+        assert dtype_arg_index < dtype_resolution_index < autocast_index < cast_index
+        assert cast_index < fp8_guard_index < convert_index < optimizer_index
 
 
 def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():
