@@ -1,6 +1,10 @@
 import ast
 from pathlib import Path
 
+import torch
+
+from nanochat.common import cast_model_parameters
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_SFT = ROOT / "scripts" / "chat_sft.py"
@@ -16,6 +20,26 @@ def load_function_from_script(function_name):
             exec(compile(function_module, filename=str(CHAT_SFT), mode="exec"), namespace)
             return namespace[function_name]
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
+
+
+def test_chat_sft_casts_floating_parameters_without_casting_buffers():
+    module = torch.nn.Linear(4, 3)
+    module.register_buffer("stats", torch.ones(2, dtype=torch.float32))
+
+    cast_model_parameters(module, torch.bfloat16)
+
+    assert all(parameter.dtype == torch.bfloat16 for parameter in module.parameters())
+    assert module.stats.dtype == torch.float32
+
+
+def test_chat_sft_casts_parameters_before_compile_and_optimizer_setup():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    cast_index = source.index("cast_model_parameters(model, ptdtype)")
+    compile_index = source.index("model = torch.compile(model, dynamic=False)")
+    optimizer_index = source.index("optimizer = model.setup_optimizer(")
+
+    assert cast_index < compile_index < optimizer_index
 
 
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():

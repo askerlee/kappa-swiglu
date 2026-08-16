@@ -20,6 +20,20 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
+def test_fp8_casts_parameters_before_conversion_and_optimizer_setup():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        source = script.read_text()
+
+        fp8_guard_index = source.index("if args.fp8:")
+        cuda_guard_index = source.index('if device_type != "cuda":', fp8_guard_index)
+        cast_index = source.index("cast_model_parameters(model, torch.bfloat16)", cuda_guard_index)
+        convert_index = source.index("convert_to_float8_training(model", cast_index)
+        optimizer_index = source.index("optimizer = model.setup_optimizer(", convert_index)
+
+        assert source.count("cast_model_parameters(model, torch.bfloat16)") == 1
+        assert fp8_guard_index < cuda_guard_index < cast_index < convert_index < optimizer_index
+
+
 def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():
     auto_args = SimpleNamespace(loss_chunk_tokens=-1, compile=True)
     explicit_args = SimpleNamespace(loss_chunk_tokens=256, compile=True)
@@ -131,6 +145,9 @@ def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
         "/usr/bin/python3",
         "d8",
         120,
+        16,
+        2048,
+        524288,
         "--device-batch-size 8 --model-save-tag after-base",
     )
 
@@ -138,10 +155,17 @@ def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
         "/usr/bin/python3",
         "-m",
         "scripts.chat_sft",
+        "--log-grad-stats",
         "--model-tag",
         "d8",
         "--model-step",
         "120",
+        "--device-batch-size",
+        "16",
+        "--max-seq-len",
+        "2048",
+        "--total-batch-size",
+        "524288",
         "--device-batch-size",
         "8",
         "--model-save-tag",

@@ -28,6 +28,28 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
+def test_chat_sft_continuation_inherits_compatible_base_batch_shape():
+    build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
+
+    argv = build_chat_sft_exec_argv(
+        "/usr/bin/python3",
+        "d8-mixed",
+        120,
+        24,
+        2048,
+        589824,
+    )
+
+    assert argv[-6:] == [
+        "--device-batch-size",
+        "24",
+        "--max-seq-len",
+        "2048",
+        "--total-batch-size",
+        "589824",
+    ]
+
+
 def test_mixed_interval_throughput_averages_all_steps_since_previous_log():
     get_interval_throughput = load_function_from_script("get_interval_throughput")
 

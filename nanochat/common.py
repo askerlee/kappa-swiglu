@@ -10,7 +10,8 @@ import torch
 import torch.distributed as dist
 from filelock import FileLock
 
-# The dtype used for compute (matmuls, activations). Master weights stay fp32 for optimizer precision.
+# The dtype used for compute (matmuls, activations). Base training keeps fp32 master weights;
+# SFT may cast parameters and optimizer state to this dtype to reduce memory.
 # Linear layers cast their weights to this dtype in forward, replacing torch.amp.autocast.
 # Override with NANOCHAT_DTYPE env var: "bfloat16", "float16", "float32"
 _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
@@ -29,6 +30,14 @@ def _detect_compute_dtype():
         return torch.float32, f"auto-detected: CUDA SM {capability[0]}{capability[1]} (pre-Ampere, bf16 not supported, using fp32)"
     return torch.float32, "auto-detected: no CUDA (CPU/MPS)"
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
+
+
+def cast_model_parameters(model, dtype):
+    with torch.no_grad():
+        for parameter in model.parameters():
+            if parameter.is_floating_point() and parameter.dtype != dtype:
+                parameter.data = parameter.data.to(dtype=dtype)
+
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter that adds colors to log messages."""

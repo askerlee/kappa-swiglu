@@ -43,7 +43,7 @@ import torch
 
 from nanochat.gpt import GPT, get_moe_layer_indices
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
+from nanochat.common import cast_model_parameters, compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import delete_checkpoint_step, delete_old_checkpoints, save_checkpoint, load_checkpoint, inspect_optimizer_shards, load_optimizer_state_dict, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.loss_eval import evaluate_bpb
@@ -164,8 +164,12 @@ def build_chat_sft_exec_argv(
     model_tag,
     model_step,
     device_batch_size,
+    max_seq_len,
+    total_batch_size,
     extra_args_text="",
 ):
+    import shlex
+
     argv = [
         python_executable,
         "-m",
@@ -177,6 +181,10 @@ def build_chat_sft_exec_argv(
         str(model_step),
         "--device-batch-size",
         str(device_batch_size),
+        "--max-seq-len",
+        str(max_seq_len),
+        "--total-batch-size",
+        str(total_batch_size),
     ]
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
@@ -711,6 +719,8 @@ if args.fp8:
     if device_type != "cuda":
         print0("Warning: FP8 training requires CUDA, ignoring --fp8 flag")
     else:
+        cast_model_parameters(model, torch.bfloat16)
+        print0("FP8 model parameter and optimizer-state storage dtype: torch.bfloat16")
         from torchao.float8 import Float8LinearConfig, convert_to_float8_training
         import torch.nn as nn
 
@@ -2393,6 +2403,8 @@ if should_continue_to_chat_sft:
         output_dirname,
         step,
         args.device_batch_size,
+        args.max_seq_len,
+        total_batch_size,
         args.continue_to_chat_sft_args,
     )
     sanitize_chat_sft_rendezvous_env()

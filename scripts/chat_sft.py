@@ -30,7 +30,7 @@ import time, re
 import wandb
 import torch
 from contextlib import nullcontext
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type
+from nanochat.common import cast_model_parameters, compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_bpb
@@ -71,7 +71,8 @@ parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the m
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
-parser.add_argument("--dtype", type=str, default="bfloat16", help="float32|bfloat16")
+parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
+                    help="compute, model parameter, and optimizer-state dtype")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-save-tag", type=str, default=None, help="extra model tag to append to the saved folder")
@@ -305,6 +306,8 @@ if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
+cast_model_parameters(model, ptdtype)
+print0(f"Model parameter storage dtype: {ptdtype}")
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer

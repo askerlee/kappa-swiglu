@@ -137,6 +137,32 @@ def test_muon_group_update_changes_all_params():
     assert not torch.allclose(param_b, before_b)
 
 
+def test_bfloat16_parameters_create_bfloat16_optimizer_states():
+    adamw_param = torch.nn.Parameter(torch.tensor([0.5, -1.0], dtype=torch.bfloat16))
+    muon_param = torch.nn.Parameter(torch.arange(12, dtype=torch.bfloat16).reshape(3, 4) / 10)
+    adamw_param.grad = torch.tensor([0.2, -0.4], dtype=torch.bfloat16)
+    muon_param.grad = torch.ones_like(muon_param)
+    optimizer = MuonAdamW([
+        dict(
+            kind='adamw', params=[adamw_param], lr=0.1, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0,
+        ),
+        dict(
+            kind='muon', params=[muon_param], lr=0.05, momentum=0.95, ns_steps=3, beta2=0.95, weight_decay=0.0,
+        ),
+    ])
+
+    optimizer.step()
+
+    adamw_state = optimizer.state[adamw_param]
+    muon_state = optimizer.state[muon_param]
+    assert adamw_state['exp_avg'].dtype == torch.bfloat16
+    assert adamw_state['exp_avg_sq'].dtype == torch.bfloat16
+    assert muon_state['momentum_buffer'].dtype == torch.bfloat16
+    assert muon_state['second_momentum_buffer'].dtype == torch.bfloat16
+    assert torch.isfinite(adamw_param).all()
+    assert torch.isfinite(muon_param).all()
+
+
 def test_muon_chunk_size_preserves_full_group_update():
     torch.manual_seed(0)
     full_params = [
