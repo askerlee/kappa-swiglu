@@ -316,11 +316,23 @@ moe_layer_indices = get_moe_layer_indices(model.config)
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
-assert args.total_batch_size % world_tokens_per_fwdbwd == 0
-grad_accum_steps = args.total_batch_size // world_tokens_per_fwdbwd # default: 8 on 1 GPU.
+total_batch_size = args.total_batch_size
+if total_batch_size % world_tokens_per_fwdbwd != 0:
+    # Mirror base_train.py: round to the nearest multiple of world_tokens_per_fwdbwd,
+    # discarding the extra instances that don't form a full micro-batch.
+    rounded = round(total_batch_size / world_tokens_per_fwdbwd) * world_tokens_per_fwdbwd
+    if rounded == 0:
+        rounded = world_tokens_per_fwdbwd
+    print0(
+        "total_batch_size isn't divisible by world_tokens_per_fwdbwd; "
+        f"adjusting from {total_batch_size:,} to {rounded:,}."
+    )
+    total_batch_size = rounded
+args.total_batch_size = total_batch_size
+grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd # default: 8 on 1 GPU.
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
-print0(f"Total batch size {args.total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
+print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
 token_bytes = get_token_bytes(device=device)
 
 # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
