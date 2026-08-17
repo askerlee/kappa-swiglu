@@ -338,10 +338,9 @@ parser.add_argument(
     type=int,
     default=-1,
     help=(
-        "total batch size in tokens. Must currently be divisible by "
-        "--device-batch-size * --max-seq-len * DDP world size because each "
-        "micro-step uses a fixed-shape batch and padded rows would still "
-        "affect auxiliary MoE losses. Decent numbers are e.g. 524288. "
+        "total batch size in tokens. Must be divisible by --max-seq-len * DDP world size; "
+        "a smaller final per-device micro-batch is used when needed. "
+        "Decent numbers are e.g. 524288. "
         "(-1 = auto-compute optimal)"
     ),
 )
@@ -883,31 +882,25 @@ print0(
 # -----------------------------------------------------------------------------
 # Optimizer / data / training length related hyperparameters
 # figure out the needed gradient accumulation to reach the desired total batch size
-if total_batch_size % world_tokens_per_fwdbwd != 0:
-    if args.total_batch_size == -1:
-        # Auto batch size might not be divisible by world_tokens_per_fwdbwd.
-        rounded = round(total_batch_size / world_tokens_per_fwdbwd) * world_tokens_per_fwdbwd
-        if rounded == 0:
-            rounded = world_tokens_per_fwdbwd
-        print0(
-            "Auto-computed total_batch_size isn't divisible by world_tokens_per_fwdbwd; "
-            f"adjusting from {total_batch_size:,} to {rounded:,}."
-        )
-        total_batch_size = rounded
-    else:
-        raise ValueError(
-            "total_batch_size must be a multiple of world_tokens_per_fwdbwd "
-            "(= --device-batch-size * --max-seq-len * DDP world size). "
-            f"Got total_batch_size={total_batch_size:,}, world_tokens_per_fwdbwd={world_tokens_per_fwdbwd:,}. "
-            "This script currently uses fixed-shape micro-batches, and simply padding the "
-            "remainder would change auxiliary/router losses instead of only masking the LM loss. "
-            "Adjust --total-batch-size, --device-batch-size, --max-seq-len, or DDP world size."
-        )
-    
-grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
+world_tokens_per_row = args.max_seq_len * ddp_world_size
+if total_batch_size % world_tokens_per_row != 0:
+    raise ValueError(
+        "total_batch_size must be a multiple of --max-seq-len * DDP world size "
+        "so the partial final micro-batch retains the same integer number of rows on every rank. "
+        f"Got total_batch_size={total_batch_size:,}, row granularity={world_tokens_per_row:,}."
+    )
+grad_accum_steps = math.ceil(total_batch_size / world_tokens_per_fwdbwd)
+last_device_batch_size = (
+    total_batch_size - (grad_accum_steps - 1) * world_tokens_per_fwdbwd
+) // world_tokens_per_row
+last_micro_weight = last_device_batch_size / args.device_batch_size
+grad_accum_normalizer = (grad_accum_steps - 1) + last_micro_weight
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
-print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
+print0(
+    f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps} "
+    f"(last device batch size: {last_device_batch_size})"
+)
 
 # Batch size scaling for learning rates (hyperparameters were tuned at reference batch size 2^19)
 batch_lr_scale = 1.0
@@ -1103,7 +1096,7 @@ def get_interval_throughput(total_batch_size, num_flops_per_token, gpu_peak_flop
     mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
     return average_dt, tok_per_sec, mfu
 
-def accumulate_step_losses(step_losses, micro_losses):
+def accumulate_step_losses(step_losses, micro_losses, micro_weight=1.0):
     """Accumulate detached per-microstep losses for step-level logging."""
     if step_losses is None:
         step_losses = {}
@@ -1114,29 +1107,29 @@ def accumulate_step_losses(step_losses, micro_losses):
             continue
 
         if torch.is_tensor(value):
-            detached_value = value.detach()
+            detached_value = value.detach() * micro_weight
             if key not in step_losses or step_losses[key] is None:
                 step_losses[key] = detached_value.clone()
             else:
                 step_losses[key].add_(detached_value)
         else:
             if key not in step_losses or step_losses[key] is None:
-                step_losses[key] = value
+                step_losses[key] = value * micro_weight
             else:
-                step_losses[key] += value
+                step_losses[key] += value * micro_weight
 
     return step_losses
 
-def average_step_losses(step_losses, grad_accum_steps):
+def average_step_losses(step_losses, grad_accum_normalizer):
     """Average accumulated losses across microsteps."""
     averaged_losses = {}
     for key, value in step_losses.items():
         if value is None:
             averaged_losses[key] = None
         elif torch.is_tensor(value):
-            averaged_losses[key] = value / grad_accum_steps
+            averaged_losses[key] = value / grad_accum_normalizer
         else:
-            averaged_losses[key] = value / grad_accum_steps
+            averaged_losses[key] = value / grad_accum_normalizer
     return averaged_losses
 
 def get_dense_kappa_bias_stat_layer_indices(model):
@@ -1793,6 +1786,9 @@ while True:
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):
+            micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
+            micro_x = x[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else x
+            micro_y = y[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else y
             current_training_model = (
                 orig_model
                 if run_eager_training_step_after_core_eval and micro_step == 0
@@ -1808,10 +1804,10 @@ while True:
                 if run_eager_training_step_after_core_eval:
                     print0("running first post-CORE training step eagerly before returning to compiled training")
             with autocast_ctx:
-                loss, micro_losses = current_training_model(x, y)
+                loss, micro_losses = current_training_model(micro_x, micro_y)
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed forward")
-            step_losses = accumulate_step_losses(step_losses, micro_losses)
+            step_losses = accumulate_step_losses(step_losses, micro_losses, micro_weight)
             aux_loss = micro_losses.get("aux_loss")
             if aux_loss is None:
                 aux_loss = 0.0
@@ -1833,7 +1829,7 @@ while True:
             loss = loss + kappa_bias_l2_loss_weight * kappa_bias_ema_rms_reg_loss
             loss = loss + kappa_scale_l2_loss_weight * kappa_scale_ema_rms_reg_loss
             
-            loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+            loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
@@ -1868,7 +1864,7 @@ while True:
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetched next batch")
 
-        losses = average_step_losses(step_losses, grad_accum_steps)
+        losses = average_step_losses(step_losses, grad_accum_normalizer)
 
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)

@@ -317,22 +317,25 @@ num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
 world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
 total_batch_size = args.total_batch_size
-if total_batch_size % world_tokens_per_fwdbwd != 0:
-    # Mirror base_train.py: round to the nearest multiple of world_tokens_per_fwdbwd,
-    # discarding the extra instances that don't form a full micro-batch.
-    rounded = round(total_batch_size / world_tokens_per_fwdbwd) * world_tokens_per_fwdbwd
-    if rounded == 0:
-        rounded = world_tokens_per_fwdbwd
-    print0(
-        "total_batch_size isn't divisible by world_tokens_per_fwdbwd; "
-        f"adjusting from {total_batch_size:,} to {rounded:,}."
+world_tokens_per_row = args.max_seq_len * ddp_world_size
+if total_batch_size % world_tokens_per_row != 0:
+    raise ValueError(
+        "total_batch_size must be a multiple of --max-seq-len * DDP world size "
+        "so the partial final micro-batch retains the same integer number of rows on every rank. "
+        f"Got total_batch_size={total_batch_size:,}, row granularity={world_tokens_per_row:,}."
     )
-    total_batch_size = rounded
-args.total_batch_size = total_batch_size
-grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd # default: 8 on 1 GPU.
+grad_accum_steps = math.ceil(total_batch_size / world_tokens_per_fwdbwd)
+last_device_batch_size = (
+    total_batch_size - (grad_accum_steps - 1) * world_tokens_per_fwdbwd
+) // world_tokens_per_row
+last_micro_weight = last_device_batch_size / args.device_batch_size
+grad_accum_normalizer = (grad_accum_steps - 1) + last_micro_weight
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
-print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
+print0(
+    f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps} "
+    f"(last device batch size: {last_device_batch_size})"
+)
 token_bytes = get_token_bytes(device=device)
 
 # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
@@ -923,10 +926,14 @@ while True:
         kappa_bias_schedule_total_iterations,
     )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_bias_lr_scale)
+    step_train_loss = 0.0
     for micro_step in range(grad_accum_steps):
+        micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
+        micro_x = x[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else x
+        micro_y = y[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else y
         with autocast_ctx:
-            loss, losses = model(x, y)
-        train_loss = losses['ntp_loss'] # for logging
+            loss, losses = model(micro_x, micro_y)
+        step_train_loss = step_train_loss + losses['ntp_loss'].detach() * micro_weight
         aux_loss = losses.get("aux_loss")
         if aux_loss is None:
             aux_loss = 0.0
@@ -940,10 +947,12 @@ while True:
         loss = loss + args.kappa_l2_loss_weight * kappa_bias_l2_loss
         loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
 
-        loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+        loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
         loss.backward()
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
+
+    train_loss = step_train_loss / grad_accum_normalizer
 
     if MANAGER.collect_load_balancing_stats:
         collect_weight_grad_stats(model, losses, moe_layer_indices)
