@@ -376,7 +376,7 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
 parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
-parser.add_argument("--lr-scheduler-skip-iters", type=int, default=0, help="number of initial iterations to skip for LR scheduling (to allow for redoing warmup when resuming from a later point in training)")
+parser.add_argument("--lr-schedule-restart-at-step", type=int, default=0, help="global training step at which to restart the LR schedule from scheduler step 0")
 parser.add_argument("--lr-base-scale", type=float, default=1.0, help="base scale for learning rate")
 parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
@@ -1170,9 +1170,9 @@ chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loa
 
 # Learning rate scheduler
 def get_lr_multiplier(it, num_iterations, warmup_ratio, warmdown_ratio, 
-                      final_lr_frac, lr_scheduler_skip_iters=0, lr_base_scale=1.0):
-    it = max(0, it - lr_scheduler_skip_iters) # allow skipping the LR scheduler for the first N iterations (useful for redoing warmup when resuming from a later point in training)
-    num_iterations = max(1, num_iterations - lr_scheduler_skip_iters) # avoid division by zero or negative iterations
+                      final_lr_frac, lr_schedule_restart_at_step=0, lr_base_scale=1.0):
+    it = max(0, it - lr_schedule_restart_at_step)
+    num_iterations = max(1, num_iterations - lr_schedule_restart_at_step)
     warmup_iters = round(warmup_ratio * num_iterations)
     warmdown_iters = round(warmdown_ratio * num_iterations)
     if it < warmup_iters:
@@ -1971,7 +1971,7 @@ while True:
     # evaluate the gradient
     if args.mockup_mode:
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
-                                args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
+                                args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
                                 lr_base_scale=args.lr_base_scale)
         losses = {
             'ntp_loss': 0.0,
@@ -2094,7 +2094,7 @@ while True:
         
         # step the optimizer
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
-                                args.final_lr_frac, lr_scheduler_skip_iters=args.lr_scheduler_skip_iters, 
+                                args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
                                 lr_base_scale=args.lr_base_scale)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
