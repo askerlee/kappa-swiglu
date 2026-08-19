@@ -382,6 +382,7 @@ parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of it
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 parser.add_argument("--resume-from-step", type=int, default=-1, help="resume training from this step (-1 = disable)")
+parser.add_argument("--resume-lr-warmup-steps", type=int, default=0, help="linearly warm LR after resuming, then return to the absolute-step LR schedule")
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=250, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
@@ -500,6 +501,8 @@ if args.chat_sft_train_mixture_repeats < 1:
     raise ValueError("--chat-sft-train-mixture-repeats must be >= 1")
 if args.chat_sft_buffer_size < 1:
     raise ValueError("--chat-sft-buffer-size must be >= 1")
+if args.resume_lr_warmup_steps < 0:
+    raise ValueError("--resume-lr-warmup-steps must be >= 0")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
 
@@ -1182,6 +1185,13 @@ def get_lr_multiplier(it, num_iterations, warmup_ratio, warmdown_ratio,
     else:
         progress = (num_iterations - it) / warmdown_iters
         return lr_base_scale * (progress * 1.0 + (1 - progress) * final_lr_frac)
+
+
+def get_resume_lr_warmup_scale(step, resume_step, warmup_steps):
+    if resume_step < 0 or warmup_steps <= 0:
+        return 1.0
+    resume_progress = step - resume_step + 1
+    return min(max(resume_progress / warmup_steps, 0.0), 1.0)
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
@@ -1973,6 +1983,7 @@ while True:
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
                                 args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
                                 lr_base_scale=args.lr_base_scale)
+        lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
         losses = {
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
@@ -2096,6 +2107,7 @@ while True:
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
                                 args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
                                 lr_base_scale=args.lr_base_scale)
+        lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
             if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':

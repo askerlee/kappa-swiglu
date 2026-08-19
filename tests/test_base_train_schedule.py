@@ -74,6 +74,25 @@ def test_interval_throughput_averages_all_steps_since_previous_log():
     assert mfu == 20.0
 
 
+def test_resume_lr_warmup_scales_then_restores_absolute_schedule():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        get_resume_lr_warmup_scale = load_function_from_script(
+            "get_resume_lr_warmup_scale",
+            script,
+        )
+
+        assert get_resume_lr_warmup_scale(4000, -1, 50) == 1.0
+        assert get_resume_lr_warmup_scale(4000, 4000, 0) == 1.0
+        assert get_resume_lr_warmup_scale(4000, 4000, 50) == 0.02
+        assert get_resume_lr_warmup_scale(4024, 4000, 50) == 0.5
+        assert get_resume_lr_warmup_scale(4049, 4000, 50) == 1.0
+        assert get_resume_lr_warmup_scale(4050, 4000, 50) == 1.0
+
+        source = script.read_text()
+        assert 'parser.add_argument("--resume-lr-warmup-steps"' in source
+        assert source.count("lrm *= get_resume_lr_warmup_scale(") == 2
+
+
 def test_logged_throughput_uses_interval_values_and_resets_window():
     source = BASE_TRAIN.read_text()
 
