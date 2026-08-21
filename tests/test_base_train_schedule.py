@@ -93,6 +93,26 @@ def test_resume_lr_warmup_scales_then_restores_absolute_schedule():
         assert source.count("lrm *= get_resume_lr_warmup_scale(") == 2
 
 
+def test_resume_lr_warmup_freezes_kappa_until_warmup_finishes():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        get_resume_kappa_lr_scale = load_function_from_script(
+            "get_resume_kappa_lr_scale",
+            script,
+        )
+
+        assert get_resume_kappa_lr_scale(4000, -1, 50) == 1.0
+        assert get_resume_kappa_lr_scale(4000, 4000, 0) == 1.0
+        assert get_resume_kappa_lr_scale(4000, 4000, 50) == 0.0
+        assert get_resume_kappa_lr_scale(4049, 4000, 50) == 0.0
+        assert get_resume_kappa_lr_scale(4050, 4000, 50) == 1.0
+
+        source = script.read_text()
+        assert "* kappa_bias_lr_scale * resume_kappa_lr_scale" in source
+        assert 'if resume_kappa_lr_scale == 0.0:' in source
+        assert 'for param in group["params"]:' in source
+        assert "param.grad = None" in source
+
+
 def test_logged_throughput_uses_interval_values_and_resets_window():
     source = BASE_TRAIN.read_text()
 

@@ -988,6 +988,12 @@ def get_resume_lr_warmup_scale(step, resume_step, warmup_steps):
     resume_progress = step - resume_step + 1
     return min(max(resume_progress / warmup_steps, 0.0), 1.0)
 
+
+def get_resume_kappa_lr_scale(step, resume_step, warmup_steps):
+    if resume_step < 0 or warmup_steps <= 0:
+        return 1.0
+    return float(step >= resume_step + warmup_steps)
+
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
     frac = min(it / 300, 1)
@@ -1888,7 +1894,13 @@ while True:
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
             if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':
-                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
+                resume_kappa_lr_scale = get_resume_kappa_lr_scale(
+                    step, args.resume_from_step, args.resume_lr_warmup_steps
+                )
+                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale * resume_kappa_lr_scale
+                if resume_kappa_lr_scale == 0.0:
+                    for param in group["params"]:
+                        param.grad = None
             else:
                 group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':
