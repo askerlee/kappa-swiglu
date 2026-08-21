@@ -456,14 +456,14 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
 
 
 @pytest.mark.parametrize("activation_checkpointing", [False, True])
-def test_gpt_total_ut_steps_use_distinct_residual_scalars_and_pass_local_anchors(
+def test_gpt_total_ut_steps_use_token_and_recurrent_anchors(
     activation_checkpointing,
 ):
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
         vocab_size=32,
-        n_layer=1,
+        n_layer=2,
         n_exp=1,
         n_embd=32,
         n_head=4,
@@ -477,36 +477,56 @@ def test_gpt_total_ut_steps_use_distinct_residual_scalars_and_pass_local_anchors
     model.init_weights()
     with torch.no_grad():
         model.resid_lambdas.zero_()
-        model.x0_lambdas[:, 0] = torch.tensor([1.0, 2.0])
+        model.x0_lambdas.zero_()
+        model.x0_lambdas[0, 1] = 1.0
+        model.resid_lambdas[1, 0] = 1.0
+        model.x0_lambdas[1, 0] = 0.5
+        model.x0_lambdas[1, 1] = 2.0
 
-    block_inputs = []
-    block_outputs = []
-    output_shift = torch.linspace(-1.0, 1.0, config.n_embd).view(1, 1, -1)
-    input_hook = model.transformer.h[0].register_forward_pre_hook(
-        lambda _module, args: block_inputs.append(args[0].detach().clone())
-    )
+    block_inputs = [[], []]
+    block_outputs = [[], []]
+    output_shifts = [
+        torch.linspace(-1.0, 1.0, config.n_embd).view(1, 1, -1),
+        torch.linspace(1.0, -1.0, config.n_embd).view(1, 1, -1),
+    ]
+    hooks = []
 
-    def shift_block_output(_module, _args, output):
-        block_outputs.append(output.detach().clone())
-        return output + output_shift.to(device=output.device, dtype=output.dtype)
+    def capture_block_input(layer_idx):
+        def hook(_module, args):
+            block_inputs[layer_idx].append(args[0].detach().clone())
+        return hook
 
-    output_hook = model.transformer.h[0].register_forward_hook(shift_block_output)
+    def shift_block_output(layer_idx):
+        def hook(_module, _args, output):
+            block_outputs[layer_idx].append(output.detach().clone())
+            shift = output_shifts[layer_idx].to(device=output.device, dtype=output.dtype)
+            return output + shift
+        return hook
+
+    for layer_idx, block in enumerate(model.transformer.h):
+        hooks.append(block.register_forward_pre_hook(capture_block_input(layer_idx)))
+        hooks.append(block.register_forward_hook(shift_block_output(layer_idx)))
     try:
         ids = torch.randint(0, config.vocab_size, (1, 3))
+        token_x0 = F.rms_norm(model.transformer.wte(ids), (config.n_embd,)).detach()
         model(ids, targets=ids)
     finally:
-        input_hook.remove()
-        output_hook.remove()
+        for hook in hooks:
+            hook.remove()
 
-    assert model.resid_lambdas.shape == (2, 1)
-    assert model.x0_lambdas.shape == (2, 1)
-    assert len(block_inputs) == 2
-    pass_zero_output = F.rms_norm(
-        block_outputs[0] + output_shift,
+    assert model.resid_lambdas.shape == (2, 2)
+    assert model.x0_lambdas.shape == (2, 2)
+    assert [len(inputs) for inputs in block_inputs] == [2, 2]
+    torch.testing.assert_close(block_inputs[0][0], token_x0)
+    torch.testing.assert_close(block_inputs[1][0], token_x0)
+
+    recurrent_anchor = F.rms_norm(
+        block_outputs[1][0] + output_shifts[1],
         (config.n_embd,),
     )
-    torch.testing.assert_close(block_inputs[1], 2.0 * pass_zero_output)
-    assert not torch.allclose(block_inputs[1], 2.0 * block_inputs[0])
+    torch.testing.assert_close(block_inputs[0][1], recurrent_anchor + 0.5 * token_x0)
+    torch.testing.assert_close(block_inputs[1][1], 2.0 * recurrent_anchor)
+    assert not torch.allclose(block_inputs[1][1], 2.0 * token_x0)
 
 
 def test_gpt_value_embedding_inputs_have_consistent_grad_state():
