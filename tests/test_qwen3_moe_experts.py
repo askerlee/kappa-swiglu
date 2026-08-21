@@ -456,7 +456,7 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
 
 
 @pytest.mark.parametrize("activation_checkpointing", [False, True])
-def test_gpt_total_ut_steps_use_token_and_recurrent_anchors(
+def test_gpt_total_ut_steps_use_distinct_scalars_with_token_embedding_anchor(
     activation_checkpointing,
 ):
     torch.manual_seed(0)
@@ -477,18 +477,9 @@ def test_gpt_total_ut_steps_use_token_and_recurrent_anchors(
     model.init_weights()
     with torch.no_grad():
         model.resid_lambdas.zero_()
-        model.x0_lambdas.zero_()
-        model.x0_lambdas[0, 1] = 1.0
-        model.resid_lambdas[1, 0] = 1.0
-        model.x0_lambdas[1, 0] = 0.5
-        model.x0_lambdas[1, 1] = 2.0
+        model.x0_lambdas.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
 
     block_inputs = [[], []]
-    block_outputs = [[], []]
-    output_shifts = [
-        torch.linspace(-1.0, 1.0, config.n_embd).view(1, 1, -1),
-        torch.linspace(1.0, -1.0, config.n_embd).view(1, 1, -1),
-    ]
     hooks = []
 
     def capture_block_input(layer_idx):
@@ -496,16 +487,8 @@ def test_gpt_total_ut_steps_use_token_and_recurrent_anchors(
             block_inputs[layer_idx].append(args[0].detach().clone())
         return hook
 
-    def shift_block_output(layer_idx):
-        def hook(_module, _args, output):
-            block_outputs[layer_idx].append(output.detach().clone())
-            shift = output_shifts[layer_idx].to(device=output.device, dtype=output.dtype)
-            return output + shift
-        return hook
-
     for layer_idx, block in enumerate(model.transformer.h):
         hooks.append(block.register_forward_pre_hook(capture_block_input(layer_idx)))
-        hooks.append(block.register_forward_hook(shift_block_output(layer_idx)))
     try:
         ids = torch.randint(0, config.vocab_size, (1, 3))
         token_x0 = F.rms_norm(model.transformer.wte(ids), (config.n_embd,)).detach()
@@ -518,15 +501,9 @@ def test_gpt_total_ut_steps_use_token_and_recurrent_anchors(
     assert model.x0_lambdas.shape == (2, 2)
     assert [len(inputs) for inputs in block_inputs] == [2, 2]
     torch.testing.assert_close(block_inputs[0][0], token_x0)
-    torch.testing.assert_close(block_inputs[1][0], token_x0)
-
-    recurrent_anchor = F.rms_norm(
-        block_outputs[1][0] + output_shifts[1],
-        (config.n_embd,),
-    )
-    torch.testing.assert_close(block_inputs[0][1], recurrent_anchor + 0.5 * token_x0)
-    torch.testing.assert_close(block_inputs[1][1], 2.0 * recurrent_anchor)
-    assert not torch.allclose(block_inputs[1][1], 2.0 * token_x0)
+    torch.testing.assert_close(block_inputs[1][0], 2.0 * token_x0)
+    torch.testing.assert_close(block_inputs[0][1], 3.0 * token_x0)
+    torch.testing.assert_close(block_inputs[1][1], 4.0 * token_x0)
 
 
 def test_gpt_value_embedding_inputs_have_consistent_grad_state():

@@ -2318,7 +2318,7 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, padded_vocab_size, bias=False)
         # Per-virtual-layer learnable scalars (inspired by modded-nanogpt)
         # resid_lambdas: scales the residual stream at each layer (init 1.0 = neutral)
-        # x0_lambdas: blends token embeddings at recurrent pass entry and the pass input at deeper layers
+        # x0_lambdas: blends the normalized token embeddings back in at each virtual layer
         # Separate parameters so they can have different optimizer treatment
         scalar_shape = (self.total_ut_steps, config.n_layer)
         self.resid_lambdas = nn.Parameter(torch.ones(scalar_shape))   # fake init, real init in init_weights()
@@ -2885,7 +2885,7 @@ class GPT(nn.Module):
         ve_placeholder = None
         last_block_idx = len(self.transformer.h) - 1
 
-        def run_ut_step(x, token_x0, pass_x0, current_ut, capture_state):
+        def run_ut_step(x, token_x0, current_ut, capture_state):
             nonlocal ve_placeholder
             loss_accum = (
                 _UTLossAccum(x, len(self.transformer.h), self.config.n_exp)
@@ -2893,19 +2893,10 @@ class GPT(nn.Module):
                 else None
             )
             for i, block in enumerate(self.transformer.h):
-                if current_ut > 0 or i > 0:
-                    residual_anchor = token_x0 if i == 0 else pass_x0
-                    # At the recurrent entry, i.e., current_ut > 0 and i = 0, x is the input argument x = pass_x0,
-                    # which is the output of the previous UT pass. We want to combine it with 
-                    # the original input embedding (token_x0) using the learned lambdas. 
-                    # When current_ut > 0 and i > 0, x is the output of the previous physical layer,
-                    # which is mixed with pass_x0, the output of the previous UT pass.
-                    # When current_ut = 0 and i > 0, pass_x0 is the normalized token embedding, 
-                    # which is mixed with the output of the previous physical layer.
-                    x = (
-                        self.resid_lambdas[current_ut, i] * x
-                        + self.x0_lambdas[current_ut, i] * residual_anchor
-                    )
+                x = (
+                    self.resid_lambdas[current_ut, i] * x
+                    + self.x0_lambdas[current_ut, i] * token_x0
+                )
                 if str(i) in self.value_embeds:
                     ve = self.value_embeds[str(i)](idx)
                 else:
@@ -2967,13 +2958,11 @@ class GPT(nn.Module):
         )
         with activation_context:
             for current_ut in range(self.total_ut_steps):
-                pass_x0 = x
                 if use_activation_checkpointing:
                     step_outputs = checkpoint(
                         run_ut_step,
                         x,
                         token_x0,
-                        pass_x0,
                         current_ut,
                         True,
                         use_reentrant=False,
@@ -2991,7 +2980,7 @@ class GPT(nn.Module):
                         ]
                         checkpoint_router_counts = checkpoint_router_counts + step_router_counts
                 else:
-                    x = run_ut_step(x, token_x0, pass_x0, current_ut, False)
+                    x = run_ut_step(x, token_x0, current_ut, False)
 
                 if targets is not None and (
                     self.config.ut_everypass_ntp
