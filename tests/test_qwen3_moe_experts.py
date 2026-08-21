@@ -455,6 +455,60 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
         assert v_layer[:, : ids.size(1)].abs().sum().item() > 0.0
 
 
+@pytest.mark.parametrize("activation_checkpointing", [False, True])
+def test_gpt_total_ut_steps_use_distinct_residual_scalars_and_pass_local_anchors(
+    activation_checkpointing,
+):
+    torch.manual_seed(0)
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        activation_checkpointing=activation_checkpointing,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        model.resid_lambdas.zero_()
+        model.x0_lambdas[:, 0] = torch.tensor([1.0, 2.0])
+
+    block_inputs = []
+    block_outputs = []
+    output_shift = torch.linspace(-1.0, 1.0, config.n_embd).view(1, 1, -1)
+    input_hook = model.transformer.h[0].register_forward_pre_hook(
+        lambda _module, args: block_inputs.append(args[0].detach().clone())
+    )
+
+    def shift_block_output(_module, _args, output):
+        block_outputs.append(output.detach().clone())
+        return output + output_shift.to(device=output.device, dtype=output.dtype)
+
+    output_hook = model.transformer.h[0].register_forward_hook(shift_block_output)
+    try:
+        ids = torch.randint(0, config.vocab_size, (1, 3))
+        model(ids, targets=ids)
+    finally:
+        input_hook.remove()
+        output_hook.remove()
+
+    assert model.resid_lambdas.shape == (2, 1)
+    assert model.x0_lambdas.shape == (2, 1)
+    assert len(block_inputs) == 2
+    pass_zero_output = F.rms_norm(
+        block_outputs[0] + output_shift,
+        (config.n_embd,),
+    )
+    torch.testing.assert_close(block_inputs[1], 2.0 * pass_zero_output)
+    assert not torch.allclose(block_inputs[1], 2.0 * block_inputs[0])
+
+
 def test_gpt_value_embedding_inputs_have_consistent_grad_state():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -616,6 +670,53 @@ def test_gpt_total_ut_steps_can_compute_ntp_loss_only_on_final_loop(monkeypatch)
     assert recompute_backward_values == [True]
     torch.testing.assert_close(loss, loop_losses[0])
     torch.testing.assert_close(losses["ntp_loss"], loop_losses[0])
+
+
+def test_ut_detach_requires_everypass_ntp():
+    with pytest.raises(ValueError, match="ut_detach requires ut_everypass_ntp"):
+        GPTConfig(ut_everypass_ntp=False, ut_detach=True)
+
+
+@pytest.mark.parametrize("ut_detach", [False, True])
+@pytest.mark.parametrize("activation_checkpointing", [False, True])
+def test_ut_detach_controls_cross_pass_gradient_dependency(
+    monkeypatch, ut_detach, activation_checkpointing
+):
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=1,
+        n_exp=1,
+        n_embd=32,
+        n_head=4,
+        total_ut_steps=2,
+        ut_everypass_ntp=True,
+        ut_detach=ut_detach,
+        activation_checkpointing=activation_checkpointing,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    ids = torch.randint(0, config.vocab_size, (2, 5))
+    pass_hidden_states = []
+    original_chunked_cross_entropy = _chunked_cross_entropy
+
+    def capture_hidden_state(hidden_states, *args, **kwargs):
+        pass_hidden_states.append(hidden_states)
+        return original_chunked_cross_entropy(hidden_states, *args, **kwargs)
+
+    monkeypatch.setattr("nanochat.gpt._chunked_cross_entropy", capture_hidden_state)
+    model(ids, targets=ids)
+
+    assert len(pass_hidden_states) == config.total_ut_steps
+    cross_pass_grad = torch.autograd.grad(
+        pass_hidden_states[-1].sum(),
+        pass_hidden_states[0],
+        allow_unused=True,
+    )[0]
+    assert (cross_pass_grad is None) is ut_detach
 
 
 @pytest.mark.parametrize("total_ut_steps", [1, 2])

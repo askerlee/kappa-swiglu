@@ -63,6 +63,7 @@ class GPTConfig:
         window_pattern: str = "SSSL",
         total_ut_steps: int = 1,
         ut_everypass_ntp: bool = True,
+        ut_detach: bool = False,
         activation_checkpointing: bool = False,
         activation_offload: bool = False,
         loss_chunk_tokens: int | None = None,
@@ -186,6 +187,9 @@ class GPTConfig:
         if self.total_ut_steps <= 0:
             raise ValueError(f"total_ut_steps must be > 0, got {total_ut_steps}")
         self.ut_everypass_ntp = bool(ut_everypass_ntp)
+        self.ut_detach = bool(ut_detach)
+        if self.ut_detach and not self.ut_everypass_ntp:
+            raise ValueError("ut_detach requires ut_everypass_ntp")
         self.activation_checkpointing = bool(activation_checkpointing)
         self.activation_offload = bool(activation_offload)
         if self.activation_checkpointing and self.activation_offload:

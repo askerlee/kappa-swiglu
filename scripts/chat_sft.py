@@ -80,6 +80,8 @@ parser.add_argument("--model-step", type=int, default=None, help="model step to 
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=None, help="override the checkpoint Universal Transformer loop count")
 parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=False,
                     help="override whether NTP loss is computed at every UT pass or only the final pass")
+parser.add_argument("--ut-detach", dest="ut_detach", type=str2bool, nargs='?', const=True, default=False,
+                    help="detach the hidden state between UT passes (truncated BPTT); requires --ut-everypass-ntp and cuts cross-pass gradient flow")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=True,
                     help="override recomputing lm_head loss chunks during backward to reduce retained vocab-logit memory")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=None,
@@ -152,6 +154,9 @@ if args.activation_checkpointing and args.activation_offload:
 if args.activation_checkpointing and args.log_grad_stats:
     print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
     args.log_grad_stats = False
+if args.ut_detach and not args.ut_everypass_ntp:
+    print0("--ut-detach requires --ut-everypass-ntp; disabling --ut-detach because intermediate passes need their own NTP loss.")
+    args.ut_detach = False
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
@@ -225,6 +230,7 @@ model, tokenizer, meta = load_model(
     step=args.model_step,
     total_ut_steps=args.total_ut_steps,
     ut_everypass_ntp=args.ut_everypass_ntp,
+    ut_detach=args.ut_detach,
     loss_recompute_backward=args.loss_recompute_backward,
     activation_checkpointing=args.activation_checkpointing,
     activation_offload=args.activation_offload,
@@ -232,6 +238,7 @@ model, tokenizer, meta = load_model(
 )
 args.total_ut_steps = model.config.total_ut_steps
 args.ut_everypass_ntp = model.config.ut_everypass_ntp
+args.ut_detach = model.config.ut_detach
 if args.total_ut_steps > 1:
     print0(f"Loops = {args.total_ut_steps}")
 loaded_checkpoint_step = int(meta.get("step", 0))

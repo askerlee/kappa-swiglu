@@ -17,6 +17,7 @@ ALL_LOOP_SCRIPTS = FRESH_MODEL_SCRIPTS + CHECKPOINT_MODEL_SCRIPTS
 EVERYPASS_NTP_SCRIPTS = FRESH_MODEL_SCRIPTS + (
     ROOT / "scripts" / "chat_sft.py",
 )
+UT_DETACH_SCRIPTS = EVERYPASS_NTP_SCRIPTS
 
 
 def _parse(path):
@@ -117,6 +118,39 @@ def test_requested_scripts_wire_ut_everypass_ntp():
                 and isinstance(keyword.value.value, ast.Name)
                 and keyword.value.value.id == "args"
                 and keyword.value.attr == "ut_everypass_ntp"
+                for keyword in call.keywords
+            )
+            for call in _find_calls(tree, target_function)
+        ), path
+
+
+def test_training_scripts_explicitly_disable_ut_detach_by_default():
+    for path in UT_DETACH_SCRIPTS:
+        tree = _parse(path)
+        argument_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and any(
+                isinstance(arg, ast.Constant) and arg.value == "--ut-detach"
+                for arg in node.args
+            )
+        ]
+        assert len(argument_calls) == 1, path
+        keywords = {keyword.arg: keyword.value for keyword in argument_calls[0].keywords}
+        assert ast.literal_eval(keywords["dest"]) == "ut_detach"
+        assert ast.literal_eval(keywords["default"]) is False
+
+        target_function = "load_model" if path.name == "chat_sft.py" else "GPTConfig"
+        assert any(
+            any(
+                keyword.arg == "ut_detach"
+                and isinstance(keyword.value, ast.Attribute)
+                and isinstance(keyword.value.value, ast.Name)
+                and keyword.value.value.id == "args"
+                and keyword.value.attr == "ut_detach"
                 for keyword in call.keywords
             )
             for call in _find_calls(tree, target_function)

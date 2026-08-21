@@ -62,6 +62,26 @@ def test_reshard_optimizer_state_dict_preserves_small_adamw_replica():
     assert loaded_state["step"] == 7
 
 
+def test_reshard_optimizer_state_dict_expands_legacy_ut_scalar_moments():
+    param = torch.nn.Parameter(torch.zeros(3, 2))
+    optimizer = make_optimizer([
+        {"kind": "adamw", "params": [param], "lr": 1e-3}
+    ])
+    saved_param_groups = [{"kind": "adamw", "params": [0], "lr": 1e-3}]
+    exp_avg = torch.tensor([0.1, 0.2])
+    exp_avg_sq = torch.tensor([0.3, 0.4])
+    shard_state_dicts = [
+        make_adamw_shard(saved_param_groups, 0, exp_avg, exp_avg_sq),
+    ]
+
+    state_dict = reshard_optimizer_state_dict(shard_state_dicts, optimizer)
+
+    loaded_state = state_dict["state"][0]
+    torch.testing.assert_close(loaded_state["exp_avg"], exp_avg.repeat(3, 1))
+    torch.testing.assert_close(loaded_state["exp_avg_sq"], exp_avg_sq.repeat(3, 1))
+    assert loaded_state["step"] == 7
+
+
 def test_reshard_optimizer_state_dict_reshards_muon_group():
     params = [torch.nn.Parameter(torch.zeros(2, 2)) for _ in range(5)]
     optimizer = make_optimizer([
@@ -389,6 +409,31 @@ def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable
         model_data["transformer.h.0.mlp.experts.kappa_bias"],
         torch.full((2, 16), fill_value),
     )
+
+
+def test_patch_missing_keys_creates_per_ut_layer_scalars():
+    config = GPTConfig(n_layer=2, total_ut_steps=3)
+    model_data = {}
+
+    _patch_missing_keys(model_data, config)
+
+    torch.testing.assert_close(model_data["resid_lambdas"], torch.ones(3, 2))
+    torch.testing.assert_close(model_data["x0_lambdas"], torch.zeros(3, 2))
+
+
+def test_patch_missing_keys_expands_legacy_layer_scalars_across_ut_steps():
+    config = GPTConfig(n_layer=2, total_ut_steps=3)
+    resid_lambdas = torch.tensor([0.8, 0.9])
+    x0_lambdas = torch.tensor([0.1, 0.2])
+    model_data = {
+        "resid_lambdas": resid_lambdas,
+        "x0_lambdas": x0_lambdas,
+    }
+
+    _patch_missing_keys(model_data, config)
+
+    torch.testing.assert_close(model_data["resid_lambdas"], resid_lambdas.repeat(3, 1))
+    torch.testing.assert_close(model_data["x0_lambdas"], x0_lambdas.repeat(3, 1))
 
 
 def test_patch_missing_keys_converts_full_kappa_bias_to_rank1_factors():

@@ -244,6 +244,8 @@ parser.add_argument("--depth", type=int, default=8, help="depth of the Transform
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=1, help="number of Universal Transformer passes through the full layer stack")
 parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool, nargs='?', const=True, default=True,
                     help="compute and average NTP loss at every UT pass; disable to supervise only the final pass")
+parser.add_argument("--ut-detach", dest="ut_detach", type=str2bool, nargs='?', const=True, default=False,
+                    help="detach the hidden state between UT passes (truncated BPTT); requires --ut-everypass-ntp and cuts cross-pass gradient flow")
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of MoE layers to instantiate from --moe-start-layer onward (-1 = all eligible layers)")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
@@ -410,6 +412,9 @@ if args.activation_checkpointing and args.activation_offload:
 if args.activation_checkpointing and args.log_grad_stats:
     print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
     args.log_grad_stats = False
+if args.ut_detach and not args.ut_everypass_ntp:
+    print0("--ut-detach requires --ut-everypass-ntp; disabling --ut-detach because intermediate passes need gradient flow from the final pass.")
+    args.ut_detach = False
 
 #if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
 #    args.aux_loss_weight = AUX_LOSS_WEIGHT_DEFAULT / 2
@@ -628,6 +633,7 @@ def build_model_meta(depth):
         sequence_len=args.max_seq_len, vocab_size=vocab_size,
         n_layer=depth, total_ut_steps=args.total_ut_steps,
         ut_everypass_ntp=args.ut_everypass_ntp,
+        ut_detach=args.ut_detach,
         moe_start_layer=args.moe_start_layer,
         num_moe_layers=args.num_moe_layers,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,
