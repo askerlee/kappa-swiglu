@@ -187,43 +187,35 @@ def _kappa_bias_enabled_for_layer(model_config, layer_idx):
     )
 
 
-def _resize_ut_layer_scalars(value, target_shape, name):
-    if value.ndim == 1:
-        if value.shape[0] != target_shape[1]:
-            raise ValueError(
-                f"Legacy {name} shape {tuple(value.shape)} does not match n_layer={target_shape[1]}"
-            )
-        value = value.unsqueeze(0)
-    if value.ndim != 2 or value.shape[1] != target_shape[1]:
-        raise ValueError(
-            f"{name} shape {tuple(value.shape)} is incompatible with target shape {target_shape}"
-        )
-    if value.shape[0] >= target_shape[0]:
-        return value[:target_shape[0]].clone()
-    extra_rows = value[-1:].expand(target_shape[0] - value.shape[0], -1)
-    return torch.cat((value, extra_rows), dim=0).clone()
+def _collapse_ut_layer_scalars(value, n_layer, name):
+    if value.ndim == 1 and value.shape[0] == n_layer:
+        return value
+    if value.ndim == 2 and value.shape[1] == n_layer:
+        log0(f"Collapsing pass-specific {name} to shared per-layer values")
+        return value.mean(dim=0)
+    raise ValueError(
+        f"{name} shape {tuple(value.shape)} is incompatible with n_layer={n_layer}"
+    )
 
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
-    total_ut_steps = int(getattr(model_config, "total_ut_steps", 1) or 1)
-    scalar_shape = (total_ut_steps, n_layer)
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
-        model_data["resid_lambdas"] = torch.ones(scalar_shape)
+        model_data["resid_lambdas"] = torch.ones(n_layer)
         log0(f"Patching missing resid_lambdas in model data to 1.0")
     else:
-        model_data["resid_lambdas"] = _resize_ut_layer_scalars(
-            model_data["resid_lambdas"], scalar_shape, "resid_lambdas"
+        model_data["resid_lambdas"] = _collapse_ut_layer_scalars(
+            model_data["resid_lambdas"], n_layer, "resid_lambdas"
         )
     # x0_lambdas defaults to 0.0 (disabled)
     if "x0_lambdas" not in model_data:
-        model_data["x0_lambdas"] = torch.zeros(scalar_shape)
+        model_data["x0_lambdas"] = torch.zeros(n_layer)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
     else:
-        model_data["x0_lambdas"] = _resize_ut_layer_scalars(
-            model_data["x0_lambdas"], scalar_shape, "x0_lambdas"
+        model_data["x0_lambdas"] = _collapse_ut_layer_scalars(
+            model_data["x0_lambdas"], n_layer, "x0_lambdas"
         )
     if model_config.n_exp > 1:
         for layer_idx in get_moe_layer_indices(model_config):

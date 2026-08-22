@@ -2316,13 +2316,12 @@ class GPT(nn.Module):
         self._configure_kappa_bias_sharing()
 
         self.lm_head = nn.Linear(config.n_embd, padded_vocab_size, bias=False)
-        # Per-virtual-layer learnable scalars (inspired by modded-nanogpt)
+        # Per-layer learnable scalars (inspired by modded-nanogpt)
         # resid_lambdas: scales the residual stream at each layer (init 1.0 = neutral)
-        # x0_lambdas: blends the normalized token embeddings back in at each virtual layer
+        # x0_lambdas: blends the normalized token embeddings back in at each layer
         # Separate parameters so they can have different optimizer treatment
-        scalar_shape = (self.total_ut_steps, config.n_layer)
-        self.resid_lambdas = nn.Parameter(torch.ones(scalar_shape))   # fake init, real init in init_weights()
-        self.x0_lambdas = nn.Parameter(torch.zeros(scalar_shape))     # fake init, real init in init_weights()
+        self.resid_lambdas = nn.Parameter(torch.ones(config.n_layer))   # fake init, real init in init_weights()
+        self.x0_lambdas = nn.Parameter(torch.zeros(config.n_layer))     # fake init, real init in init_weights()
         # Value embeddings (ResFormer-style): alternating layers, last layer always included
         head_dim = config.n_embd // config.n_head
         kv_dim = config.n_kv_head * head_dim
@@ -2894,8 +2893,8 @@ class GPT(nn.Module):
             )
             for i, block in enumerate(self.transformer.h):
                 x = (
-                    self.resid_lambdas[current_ut, i] * x
-                    + self.x0_lambdas[current_ut, i] * token_x0
+                    self.resid_lambdas[i] * x
+                    + self.x0_lambdas[i] * token_x0
                 )
                 if str(i) in self.value_embeds:
                     ve = self.value_embeds[str(i)](idx)
