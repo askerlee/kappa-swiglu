@@ -51,9 +51,9 @@ def calculate_statistics(value: torch.Tensor) -> dict[str, float]:
     }
 
 
-def checkpoint_statistics(checkpoint_path: Path) -> dict[str, dict[str, float]]:
+def load_lambdas(checkpoint_path: Path) -> dict[str, torch.Tensor]:
     state_dict = load_state_dict(checkpoint_path)
-    statistics = {}
+    lambdas = {}
     for key in LAMBDA_KEYS:
         if key not in state_dict:
             raise KeyError(f"Checkpoint {checkpoint_path} is missing {key!r}")
@@ -63,11 +63,22 @@ def checkpoint_statistics(checkpoint_path: Path) -> dict[str, dict[str, float]]:
                 f"Checkpoint {checkpoint_path} entry {key!r} is not a tensor; "
                 f"got {type(value).__name__}"
             )
-        statistics[key] = calculate_statistics(value)
-    return statistics
+        lambdas[key] = value
+    return lambdas
 
 
-def print_statistics(checkpoint_path: Path, statistics: Mapping[str, Mapping[str, float]]) -> None:
+def checkpoint_statistics(checkpoint_path: Path) -> dict[str, dict[str, float]]:
+    return {
+        key: calculate_statistics(value)
+        for key, value in load_lambdas(checkpoint_path).items()
+    }
+
+
+def print_statistics(
+    checkpoint_path: Path,
+    statistics: Mapping[str, Mapping[str, float]],
+    lambdas: Mapping[str, torch.Tensor],
+) -> None:
     print(f"Checkpoint: {checkpoint_path}")
     for key in LAMBDA_KEYS:
         stats = statistics[key]
@@ -76,6 +87,8 @@ def print_statistics(checkpoint_path: Path, statistics: Mapping[str, Mapping[str
             f"max={stats['max']:.8g} min={stats['min']:.8g} "
             f"abs_max={stats['abs_max']:.8g}"
         )
+    print(f"resid {lambdas['resid_lambdas'].detach().float().tolist()}")
+    print(f"x0    {lambdas['x0_lambdas'].detach().float().tolist()}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,7 +109,12 @@ def main() -> None:
     for index, checkpoint_path in enumerate(args.checkpoints):
         if index:
             print()
-        print_statistics(checkpoint_path, checkpoint_statistics(checkpoint_path))
+        lambdas = load_lambdas(checkpoint_path)
+        statistics = {
+            key: calculate_statistics(value)
+            for key, value in lambdas.items()
+        }
+        print_statistics(checkpoint_path, statistics, lambdas)
 
 
 if __name__ == "__main__":
