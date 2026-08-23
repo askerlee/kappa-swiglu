@@ -2713,7 +2713,7 @@ class GPT(nn.Module):
 
     def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02,
                         weight_decay=0.0,
-                        adam_betas=(0.8, 0.95), scalar_lr=0.5, muon_match_rms_adamw=False,
+                        adam_betas=(0.8, 0.95), scalar_lr=0.05, muon_match_rms_adamw=False,
                         matrix_optimizer='aurora',
                         kappa_lr_final_scale=1.0,
                         kappa_lr_max_scale=1.0,
@@ -2821,10 +2821,10 @@ class GPT(nn.Module):
             )
         )
         param_groups.append(
-            dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+            dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.1, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
         param_groups.append(
-            dict(kind='adamw', params=x0_params, lr=scalar_lr * 0.1, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
+            dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
         )  # higher beta1 for x0
         if matrix_optimizer not in ('muon', 'aurora'):
             raise ValueError(f"Unsupported matrix_optimizer: {matrix_optimizer}")

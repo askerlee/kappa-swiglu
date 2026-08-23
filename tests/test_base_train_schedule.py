@@ -37,6 +37,14 @@ def test_base_train_dtype_controls_autocast_parameter_and_optimizer_storage():
         assert cast_index < fp8_guard_index < convert_index < optimizer_index
 
 
+def test_base_train_scalar_lr_defaults_to_x0_learning_rate():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        source = script.read_text()
+
+        assert 'parser.add_argument("--scalar-lr", type=float, default=0.05' in source
+        assert "scalar_lr=args.scalar_lr * batch_lr_scale" in source
+
+
 def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():
     auto_args = SimpleNamespace(loss_chunk_tokens=-1, compile=True)
     explicit_args = SimpleNamespace(loss_chunk_tokens=256, compile=True)

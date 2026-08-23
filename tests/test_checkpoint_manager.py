@@ -436,6 +436,25 @@ def test_patch_missing_keys_expands_legacy_layer_scalars_across_ut_steps():
     torch.testing.assert_close(model_data["x0_lambdas"], x0_lambdas.repeat(3, 1))
 
 
+def test_patch_missing_keys_extends_per_ut_layer_scalars_with_last_step():
+    config = GPTConfig(n_layer=2, total_ut_steps=3)
+    resid_lambdas = torch.tensor([[0.7, 0.8], [0.9, 1.0]])
+    x0_lambdas = torch.tensor([[0.0, 0.1], [0.2, 0.3]])
+    model_data = {
+        "resid_lambdas": resid_lambdas,
+        "x0_lambdas": x0_lambdas,
+    }
+
+    _patch_missing_keys(model_data, config)
+
+    torch.testing.assert_close(
+        model_data["resid_lambdas"], torch.cat((resid_lambdas, resid_lambdas[-1:]))
+    )
+    torch.testing.assert_close(
+        model_data["x0_lambdas"], torch.cat((x0_lambdas, x0_lambdas[-1:]))
+    )
+
+
 def test_patch_missing_keys_converts_full_kappa_bias_to_rank1_factors():
     config = GPTConfig(
         n_layer=1,
