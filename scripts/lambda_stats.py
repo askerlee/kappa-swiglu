@@ -74,6 +74,12 @@ def checkpoint_statistics(checkpoint_path: Path) -> dict[str, dict[str, float]]:
     }
 
 
+def format_values(values) -> str:
+    if isinstance(values, list):
+        return "[" + ", ".join(format_values(value) for value in values) + "]"
+    return f"{values:.2f}"
+
+
 def print_statistics(
     checkpoint_path: Path,
     statistics: Mapping[str, Mapping[str, float]],
@@ -83,12 +89,12 @@ def print_statistics(
     for key in LAMBDA_KEYS:
         stats = statistics[key]
         print(
-            f"  {key}: mean={stats['mean']:.8g} std={stats['std']:.8g} "
-            f"max={stats['max']:.8g} min={stats['min']:.8g} "
-            f"abs_max={stats['abs_max']:.8g}"
+            f"  {key}: mean={stats['mean']:.2f} std={stats['std']:.2f} "
+            f"max={stats['max']:.2f} min={stats['min']:.2f} "
+            f"abs_max={stats['abs_max']:.2f}"
         )
-    print(f"resid {lambdas['resid_lambdas'].detach().float().tolist()}")
-    print(f"x0    {lambdas['x0_lambdas'].detach().float().tolist()}")
+    print(f"resid {format_values(lambdas['resid_lambdas'].detach().float().tolist())}")
+    print(f"x0    {format_values(lambdas['x0_lambdas'].detach().float().tolist())}")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -58,6 +58,6 @@ def test_checkpoint_statistics_and_multi_checkpoint_cli(tmp_path: Path):
     assert result.stdout.count("Checkpoint:") == 2
     assert result.stdout.count("resid_lambdas:") == 2
     assert result.stdout.count("x0_lambdas:") == 2
-    assert "mean=0.66666667 std=2.4944383 max=4 min=-2 abs_max=4" in result.stdout
-    assert "resid [-2.0, 0.0, 4.0]" in result.stdout
-    assert "x0    [-1.0, 1.0]" in result.stdout
+    assert "mean=0.67 std=2.49 max=4.00 min=-2.00 abs_max=4.00" in result.stdout
+    assert "resid [-2.00, 0.00, 4.00]" in result.stdout
+    assert "x0    [-1.00, 1.00]" in result.stdout
