@@ -2823,7 +2823,7 @@ class GPT(nn.Module):
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0)
         )
         param_groups.append(
-            dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
+            dict(kind='adamw', params=x0_params, lr=scalar_lr * 0.1, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
         )  # higher beta1 for x0
         if matrix_optimizer not in ('muon', 'aurora'):
             raise ValueError(f"Unsupported matrix_optimizer: {matrix_optimizer}")
