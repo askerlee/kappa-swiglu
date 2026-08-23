@@ -411,17 +411,17 @@ def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable
     )
 
 
-def test_patch_missing_keys_creates_shared_layer_scalars():
+def test_patch_missing_keys_creates_per_ut_layer_scalars():
     config = GPTConfig(n_layer=2, total_ut_steps=3)
     model_data = {}
 
     _patch_missing_keys(model_data, config)
 
-    torch.testing.assert_close(model_data["resid_lambdas"], torch.ones(2))
-    torch.testing.assert_close(model_data["x0_lambdas"], torch.zeros(2))
+    torch.testing.assert_close(model_data["resid_lambdas"], torch.ones(3, 2))
+    torch.testing.assert_close(model_data["x0_lambdas"], torch.zeros(3, 2))
 
 
-def test_patch_missing_keys_preserves_shared_layer_scalars():
+def test_patch_missing_keys_expands_legacy_layer_scalars_across_ut_steps():
     config = GPTConfig(n_layer=2, total_ut_steps=3)
     resid_lambdas = torch.tensor([0.8, 0.9])
     x0_lambdas = torch.tensor([0.1, 0.2])
@@ -432,21 +432,8 @@ def test_patch_missing_keys_preserves_shared_layer_scalars():
 
     _patch_missing_keys(model_data, config)
 
-    torch.testing.assert_close(model_data["resid_lambdas"], resid_lambdas)
-    torch.testing.assert_close(model_data["x0_lambdas"], x0_lambdas)
-
-
-def test_patch_missing_keys_collapses_per_ut_layer_scalars():
-    config = GPTConfig(n_layer=2, total_ut_steps=3)
-    model_data = {
-        "resid_lambdas": torch.tensor([[0.7, 0.8], [0.8, 0.9], [0.9, 1.0]]),
-        "x0_lambdas": torch.tensor([[0.0, 0.1], [0.1, 0.2], [0.2, 0.3]]),
-    }
-
-    _patch_missing_keys(model_data, config)
-
-    torch.testing.assert_close(model_data["resid_lambdas"], torch.tensor([0.8, 0.9]))
-    torch.testing.assert_close(model_data["x0_lambdas"], torch.tensor([0.1, 0.2]))
+    torch.testing.assert_close(model_data["resid_lambdas"], resid_lambdas.repeat(3, 1))
+    torch.testing.assert_close(model_data["x0_lambdas"], x0_lambdas.repeat(3, 1))
 
 
 def test_patch_missing_keys_converts_full_kappa_bias_to_rank1_factors():

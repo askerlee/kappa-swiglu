@@ -456,7 +456,7 @@ def test_gpt_total_ut_steps_populates_distinct_kv_cache_layers():
 
 
 @pytest.mark.parametrize("activation_checkpointing", [False, True])
-def test_gpt_total_ut_steps_inject_token_embedding_only_after_first_layer_of_first_pass(
+def test_gpt_total_ut_steps_use_distinct_scalars_with_token_embedding_anchor(
     activation_checkpointing,
 ):
     torch.manual_seed(0)
@@ -477,7 +477,7 @@ def test_gpt_total_ut_steps_inject_token_embedding_only_after_first_layer_of_fir
     model.init_weights()
     with torch.no_grad():
         model.resid_lambdas.zero_()
-        model.x0_lambdas.copy_(torch.tensor([1.0, 2.0]))
+        model.x0_lambdas.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
 
     block_inputs = [[], []]
     hooks = []
@@ -497,13 +497,13 @@ def test_gpt_total_ut_steps_inject_token_embedding_only_after_first_layer_of_fir
         for hook in hooks:
             hook.remove()
 
-    assert model.resid_lambdas.shape == (2,)
-    assert model.x0_lambdas.shape == (2,)
+    assert model.resid_lambdas.shape == (2, 2)
+    assert model.x0_lambdas.shape == (2, 2)
     assert [len(inputs) for inputs in block_inputs] == [2, 2]
-    torch.testing.assert_close(block_inputs[0][0], torch.zeros_like(token_x0))
+    torch.testing.assert_close(block_inputs[0][0], token_x0)
     torch.testing.assert_close(block_inputs[1][0], 2.0 * token_x0)
-    torch.testing.assert_close(block_inputs[0][1], torch.zeros_like(token_x0))
-    torch.testing.assert_close(block_inputs[1][1], torch.zeros_like(token_x0))
+    torch.testing.assert_close(block_inputs[0][1], 3.0 * token_x0)
+    torch.testing.assert_close(block_inputs[1][1], 4.0 * token_x0)
 
 
 def test_gpt_value_embedding_inputs_have_consistent_grad_state():

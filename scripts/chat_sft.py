@@ -101,6 +101,9 @@ parser.add_argument("--total-batch-size", type=int, default=524288, help="total 
 # Optimization
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
+# Since the SFT dataset is much smaller, we use a smaller learning rate for the residual and input-embedding scalars, 
+# but the matrix parameters have the same LR.
+parser.add_argument("--scalar-lr", type=float, default=0.1, help="learning rate for residual and input-embedding scalars (Adam)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scaling factor for all types of learning rates, relative to the LR used during base model pretraining")
@@ -358,6 +361,7 @@ if not args.eval_only:
     optimizer = model.setup_optimizer(
         unembedding_lr=args.unembedding_lr,
         embedding_lr=args.embedding_lr,
+        scalar_lr=args.scalar_lr,
         matrix_lr=args.matrix_lr,
         matrix_optimizer=args.matrix_optimizer,
         weight_decay=weight_decay_scaled,

@@ -42,6 +42,13 @@ def test_chat_sft_casts_parameters_before_compile_and_optimizer_setup():
     assert cast_index < compile_index < optimizer_index
 
 
+def test_chat_sft_scalar_lr_defaults_to_005_and_is_wired_to_optimizer():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--scalar-lr", type=float, default=0.05' in source
+    assert "scalar_lr=args.scalar_lr" in source
+
+
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
     get_interval_throughput = load_function_from_script("get_interval_throughput")
 
