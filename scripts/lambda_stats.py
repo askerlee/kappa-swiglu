@@ -1,4 +1,4 @@
-"""Print residual-lambda statistics from one or more model checkpoints.
+"""Print lambda statistics from one or more model checkpoints.
 
 Example:
     python scripts/lambda_stats.py path/to/model_000100.pt path/to/model_000200.pt
@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 
 
-LAMBDA_KEYS = ("resid_lambdas", "x0_lambdas")
+LAMBDA_KEYS = ("resid_lambdas", "x0_lambdas", "ut_source_lambdas")
 
 
 def load_state_dict(checkpoint_path: Path) -> Mapping:
@@ -95,11 +95,12 @@ def print_statistics(
         )
     print(f"resid {format_values(lambdas['resid_lambdas'].detach().float().tolist())}")
     print(f"x0    {format_values(lambdas['x0_lambdas'].detach().float().tolist())}")
+    print(f"source {format_values(lambdas['ut_source_lambdas'].detach().float().tolist())}")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Calculate resid_lambdas and x0_lambdas statistics in model checkpoints"
+        description="Calculate scalar-mixing lambda statistics in model checkpoints"
     )
     parser.add_argument(
         "checkpoints",

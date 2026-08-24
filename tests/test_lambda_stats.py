@@ -13,12 +13,18 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
-def write_checkpoint(path: Path, resid_lambdas: list[float], x0_lambdas: list[float]) -> None:
+def write_checkpoint(
+    path: Path,
+    resid_lambdas: list[float],
+    x0_lambdas: list[float],
+    ut_source_lambdas: list[float],
+) -> None:
     torch.save(
         {
             "model": {
                 "resid_lambdas": torch.tensor(resid_lambdas),
                 "x0_lambdas": torch.tensor(x0_lambdas),
+                "ut_source_lambdas": torch.tensor(ut_source_lambdas),
             }
         },
         path,
@@ -28,8 +34,8 @@ def write_checkpoint(path: Path, resid_lambdas: list[float], x0_lambdas: list[fl
 def test_checkpoint_statistics_and_multi_checkpoint_cli(tmp_path: Path):
     first_path = tmp_path / "first.pt"
     second_path = tmp_path / "second.pt"
-    write_checkpoint(first_path, [-2.0, 0.0, 4.0], [-1.0, 1.0])
-    write_checkpoint(second_path, [1.0, 1.0], [0.0, 3.0])
+    write_checkpoint(first_path, [-2.0, 0.0, 4.0], [-1.0, 1.0], [0.0, 0.5, 1.0])
+    write_checkpoint(second_path, [1.0, 1.0], [0.0, 3.0], [-0.5, 0.5])
 
     statistics = MODULE.checkpoint_statistics(first_path)
 
@@ -47,6 +53,13 @@ def test_checkpoint_statistics_and_multi_checkpoint_cli(tmp_path: Path):
         "min": -1.0,
         "abs_max": 1.0,
     }
+    assert statistics["ut_source_lambdas"] == {
+        "mean": 0.5,
+        "std": (1 / 6) ** 0.5,
+        "max": 1.0,
+        "min": 0.0,
+        "abs_max": 1.0,
+    }
 
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), str(first_path), str(second_path)],
@@ -58,6 +71,8 @@ def test_checkpoint_statistics_and_multi_checkpoint_cli(tmp_path: Path):
     assert result.stdout.count("Checkpoint:") == 2
     assert result.stdout.count("resid_lambdas:") == 2
     assert result.stdout.count("x0_lambdas:") == 2
+    assert result.stdout.count("ut_source_lambdas:") == 2
     assert "mean=0.67 std=2.49 max=4.00 min=-2.00 abs_max=4.00" in result.stdout
     assert "resid [-2.00, 0.00, 4.00]" in result.stdout
     assert "x0    [-1.00, 1.00]" in result.stdout
+    assert "source [0.00, 0.50, 1.00]" in result.stdout
