@@ -2286,6 +2286,8 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
         self.total_ut_steps = int(getattr(config, 'total_ut_steps', 1) or 1)
+        self.ut_source = int(getattr(config, 'ut_source', -1)) % config.n_layer
+        self.ut_destination = int(getattr(config, 'ut_destination', 0)) % config.n_layer
         # Compute per-layer window sizes for sliding window attention
         # window_size is (left, right) tuple: (-1, 0) for full context, (N, 0) for sliding window
         self.window_sizes = self._compute_window_sizes(config)
@@ -2323,6 +2325,7 @@ class GPT(nn.Module):
         scalar_shape = (self.total_ut_steps, config.n_layer)
         self.resid_lambdas = nn.Parameter(torch.ones(scalar_shape))   # fake init, real init in init_weights()
         self.x0_lambdas = nn.Parameter(torch.zeros(scalar_shape))     # fake init, real init in init_weights()
+        self.ut_source_lambdas = nn.Parameter(torch.zeros(scalar_shape))
         # Value embeddings (ResFormer-style): alternating layers, last layer always included
         head_dim = config.n_embd // config.n_head
         kv_dim = config.n_kv_head * head_dim
@@ -2464,6 +2467,8 @@ class GPT(nn.Module):
                     state_dict[name] = param.clone()
                 elif 'kappa_scale' in name and name not in state_dict:
                     state_dict[name] = param.clone()
+                elif name == 'ut_source_lambdas' and name not in state_dict:
+                    state_dict[name] = param.clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         if self._should_refresh_kappa_bias_references():
             self.refresh_kappa_bias_references()
@@ -2547,6 +2552,8 @@ class GPT(nn.Module):
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
         self.x0_lambdas.fill_(0.0)      # 0.0 => skip connection to input is disabled at init
+        self.ut_source_lambdas.zero_()
+        self.ut_source_lambdas[1:, self.ut_destination] = 1.0
 
         # Rotary embeddings
         head_dim = self.config.n_embd // self.config.n_head
@@ -2627,7 +2634,8 @@ class GPT(nn.Module):
         # Exclude non-matmul params: embeddings and per-layer scalars
         value_embeds_numel = sum(ve.weight.numel() for ve in self.value_embeds.values())
         nparams_exclude = (self.transformer.wte.weight.numel() + value_embeds_numel +
-                          self.resid_lambdas.numel() + self.x0_lambdas.numel())
+                          self.resid_lambdas.numel() + self.x0_lambdas.numel() +
+                          self.ut_source_lambdas.numel())
         h, q, t = self.config.n_head, self.config.n_embd // self.config.n_head, self.config.sequence_len
         # Sum attention FLOPs per layer, accounting for sliding window
         attn_flops = 0
@@ -2655,7 +2663,11 @@ class GPT(nn.Module):
         value_embeds = sum(p.numel() for p in self.value_embeds.parameters())
         lm_head = sum(p.numel() for p in self.lm_head.parameters())
         transformer_matrices = sum(p.numel() for p in self.transformer.h.parameters())
-        scalars = self.resid_lambdas.numel() + self.x0_lambdas.numel()
+        scalars = (
+            self.resid_lambdas.numel()
+            + self.x0_lambdas.numel()
+            + self.ut_source_lambdas.numel()
+        )
         total = wte + value_embeds + lm_head + transformer_matrices + scalars
         assert total == sum(p.numel() for p in self.parameters()), "Parameter count mismatch"
         return {
@@ -2775,6 +2787,7 @@ class GPT(nn.Module):
             append_param(lm_head_params, param)
         resid_params = []
         append_param(resid_params, self.resid_lambdas)
+        append_param(resid_params, self.ut_source_lambdas)
         x0_params = []
         append_param(x0_params, self.x0_lambdas)
         assert len(list(self.parameters())) == (
@@ -2885,18 +2898,25 @@ class GPT(nn.Module):
         ve_placeholder = None
         last_block_idx = len(self.transformer.h) - 1
 
-        def run_ut_step(x, token_x0, current_ut, capture_state):
+        def run_ut_step(x, token_x0, previous_ut_source, current_ut, capture_state):
             nonlocal ve_placeholder
             loss_accum = (
                 _UTLossAccum(x, len(self.transformer.h), self.config.n_exp)
                 if capture_state
                 else None
             )
+            next_ut_source = None
             for i, block in enumerate(self.transformer.h):
                 x = (
                     self.resid_lambdas[current_ut, i] * x
                     + self.x0_lambdas[current_ut, i] * token_x0
                 )
+                if current_ut > 0 and i >= self.ut_destination:
+                    x = (
+                        x
+                        + self.ut_source_lambdas[current_ut, i]
+                        * previous_ut_source
+                    )
                 if str(i) in self.value_embeds:
                     ve = self.value_embeds[str(i)](idx)
                 else:
@@ -2925,10 +2945,13 @@ class GPT(nn.Module):
                     loss_accum=loss_accum,
                     router_layer_idx=torch.as_tensor(i, device=x.device),
                 )
+                if i == self.ut_source:
+                    next_ut_source = x
             x = norm(x)
+            assert next_ut_source is not None
             if loss_accum is None:
-                return x
-            return (x, *loss_accum.as_tuple())
+                return x, next_ut_source
+            return (x, next_ut_source, *loss_accum.as_tuple())
 
         use_activation_checkpointing = (
             bool(getattr(self.config, 'activation_checkpointing', False))
@@ -2957,18 +2980,21 @@ class GPT(nn.Module):
             else nullcontext()
         )
         with activation_context:
+            ut_source_features = x
             for current_ut in range(self.total_ut_steps):
                 if use_activation_checkpointing:
                     step_outputs = checkpoint(
                         run_ut_step,
                         x,
                         token_x0,
+                        ut_source_features,
                         current_ut,
                         True,
                         use_reentrant=False,
                     )
                     x = step_outputs[0]
-                    step_losses = step_outputs[1:1 + len(_UT_LOSS_NAMES)]
+                    ut_source_features = step_outputs[1]
+                    step_losses = step_outputs[2:2 + len(_UT_LOSS_NAMES)]
                     step_router_counts = step_outputs[-2]
                     checkpoint_selected_scores.append(step_outputs[-1])
                     if checkpoint_loss_totals is None:
@@ -2980,7 +3006,9 @@ class GPT(nn.Module):
                         ]
                         checkpoint_router_counts = checkpoint_router_counts + step_router_counts
                 else:
-                    x = run_ut_step(x, token_x0, current_ut, False)
+                    x, ut_source_features = run_ut_step(
+                        x, token_x0, ut_source_features, current_ut, False
+                    )
 
                 if targets is not None and (
                     self.config.ut_everypass_ntp
@@ -2994,6 +3022,7 @@ class GPT(nn.Module):
                 # not by itself make activation memory independent of loop count.
                 if self.config.ut_detach and current_ut < self.total_ut_steps - 1:
                     x = x.detach()
+                    ut_source_features = ut_source_features.detach()
 
         ntp_loss_total = None
         if targets is not None:

@@ -226,6 +226,10 @@ parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool
                     help="compute and average NTP loss at every UT pass; disable to supervise only the final pass")
 parser.add_argument("--ut-detach", dest="ut_detach", type=str2bool, nargs='?', const=True, default=False,
                     help="detach the hidden state between UT passes (truncated BPTT); requires --ut-everypass-ntp and cuts cross-pass gradient flow")
+parser.add_argument("--ut-source", type=int, default=4,
+                    help="source layer whose output is injected into the next UT pass (supports Python negative indices)")
+parser.add_argument("--ut-destination", type=int, default=-4,
+                    help="destination layer that receives the prior pass source features (supports Python negative indices)")
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of MoE layers to instantiate from --moe-start-layer onward (-1 = all eligible layers)")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
@@ -603,6 +607,8 @@ def build_model_meta(depth):
         n_layer=depth, total_ut_steps=args.total_ut_steps,
         ut_everypass_ntp=args.ut_everypass_ntp,
         ut_detach=args.ut_detach,
+        ut_source=args.ut_source,
+        ut_destination=args.ut_destination,
         moe_start_layer=args.moe_start_layer,
         num_moe_layers=args.num_moe_layers,
         n_exp=args.n_exp, moe_top_k=args.moe_top_k,

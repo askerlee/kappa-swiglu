@@ -419,6 +419,10 @@ def test_patch_missing_keys_creates_per_ut_layer_scalars():
 
     torch.testing.assert_close(model_data["resid_lambdas"], torch.ones(3, 2))
     torch.testing.assert_close(model_data["x0_lambdas"], torch.zeros(3, 2))
+    torch.testing.assert_close(
+        model_data["ut_source_lambdas"],
+        torch.tensor([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+    )
 
 
 def test_patch_missing_keys_expands_legacy_layer_scalars_across_ut_steps():
@@ -452,6 +456,22 @@ def test_patch_missing_keys_extends_per_ut_layer_scalars_with_last_step():
     )
     torch.testing.assert_close(
         model_data["x0_lambdas"], torch.cat((x0_lambdas, x0_lambdas[-1:]))
+    )
+
+
+def test_patch_missing_keys_extends_ut_source_lambdas_with_last_step():
+    config = GPTConfig(n_layer=3, total_ut_steps=3, ut_destination=1)
+    ut_source_lambdas = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [0.0, 0.8, 0.2],
+    ])
+    model_data = {"ut_source_lambdas": ut_source_lambdas}
+
+    _patch_missing_keys(model_data, config)
+
+    torch.testing.assert_close(
+        model_data["ut_source_lambdas"],
+        torch.cat((ut_source_lambdas, ut_source_lambdas[-1:])),
     )
 
 

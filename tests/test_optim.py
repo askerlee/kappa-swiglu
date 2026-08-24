@@ -476,7 +476,7 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
 
 
-def test_setup_optimizer_scalar_lr_is_x0_lr_and_resid_uses_one_tenth():
+def test_setup_optimizer_scalar_lr_is_x0_lr_and_residual_scalars_use_one_tenth():
     config = GPTConfig(
         n_layer=2,
         n_exp=1,
@@ -495,7 +495,12 @@ def test_setup_optimizer_scalar_lr_is_x0_lr_and_resid_uses_one_tenth():
         group for group in optimizer.param_groups
         if any(param is model.x0_lambdas for param in group['params'])
     )
+    source_group = next(
+        group for group in optimizer.param_groups
+        if any(param is model.ut_source_lambdas for param in group['params'])
+    )
     assert resid_group['lr'] == pytest.approx(0.005)
+    assert source_group is resid_group
     assert x0_group['lr'] == pytest.approx(0.05)
 
 

@@ -478,6 +478,7 @@ def test_gpt_total_ut_steps_use_distinct_scalars_with_token_embedding_anchor(
     with torch.no_grad():
         model.resid_lambdas.zero_()
         model.x0_lambdas.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+        model.ut_source_lambdas.zero_()
 
     block_inputs = [[], []]
     hooks = []
@@ -504,6 +505,123 @@ def test_gpt_total_ut_steps_use_distinct_scalars_with_token_embedding_anchor(
     torch.testing.assert_close(block_inputs[1][0], 2.0 * token_x0)
     torch.testing.assert_close(block_inputs[0][1], 3.0 * token_x0)
     torch.testing.assert_close(block_inputs[1][1], 4.0 * token_x0)
+
+
+def test_gpt_ut_mixes_previous_pass_source_at_and_after_destination():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=4,
+        n_exp=1,
+        n_embd=8,
+        n_head=2,
+        total_ut_steps=2,
+        ut_source=1,
+        ut_destination=-2,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        model.resid_lambdas.fill_(1.0)
+        model.x0_lambdas.zero_()
+        model.ut_source_lambdas[1, 3] = 0.5
+
+    for layer_idx, block in enumerate(model.transformer.h):
+        offset = float(layer_idx + 1)
+        block.forward = lambda x, *args, offset=offset, **kwargs: x + offset
+
+    destination_inputs = []
+    downstream_inputs = []
+    source_outputs = []
+    source_hook = model.transformer.h[1].register_forward_hook(
+        lambda _module, _args, output: source_outputs.append(output.detach().clone())
+    )
+    destination_hook = model.transformer.h[2].register_forward_pre_hook(
+        lambda _module, args: destination_inputs.append(args[0].detach().clone())
+    )
+    downstream_hook = model.transformer.h[3].register_forward_pre_hook(
+        lambda _module, args: downstream_inputs.append(args[0].detach().clone())
+    )
+    try:
+        ids = torch.randint(0, config.vocab_size, (1, 3))
+        model(ids)
+    finally:
+        source_hook.remove()
+        destination_hook.remove()
+        downstream_hook.remove()
+
+    assert len(source_outputs) == 2
+    assert len(destination_inputs) == 2
+    assert len(downstream_inputs) == 2
+    assert model.ut_source_lambdas.shape == (2, 4)
+    torch.testing.assert_close(
+        model.ut_source_lambdas[1],
+        torch.tensor([0.0, 0.0, 1.0, 0.5]),
+    )
+    torch.testing.assert_close(
+        destination_inputs[1],
+        source_outputs[1] + source_outputs[0],
+    )
+    torch.testing.assert_close(
+        downstream_inputs[1],
+        destination_inputs[1] + 3.0 + 0.5 * source_outputs[0],
+    )
+
+
+def test_gpt_ut_mixes_last_layer_activation_into_first_layer():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=2,
+        n_exp=1,
+        n_embd=8,
+        n_head=2,
+        total_ut_steps=2,
+        ut_source=-1,
+        ut_destination=0,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        model.resid_lambdas.fill_(1.0)
+        model.x0_lambdas.zero_()
+
+    for layer_idx, block in enumerate(model.transformer.h):
+        offset = float(layer_idx + 1)
+        block.forward = lambda x, *args, offset=offset, **kwargs: x + offset
+
+    first_layer_inputs = []
+    final_layer_outputs = []
+    first_hook = model.transformer.h[0].register_forward_pre_hook(
+        lambda _module, args: first_layer_inputs.append(args[0].detach().clone())
+    )
+    final_hook = model.transformer.h[-1].register_forward_hook(
+        lambda _module, _args, output: final_layer_outputs.append(output.detach().clone())
+    )
+    try:
+        ids = torch.randint(0, config.vocab_size, (1, 3))
+        model(ids)
+    finally:
+        first_hook.remove()
+        final_hook.remove()
+
+    expected_next_pass_input = (
+        F.rms_norm(final_layer_outputs[0], (config.n_embd,))
+        + final_layer_outputs[0]
+    )
+    torch.testing.assert_close(first_layer_inputs[1], expected_next_pass_input)
+
+
+@pytest.mark.parametrize("field", ["ut_source", "ut_destination"])
+def test_gpt_config_rejects_out_of_range_ut_layer_indices(field):
+    with pytest.raises(ValueError, match=field):
+        GPTConfig(n_layer=4, total_ut_steps=2, **{field: 4})
 
 
 def test_gpt_value_embedding_inputs_have_consistent_grad_state():
@@ -698,6 +816,7 @@ def test_ut_detach_controls_cross_pass_gradient_dependency(
     model.init_weights()
     ids = torch.randint(0, config.vocab_size, (2, 5))
     pass_hidden_states = []
+    source_activations = []
     original_chunked_cross_entropy = _chunked_cross_entropy
 
     def capture_hidden_state(hidden_states, *args, **kwargs):
@@ -705,12 +824,19 @@ def test_ut_detach_controls_cross_pass_gradient_dependency(
         return original_chunked_cross_entropy(hidden_states, *args, **kwargs)
 
     monkeypatch.setattr("nanochat.gpt._chunked_cross_entropy", capture_hidden_state)
-    model(ids, targets=ids)
+    source_hook = model.transformer.h[-1].register_forward_hook(
+        lambda _module, _args, output: source_activations.append(output)
+    )
+    try:
+        model(ids, targets=ids)
+    finally:
+        source_hook.remove()
 
     assert len(pass_hidden_states) == config.total_ut_steps
+    assert len(source_activations) == config.total_ut_steps
     cross_pass_grad = torch.autograd.grad(
-        pass_hidden_states[-1].sum(),
-        pass_hidden_states[0],
+        source_activations[-1].sum(),
+        source_activations[0],
         allow_unused=True,
     )[0]
     assert (cross_pass_grad is None) is ut_detach

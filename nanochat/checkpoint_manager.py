@@ -225,6 +225,16 @@ def _patch_missing_keys(model_data, model_config):
         model_data["x0_lambdas"] = _resize_ut_layer_scalars(
             model_data["x0_lambdas"], scalar_shape, "x0_lambdas"
         )
+    if "ut_source_lambdas" not in model_data:
+        ut_source_lambdas = torch.zeros(scalar_shape)
+        ut_destination = int(getattr(model_config, "ut_destination", 0)) % n_layer
+        ut_source_lambdas[1:, ut_destination] = 1.0
+        model_data["ut_source_lambdas"] = ut_source_lambdas
+        log0("Patching missing ut_source_lambdas in model data")
+    else:
+        model_data["ut_source_lambdas"] = _resize_ut_layer_scalars(
+            model_data["ut_source_lambdas"], scalar_shape, "ut_source_lambdas"
+        )
     if model_config.n_exp > 1:
         for layer_idx in get_moe_layer_indices(model_config):
             gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"

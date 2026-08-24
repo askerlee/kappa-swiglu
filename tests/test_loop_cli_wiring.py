@@ -73,6 +73,20 @@ def test_fresh_model_scripts_wire_loop_into_gpt_config():
         ), path
 
 
+def test_fresh_model_scripts_wire_ut_source_and_destination():
+    for path in FRESH_MODEL_SCRIPTS:
+        tree = _parse(path)
+        source = path.read_text(encoding="utf-8")
+
+        assert 'parser.add_argument("--ut-source", type=int, default=4' in source
+        assert 'parser.add_argument("--ut-destination", type=int, default=-4' in source
+        config_calls = _find_calls(tree, "GPTConfig")
+        assert any(
+            {keyword.arg for keyword in call.keywords} >= {"ut_source", "ut_destination"}
+            for call in config_calls
+        ), path
+
+
 def test_checkpoint_scripts_wire_loop_into_load_model():
     for path in CHECKPOINT_MODEL_SCRIPTS:
         tree = _parse(path)

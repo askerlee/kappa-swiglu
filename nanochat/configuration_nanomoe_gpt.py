@@ -64,6 +64,8 @@ class GPTConfig:
         total_ut_steps: int = 1,
         ut_everypass_ntp: bool = True,
         ut_detach: bool = False,
+        ut_source: int = -1,
+        ut_destination: int = 0,
         activation_checkpointing: bool = False,
         activation_offload: bool = False,
         loss_chunk_tokens: int | None = None,
@@ -190,6 +192,16 @@ class GPTConfig:
         self.ut_detach = bool(ut_detach)
         if self.ut_detach and not self.ut_everypass_ntp:
             raise ValueError("ut_detach requires ut_everypass_ntp")
+        self.ut_source = int(ut_source)
+        self.ut_destination = int(ut_destination)
+        for name, layer_idx in (
+            ("ut_source", self.ut_source),
+            ("ut_destination", self.ut_destination),
+        ):
+            if self.total_ut_steps > 1 and not -self.n_layer <= layer_idx < self.n_layer:
+                raise ValueError(
+                    f"{name} must index one of {self.n_layer} layers, got {layer_idx}"
+                )
         self.activation_checkpointing = bool(activation_checkpointing)
         self.activation_offload = bool(activation_offload)
         if self.activation_checkpointing and self.activation_offload:
