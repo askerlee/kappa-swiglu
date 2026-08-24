@@ -204,6 +204,24 @@ def _resize_ut_layer_scalars(value, target_shape, name):
     return torch.cat((value, extra_rows), dim=0).clone()
 
 
+def _resize_ut_source_lambdas(value, total_ut_steps, n_layer, ut_destination):
+    if value.ndim == 2:
+        if value.shape[1] != n_layer:
+            raise ValueError(
+                f"Legacy ut_source_lambdas shape {tuple(value.shape)} does not match n_layer={n_layer}"
+            )
+        value = value[:, ut_destination]
+    if value.ndim != 1:
+        raise ValueError(
+            f"ut_source_lambdas shape {tuple(value.shape)} is incompatible with "
+            f"target shape {(total_ut_steps,)}"
+        )
+    if value.shape[0] >= total_ut_steps:
+        return value[:total_ut_steps].clone()
+    extra_values = value[-1:].expand(total_ut_steps - value.shape[0])
+    return torch.cat((value, extra_values), dim=0).clone()
+
+
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
@@ -225,15 +243,18 @@ def _patch_missing_keys(model_data, model_config):
         model_data["x0_lambdas"] = _resize_ut_layer_scalars(
             model_data["x0_lambdas"], scalar_shape, "x0_lambdas"
         )
+    ut_destination = int(getattr(model_config, "ut_destination", 0)) % n_layer
     if "ut_source_lambdas" not in model_data:
-        ut_source_lambdas = torch.zeros(scalar_shape)
-        ut_destination = int(getattr(model_config, "ut_destination", 0)) % n_layer
-        ut_source_lambdas[1:, ut_destination] = 1.0
+        ut_source_lambdas = torch.ones(total_ut_steps)
+        ut_source_lambdas[0] = 0.0
         model_data["ut_source_lambdas"] = ut_source_lambdas
         log0("Patching missing ut_source_lambdas in model data")
     else:
-        model_data["ut_source_lambdas"] = _resize_ut_layer_scalars(
-            model_data["ut_source_lambdas"], scalar_shape, "ut_source_lambdas"
+        model_data["ut_source_lambdas"] = _resize_ut_source_lambdas(
+            model_data["ut_source_lambdas"],
+            total_ut_steps,
+            n_layer,
+            ut_destination,
         )
     if model_config.n_exp > 1:
         for layer_idx in get_moe_layer_indices(model_config):
@@ -392,11 +413,30 @@ def _require_complete_shard_entries(shard_entries, description):
     return present_entries
 
 
-def _reshard_adamw_state(shard_entries, param, rank, current_world_size):
+def _reshard_adamw_state(
+    shard_entries,
+    param,
+    rank,
+    current_world_size,
+    param_name=None,
+    ut_destination=None,
+):
     if param.numel() < 1024:
         local_state = {}
         for key, value in shard_entries[0].items():
             if (
+                param_name == "ut_source_lambdas"
+                and torch.is_tensor(value)
+                and value.ndim == 2
+                and param.ndim == 1
+                and value.shape[0] == param.shape[0]
+            ):
+                if ut_destination is None or not (0 <= ut_destination < value.shape[1]):
+                    raise ValueError(
+                        "Legacy ut_source_lambdas optimizer state requires a valid ut_destination"
+                    )
+                local_state[key] = value[:, ut_destination].clone()
+            elif (
                 torch.is_tensor(value)
                 and value.ndim > 0
                 and value.shape != param.shape
@@ -514,14 +554,24 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
             )
 
         if saved_kind == "adamw":
-            for param_id, param in zip(saved_param_ids, current_params):
+            param_names = current_group.get("debug_param_names", [])
+            ut_destination = current_group.get("ut_destination")
+            for param_idx, (param_id, param) in enumerate(zip(saved_param_ids, current_params)):
                 shard_entries = _require_complete_shard_entries(
                     [shard_state_dict["state"].get(param_id) for shard_state_dict in shard_state_dicts],
                     f"AdamW parameter {param_id}",
                 )
                 if shard_entries is None:
                     continue
-                resharded_state[param_id] = _reshard_adamw_state(shard_entries, param, rank, current_world_size)
+                param_name = param_names[param_idx] if param_idx < len(param_names) else None
+                resharded_state[param_id] = _reshard_adamw_state(
+                    shard_entries,
+                    param,
+                    rank,
+                    current_world_size,
+                    param_name=param_name,
+                    ut_destination=ut_destination,
+                )
         elif saved_kind == "muon":
             if not saved_param_ids:
                 continue

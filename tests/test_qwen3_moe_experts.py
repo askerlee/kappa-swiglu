@@ -507,7 +507,7 @@ def test_gpt_total_ut_steps_use_distinct_scalars_with_token_embedding_anchor(
     torch.testing.assert_close(block_inputs[1][1], 4.0 * token_x0)
 
 
-def test_gpt_ut_mixes_previous_pass_source_at_and_after_destination():
+def test_gpt_ut_mixes_previous_pass_source_only_at_destination():
     config = GPTConfig(
         sequence_len=8,
         vocab_size=32,
@@ -527,7 +527,7 @@ def test_gpt_ut_mixes_previous_pass_source_at_and_after_destination():
     with torch.no_grad():
         model.resid_lambdas.fill_(1.0)
         model.x0_lambdas.zero_()
-        model.ut_source_lambdas[1, 3] = 0.5
+        model.ut_source_lambdas[1] = 0.5
 
     for layer_idx, block in enumerate(model.transformer.h):
         offset = float(layer_idx + 1)
@@ -556,18 +556,18 @@ def test_gpt_ut_mixes_previous_pass_source_at_and_after_destination():
     assert len(source_outputs) == 2
     assert len(destination_inputs) == 2
     assert len(downstream_inputs) == 2
-    assert model.ut_source_lambdas.shape == (2, 4)
+    assert model.ut_source_lambdas.shape == (2,)
     torch.testing.assert_close(
-        model.ut_source_lambdas[1],
-        torch.tensor([0.0, 0.0, 1.0, 0.5]),
+        model.ut_source_lambdas,
+        torch.tensor([0.0, 0.5]),
     )
     torch.testing.assert_close(
         destination_inputs[1],
-        source_outputs[1] + source_outputs[0],
+        source_outputs[1] + 0.5 * source_outputs[0],
     )
     torch.testing.assert_close(
         downstream_inputs[1],
-        destination_inputs[1] + 3.0 + 0.5 * source_outputs[0],
+        destination_inputs[1] + 3.0,
     )
 
 

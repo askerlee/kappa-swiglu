@@ -82,6 +82,34 @@ def test_reshard_optimizer_state_dict_expands_legacy_ut_scalar_moments():
     assert loaded_state["step"] == 7
 
 
+def test_reshard_optimizer_state_dict_converts_legacy_ut_source_lambda_moments():
+    param = torch.nn.Parameter(torch.zeros(3))
+    optimizer = make_optimizer([{
+        "kind": "adamw",
+        "params": [param],
+        "debug_param_names": ["ut_source_lambdas"],
+        "ut_destination": 2,
+        "lr": 1e-3,
+    }])
+    saved_param_groups = [{"kind": "adamw", "params": [0], "lr": 1e-3}]
+    exp_avg = torch.tensor([
+        [0.0, 0.1, 0.2, 0.3],
+        [1.0, 1.1, 1.2, 1.3],
+        [2.0, 2.1, 2.2, 2.3],
+    ])
+    exp_avg_sq = exp_avg + 10.0
+    shard_state_dicts = [
+        make_adamw_shard(saved_param_groups, 0, exp_avg, exp_avg_sq),
+    ]
+
+    state_dict = reshard_optimizer_state_dict(shard_state_dicts, optimizer)
+
+    loaded_state = state_dict["state"][0]
+    torch.testing.assert_close(loaded_state["exp_avg"], exp_avg[:, 2])
+    torch.testing.assert_close(loaded_state["exp_avg_sq"], exp_avg_sq[:, 2])
+    assert loaded_state["step"] == 7
+
+
 def test_reshard_optimizer_state_dict_reshards_muon_group():
     params = [torch.nn.Parameter(torch.zeros(2, 2)) for _ in range(5)]
     optimizer = make_optimizer([
@@ -421,7 +449,7 @@ def test_patch_missing_keys_creates_per_ut_layer_scalars():
     torch.testing.assert_close(model_data["x0_lambdas"], torch.zeros(3, 2))
     torch.testing.assert_close(
         model_data["ut_source_lambdas"],
-        torch.tensor([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+        torch.tensor([0.0, 1.0, 1.0]),
     )
 
 
@@ -459,7 +487,7 @@ def test_patch_missing_keys_extends_per_ut_layer_scalars_with_last_step():
     )
 
 
-def test_patch_missing_keys_extends_ut_source_lambdas_with_last_step():
+def test_patch_missing_keys_converts_and_extends_ut_source_lambdas():
     config = GPTConfig(n_layer=3, total_ut_steps=3, ut_destination=1)
     ut_source_lambdas = torch.tensor([
         [0.0, 0.0, 0.0],
@@ -471,7 +499,7 @@ def test_patch_missing_keys_extends_ut_source_lambdas_with_last_step():
 
     torch.testing.assert_close(
         model_data["ut_source_lambdas"],
-        torch.cat((ut_source_lambdas, ut_source_lambdas[-1:])),
+        torch.tensor([0.0, 0.8, 0.8]),
     )
 
 

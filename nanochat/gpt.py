@@ -2325,7 +2325,7 @@ class GPT(nn.Module):
         scalar_shape = (self.total_ut_steps, config.n_layer)
         self.resid_lambdas = nn.Parameter(torch.ones(scalar_shape))   # fake init, real init in init_weights()
         self.x0_lambdas = nn.Parameter(torch.zeros(scalar_shape))     # fake init, real init in init_weights()
-        self.ut_source_lambdas = nn.Parameter(torch.zeros(scalar_shape))
+        self.ut_source_lambdas = nn.Parameter(torch.zeros(self.total_ut_steps))
         # Value embeddings (ResFormer-style): alternating layers, last layer always included
         head_dim = config.n_embd // config.n_head
         kv_dim = config.n_kv_head * head_dim
@@ -2553,7 +2553,7 @@ class GPT(nn.Module):
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init
         self.x0_lambdas.fill_(0.0)      # 0.0 => skip connection to input is disabled at init
         self.ut_source_lambdas.zero_()
-        self.ut_source_lambdas[1:, self.ut_destination] = 1.0
+        self.ut_source_lambdas[1:] = 1.0
 
         # Rotary embeddings
         head_dim = self.config.n_embd // self.config.n_head
@@ -2834,7 +2834,16 @@ class GPT(nn.Module):
             )
         )
         param_groups.append(
-            dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.1, betas=adam_betas, eps=1e-10, weight_decay=0.0)
+            dict(
+                kind='adamw',
+                params=resid_params,
+                debug_param_names=['resid_lambdas', 'ut_source_lambdas'],
+                ut_destination=self.ut_destination,
+                lr=scalar_lr * 0.1,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            )
         )
         param_groups.append(
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
@@ -2911,10 +2920,10 @@ class GPT(nn.Module):
                     self.resid_lambdas[current_ut, i] * x
                     + self.x0_lambdas[current_ut, i] * token_x0
                 )
-                if current_ut > 0 and i >= self.ut_destination:
+                if current_ut > 0 and i == self.ut_destination:
                     x = (
                         x
-                        + self.ut_source_lambdas[current_ut, i]
+                        + self.ut_source_lambdas[current_ut]
                         * previous_ut_source
                     )
                 if str(i) in self.value_embeds:
