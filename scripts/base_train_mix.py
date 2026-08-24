@@ -165,7 +165,6 @@ def build_chat_sft_exec_argv(
     model_step,
     device_batch_size,
     max_seq_len,
-    total_batch_size,
     extra_args_text="",
 ):
     import shlex
@@ -183,8 +182,6 @@ def build_chat_sft_exec_argv(
         str(device_batch_size),
         "--max-seq-len",
         str(max_seq_len),
-        "--total-batch-size",
-        str(total_batch_size),
     ]
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
@@ -2435,7 +2432,6 @@ if should_continue_to_chat_sft:
         step,
         args.device_batch_size,
         args.max_seq_len,
-        total_batch_size,
         args.continue_to_chat_sft_args,
     )
     sanitize_chat_sft_rendezvous_env()

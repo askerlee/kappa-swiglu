@@ -197,7 +197,6 @@ def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
         120,
         16,
         2048,
-        524288,
         "--device-batch-size 8 --model-save-tag after-base",
     )
 
@@ -214,8 +213,6 @@ def test_build_chat_sft_exec_argv_pins_final_checkpoint_and_splits_extra_args():
         "16",
         "--max-seq-len",
         "2048",
-        "--total-batch-size",
-        "524288",
         "--device-batch-size",
         "8",
         "--model-save-tag",

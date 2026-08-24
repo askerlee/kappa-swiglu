@@ -37,7 +37,7 @@ def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():
     assert get_compile_rebuild_plan(True, False, True, True) == (False, False)
 
 
-def test_chat_sft_continuation_inherits_compatible_base_batch_shape():
+def test_chat_sft_continuation_inherits_shape_without_changing_total_batch_size():
     build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
 
     argv = build_chat_sft_exec_argv(
@@ -46,17 +46,15 @@ def test_chat_sft_continuation_inherits_compatible_base_batch_shape():
         120,
         24,
         2048,
-        589824,
     )
 
-    assert argv[-6:] == [
+    assert argv[-4:] == [
         "--device-batch-size",
         "24",
         "--max-seq-len",
         "2048",
-        "--total-batch-size",
-        "589824",
     ]
+    assert "--total-batch-size" not in argv
 
 
 def test_mixed_interval_throughput_averages_all_steps_since_previous_log():
