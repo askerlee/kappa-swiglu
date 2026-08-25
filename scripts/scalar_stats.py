@@ -7,6 +7,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -15,6 +16,9 @@ import torch
 
 LAMBDA_KEYS = ("resid_lambdas", "x0_lambdas", "ut_source_lambdas")
 KAPPA_NAMES = ("kappa_scale", "kappa_bias")
+KAPPA_LAYER_PATTERN = re.compile(
+    r"transformer\.h\.(?P<layer>\d+)\.mlp(?:\.experts)?\.(?P<name>kappa_(?:bias|scale))"
+)
 
 
 def load_state_dict(checkpoint_path: Path) -> Mapping:
@@ -102,6 +106,45 @@ def load_scalars(checkpoint_path: Path) -> dict[str, torch.Tensor]:
     return scalars
 
 
+def load_kappa_tensors(checkpoint_path: Path):
+    """Load individual kappa tensors without discarding layer identity."""
+    state_dict = load_state_dict(checkpoint_path)
+    resid_lambdas = state_dict.get("resid_lambdas")
+    if not torch.is_tensor(resid_lambdas):
+        raise KeyError(f"Checkpoint {checkpoint_path} is missing resid_lambdas")
+    total_ut_steps = resid_lambdas.shape[0] if resid_lambdas.ndim == 2 else 1
+
+    tensors = []
+    for key, value in state_dict.items():
+        match = KAPPA_LAYER_PATTERN.fullmatch(key)
+        if match is not None:
+            name = match.group("name")
+            layer = int(match.group("layer"))
+        elif key in KAPPA_NAMES or key in {f"global_{name}" for name in KAPPA_NAMES}:
+            name = key.removeprefix("global_")
+            layer = None
+        else:
+            continue
+        if not torch.is_tensor(value):
+            raise TypeError(
+                f"Checkpoint {checkpoint_path} entry {key!r} is not a tensor; "
+                f"got {type(value).__name__}"
+            )
+        if total_ut_steps > 1 and (
+            value.ndim < 2 or value.shape[0] != total_ut_steps
+        ):
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} entry {key!r} has shape "
+                f"{tuple(value.shape)}, whose leading dimension does not match "
+                f"total_ut_steps={total_ut_steps}"
+            )
+        tensors.append((name, layer, key, value))
+    tensors.sort(
+        key=lambda item: (item[0], -1 if item[1] is None else item[1], item[2])
+    )
+    return total_ut_steps, tensors
+
+
 def statistics_for_scalar(value: torch.Tensor):
     if value.ndim == 2 and value.shape[0] > 1:
         return [calculate_statistics(step) for step in value]
@@ -143,6 +186,24 @@ def print_statistics(
     print(f"source {format_values(scalars['ut_source_lambdas'].detach().float().tolist())}")
 
 
+def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
+    total_ut_steps, tensors = load_kappa_tensors(checkpoint_path)
+    if not tensors:
+        return
+    print("Per-layer kappa statistics:")
+    for name, layer, key, value in tensors:
+        layer_label = "global" if layer is None else str(layer)
+        pass_values = value if total_ut_steps > 1 else value.unsqueeze(0)
+        for pass_idx, pass_value in enumerate(pass_values):
+            stats = calculate_statistics(pass_value)
+            print(
+                f"  {name} layer={layer_label} pass={pass_idx}: "
+                f"mean={stats['mean']:.2f} std={stats['std']:.2f} "
+                f"max={stats['max']:.2f} min={stats['min']:.2f} "
+                f"abs_max={stats['abs_max']:.2f} key={key}"
+            )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Calculate lambda and kappa scalar statistics in model checkpoints"
@@ -167,6 +228,7 @@ def main() -> None:
             for key, value in scalars.items()
         }
         print_statistics(checkpoint_path, statistics, scalars)
+        print_per_layer_kappa_statistics(checkpoint_path)
 
 
 if __name__ == "__main__":
