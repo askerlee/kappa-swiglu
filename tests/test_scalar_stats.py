@@ -6,8 +6,8 @@ from pathlib import Path
 import torch
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "lambda_stats.py"
-SPEC = importlib.util.spec_from_file_location("lambda_stats", SCRIPT_PATH)
+SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "scalar_stats.py"
+SPEC = importlib.util.spec_from_file_location("scalar_stats", SCRIPT_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
