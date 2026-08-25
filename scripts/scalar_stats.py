@@ -65,6 +65,10 @@ def load_scalars(checkpoint_path: Path) -> dict[str, torch.Tensor]:
                 f"got {type(value).__name__}"
             )
         lambdas[key] = value
+
+    resid_lambdas = lambdas["resid_lambdas"]
+    total_ut_steps = resid_lambdas.shape[0] if resid_lambdas.ndim == 2 else 1
+
     scalars = dict(lambdas)
     for name in KAPPA_NAMES:
         values = [
@@ -78,15 +82,20 @@ def load_scalars(checkpoint_path: Path) -> dict[str, torch.Tensor]:
             raise TypeError(
                 f"Checkpoint {checkpoint_path} has a non-tensor {name!r} entry"
             )
-        if all(value.ndim == 2 for value in values):
-            step_counts = {value.shape[0] for value in values}
-            if len(step_counts) != 1:
+        if total_ut_steps > 1:
+            invalid_shapes = [
+                tuple(value.shape)
+                for value in values
+                if value.ndim < 2 or value.shape[0] != total_ut_steps
+            ]
+            if invalid_shapes:
                 raise ValueError(
-                    f"Checkpoint {checkpoint_path} has inconsistent {name} step counts: "
-                    f"{sorted(step_counts)}"
+                    f"Checkpoint {checkpoint_path} has {name} tensors whose leading "
+                    f"dimension does not match total_ut_steps={total_ut_steps}: "
+                    f"{invalid_shapes}"
                 )
             scalars[name] = torch.cat(
-                [value.detach().reshape(value.shape[0], -1) for value in values], dim=1
+                [value.detach().reshape(total_ut_steps, -1) for value in values], dim=1
             )
         else:
             scalars[name] = torch.cat([value.detach().reshape(-1) for value in values])
