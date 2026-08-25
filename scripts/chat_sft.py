@@ -492,9 +492,11 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
     while True:
         rows = []
         row_masks = []
+        row_valid_masks = []
         for _ in range(args.device_batch_size):
             row = []
             row_mask = []
+            row_valid_mask = []
             while len(row) < row_capacity:
                 # Ensure buffer has conversations
                 while len(conv_buffer) < buffer_size:
@@ -516,16 +518,23 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                     conv, conv_mask = conv_buffer.pop(best_idx)
                     row.extend(conv)
                     row_mask.extend(conv_mask)
+                    row_valid_mask.extend([1] * len(conv))
                     consumed += ddp_world_size  # Track actual consumption
                 else:
                     # No conversation fits - pad the remainder instead of cropping
                     # This ensures we never discard any tokens
-                    row.extend([bos_token] * remaining)  # Pad with BOS tokens
+                    # Pad with BOS tokens
+                    # NOTE: If not masked with row_valid_mask, the padded BOS tokens will 
+                    # hurt routing, by hogging on a particular expert. 
+                    # So we mask them out in row_valid_mask, and they do not take up any routing capacity.
+                    row.extend([bos_token] * remaining)  
                     row_mask.extend([0] * remaining)
+                    row_valid_mask.extend([0] * remaining)
                     break  # Row is now full (with padding)
 
             rows.append(row[:row_capacity])
             row_masks.append(row_mask[:row_capacity])
+            row_valid_masks.append(row_valid_mask[:row_capacity])
 
         # Stopping condition to respect num_iterations, if given
         it += 1
@@ -549,7 +558,9 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         use_cuda = device_type == "cuda"
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
         mask_tensor = torch.tensor(row_masks, dtype=torch.bool, pin_memory=use_cuda)
+        valid_mask_tensor = torch.tensor(row_valid_masks, dtype=torch.bool, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda)
+        valid_token_mask = valid_mask_tensor[:, :-1].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
         target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
 
@@ -560,7 +571,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         # Supervise only assistant tokens; user, BOS, and padding tokens are ignored.
         targets[~target_mask] = -1
 
-        yield inputs, targets
+        yield inputs, targets, valid_token_mask
 
 train_loader = sft_data_generator_bos_bestfit("train")
 build_val_loader = lambda: sft_data_generator_bos_bestfit("val")
@@ -769,7 +780,9 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
 
 # -----------------------------------------------------------------------------
 # Training loop
-x, y = (None, None) if args.eval_only else next(train_loader) # skip train prefetch when evaluating only
+x, y, valid_token_mask = (
+    (None, None, None) if args.eval_only else next(train_loader)
+) # skip train prefetch when evaluating only
 min_val_bpb = float("inf")
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
@@ -942,8 +955,15 @@ while True:
         micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
         micro_x = x[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else x
         micro_y = y[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else y
+        micro_valid_token_mask = (
+            valid_token_mask[:last_device_batch_size]
+            if micro_step == grad_accum_steps - 1
+            else valid_token_mask
+        )
         with autocast_ctx:
-            loss, losses = model(micro_x, micro_y)
+            loss, losses = model(
+                micro_x, micro_y, valid_token_mask=micro_valid_token_mask
+            )
         step_train_loss = step_train_loss + losses['ntp_loss'].detach() * micro_weight
         aux_loss = losses.get("aux_loss")
         if aux_loss is None:
@@ -960,7 +980,7 @@ while True:
 
         loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
         loss.backward()
-        x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        x, y, valid_token_mask = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
 
     train_loss = step_train_loss / grad_accum_normalizer

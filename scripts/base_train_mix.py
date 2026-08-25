@@ -1118,6 +1118,10 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
                     row_valid_mask.extend([1] * len(conv))
                     consumed += ddp_world_size
                 else:
+                    # Pad with BOS tokens
+                    # NOTE: If not masked with row_valid_mask, the padded BOS tokens will 
+                    # hurt routing, by hogging on a particular expert. 
+                    # So we mask them out in row_valid_mask, and they do not take up any routing capacity.
                     row.extend([bos_token] * remaining)
                     row_mask.extend([0] * remaining)
                     row_valid_mask.extend([0] * remaining)
