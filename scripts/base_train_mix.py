@@ -1093,9 +1093,11 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
     while True:
         rows = []
         row_masks = []
+        row_valid_masks = []
         for _ in range(device_batch_size):
             row = []
             row_mask = []
+            row_valid_mask = []
             while len(row) < row_capacity:
                 while len(conv_buffer) < buffer_size:
                     refill_buffer()
@@ -1113,23 +1115,28 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
                     conv, conv_mask = conv_buffer.pop(best_idx)
                     row.extend(conv)
                     row_mask.extend(conv_mask)
+                    row_valid_mask.extend([1] * len(conv))
                     consumed += ddp_world_size
                 else:
                     row.extend([bos_token] * remaining)
                     row_mask.extend([0] * remaining)
+                    row_valid_mask.extend([0] * remaining)
                     break
 
             rows.append(row[:row_capacity])
             row_masks.append(row_mask[:row_capacity])
+            row_valid_masks.append(row_valid_mask[:row_capacity])
 
         iteration += 1
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
         mask_tensor = torch.tensor(row_masks, dtype=torch.bool, pin_memory=use_cuda)
+        valid_mask_tensor = torch.tensor(row_valid_masks, dtype=torch.bool, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda)
+        valid_token_mask = valid_mask_tensor[:, :-1].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
         target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
         targets[~target_mask] = -1
-        yield inputs, targets, {
+        yield inputs, targets, valid_token_mask, {
             "cursor": cursor,
             "consumed": consumed,
             "skipped_overlong": skipped_overlong,
@@ -1181,7 +1188,7 @@ chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(
     buffer_size=args.chat_sft_buffer_size,
     resume_state_dict=chat_sft_dataloader_resume_state_dict,
 )
-chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
+chat_sft_x, chat_sft_y, chat_sft_valid_token_mask, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
 
 # -----------------------------------------------------------------------------
 # Set up hyperparameter schedulers
@@ -2048,15 +2055,20 @@ while True:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
             micro_x = chat_sft_x if is_chat_sft_step else x
             micro_y = chat_sft_y if is_chat_sft_step else y
+            micro_valid_token_mask = chat_sft_valid_token_mask if is_chat_sft_step else None
             if micro_step == grad_accum_steps - 1:
                 micro_x = micro_x[:last_device_batch_size]
                 micro_y = micro_y[:last_device_batch_size]
+                if micro_valid_token_mask is not None:
+                    micro_valid_token_mask = micro_valid_token_mask[:last_device_batch_size]
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("starting first resumed forward")
                 if run_eager_training_step_after_core_eval:
                     print0("running first post-CORE training step eagerly before returning to compiled training")
             with autocast_ctx:
-                loss, micro_losses = current_training_model(micro_x, micro_y)
+                loss, micro_losses = current_training_model(
+                    micro_x, micro_y, valid_token_mask=micro_valid_token_mask
+                )
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("finished first resumed forward")
             step_losses = accumulate_step_losses(step_losses, micro_losses, micro_weight)
@@ -2113,7 +2125,7 @@ while True:
             if micro_step == 0 or micro_step == grad_accum_steps - 1:
                 trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
             if is_chat_sft_step:
-                chat_sft_x, chat_sft_y, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
+                chat_sft_x, chat_sft_y, chat_sft_valid_token_mask, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
             else:
                 x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
             if micro_step == 0 or micro_step == grad_accum_steps - 1:

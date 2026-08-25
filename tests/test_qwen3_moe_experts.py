@@ -277,6 +277,33 @@ def test_dense_qwen3_gate_projection_has_no_bias_parameter():
     assert not hasattr(mlp, 'kappa_bias')
 
 
+def test_router_valid_token_mask_excludes_padding_from_capacity():
+    config = GPTConfig(
+        n_exp=2,
+        moe_top_k=1,
+        n_embd=4,
+        train_capacity=1.0,
+        use_noisy_top_k=False,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    router = Router(config)
+    router.train()
+    x = torch.ones(1, 4, config.n_embd)
+    valid_token_mask = torch.tensor([[True, True, False, False]])
+
+    expert_mask, router_probs, _, _, rank = router(
+        x, valid_token_mask=valid_token_mask
+    )
+    capacity = router.get_capacity(x.shape[0] * x.shape[1])
+
+    assert (rank[valid_token_mask.reshape(-1)] < capacity).all()
+    assert (rank[~valid_token_mask.reshape(-1)] >= capacity).all()
+    assert not expert_mask[~valid_token_mask.reshape(-1)].any()
+    assert not router_probs[~valid_token_mask.reshape(-1)].any()
+
+
 def test_config_allows_constant_dense_kappa_bias_with_router_probs_for_moe_layers():
     config = GPTConfig(
         n_exp=2,

@@ -106,8 +106,11 @@ class _UTLossAccum:
         loss_idx = _UT_LOSS_NAMES.index(name)
         self.losses[loss_idx] = self.losses[loss_idx] + value
 
-    def add_router_counts(self, layer_idx, top_k_indices):
-        counts = F.one_hot(top_k_indices, num_classes=self.router_counts.size(1)).sum(dim=(0, 1))
+    def add_router_counts(self, layer_idx, top_k_indices, valid_token_mask=None):
+        assignments = F.one_hot(top_k_indices, num_classes=self.router_counts.size(1))
+        if valid_token_mask is not None:
+            assignments = assignments * valid_token_mask.reshape(-1, 1, 1)
+        counts = assignments.sum(dim=(0, 1))
         layer_mask = F.one_hot(
             torch.as_tensor(layer_idx, device=top_k_indices.device),
             num_classes=self.router_counts.size(0),
@@ -516,8 +519,8 @@ class ReuseMmWithScaledInputGrad(torch.autograd.Function):
 
         return grad_output_for_output, grad_left, grad_right, None
 
-def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True, 
-                   z_loss_penalize_mean_logits: bool = True):
+def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True,
+                   z_loss_penalize_mean_logits: bool = True, reduction: str = "mean"):
     """
     Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
     See equation (5) on page 7
@@ -539,7 +542,10 @@ def compute_z_loss(logits: torch.Tensor, demean_logits: bool = True,
         # So it won't dominate the z_loss, but still has a meaningful effect.
         z_loss = z_loss + loss_mean_logit
 
-    # sum over all tokens and divide by total number of tokens
+    if reduction == "none":
+        return z_loss
+    if reduction != "mean":
+        raise ValueError(f"Unsupported z-loss reduction: {reduction}")
     return torch.mean(z_loss)
 
 def norm(x):
@@ -722,7 +728,7 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def forward(self, x, loss_accum=None, router_layer_idx=None):
+    def forward(self, x, loss_accum=None, router_layer_idx=None, valid_token_mask=None):
         """
         Computes routing information for tokens, including which experts to use,
         the weights for their outputs, and their position within the expert's batch.
@@ -740,6 +746,15 @@ class Router(nn.Module):
             B, T, C = x.size()
             num_tokens = B * T
             x_flat = x.view(num_tokens, C)
+            if valid_token_mask is None:
+                valid_token_mask = torch.ones((B, T), dtype=torch.bool, device=x.device)
+            elif valid_token_mask.shape != (B, T):
+                raise ValueError(
+                    f"valid_token_mask must have shape {(B, T)}, got {tuple(valid_token_mask.shape)}"
+                )
+            else:
+                valid_token_mask = valid_token_mask.to(device=x.device, dtype=torch.bool)
+            valid_token_mask_flat = valid_token_mask.reshape(-1)
 
             # 1. GET ROUTING LOGITS
             # ---------------------
@@ -757,9 +772,13 @@ class Router(nn.Module):
                 selection_scores = self._get_selection_scores(logits)
                 _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
                 if loss_accum is not None:
-                    loss_accum.add_router_counts(router_layer_idx, top_k_indices)
+                    loss_accum.add_router_counts(
+                        router_layer_idx, top_k_indices, valid_token_mask_flat
+                    )
                 else:
-                    self._accumulate_aux_free_load_balancing_counts(top_k_indices)
+                    self._accumulate_aux_free_load_balancing_counts(
+                        top_k_indices[valid_token_mask_flat]
+                    )
 
                 logits_for_router = logits
 
@@ -774,9 +793,13 @@ class Router(nn.Module):
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
-                    router_z_loss = compute_z_loss(logits_for_z_loss.view(B, T, -1), 
-                                                   demean_logits=self.z_loss_demean_logits,
-                                                   z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits)
+                    router_z_loss_per_token = compute_z_loss(
+                        logits_for_z_loss.view(B, T, -1),
+                        demean_logits=self.z_loss_demean_logits,
+                        z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits,
+                        reduction="none",
+                    )
+                    router_z_loss = router_z_loss_per_token[valid_token_mask].mean()
                     if loss_accum is not None:
                         loss_accum.add("router_z_loss", router_z_loss)
                     else:
@@ -791,7 +814,11 @@ class Router(nn.Module):
                     # Use the full router distribution here so the balancing loss keeps
                     # a meaningful gradient signal even when top_k = 1.
                     all_probs = F.softmax(logits_for_router, dim=-1)
-                    aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
+                    aux_loss = self.compute_aux_loss(
+                        all_probs.view(B, T, -1),
+                        top_k_indices.view(B, T, -1),
+                        valid_token_mask,
+                    )
                     if loss_accum is not None:
                         loss_accum.add("aux_loss", aux_loss)
                     else:
@@ -809,7 +836,11 @@ class Router(nn.Module):
             top_k_scores = top_k_logits
 
             if self.training or MANAGER.collect_load_balancing_stats:
-                selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
+                selected_scores = self.compute_selected_scores(
+                    logits.view(B, T, -1),
+                    top_k_indices.view(B, T, -1),
+                    valid_token_mask,
+                )
                 if loss_accum is not None:
                     loss_accum.add_selected_scores(router_layer_idx, selected_scores.detach())
                 elif not torch.compiler.is_compiling():
@@ -825,6 +856,7 @@ class Router(nn.Module):
             
             # Create a one-hot mask of the chosen experts for each token. Shape: [B*T, k, n_exp]
             expert_mask_one_hot = F.one_hot(top_k_indices, num_classes=self.n_exp)
+            expert_mask_one_hot = expert_mask_one_hot * valid_token_mask_flat[:, None, None]
 
             # ANCHOR[id=routing_ranks]
             # This is the critical step to ensure load balancing prioritizes top-1 experts.
@@ -871,12 +903,19 @@ class Router(nn.Module):
             # NOTE: final_rank is derived from rank, so it also includes 
             # over-capacity positions.
             final_rank = torch.sum(rank, dim=-1) # [B*T, k]
+            final_rank = torch.where(
+                valid_token_mask_flat[:, None],
+                final_rank,
+                torch.full_like(final_rank, exp_capacity),
+            )
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
             # Their memory usage all scale linearly with (B * T).
             return final_expert_mask, router_probs_masked, top_k_scores_masked, top_k_indices, final_rank
     
-    def compute_aux_loss(self, expert_probs: torch.Tensor, indices: torch.Tensor):
+    def compute_aux_loss(
+        self, expert_probs: torch.Tensor, indices: torch.Tensor, valid_token_mask=None
+    ):
         """
         Computes Switch Transformer auxiliary loss (https://arxiv.org/abs/2101.03961)
         See equations (4)-(6) on page 7
@@ -888,16 +927,26 @@ class Router(nn.Module):
         with torch.no_grad():
             one_hot_indices = F.one_hot(indices, num_classes=self.n_exp)  # [B, T, k, n_exp]
             one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)  # [B, T, n_exp] (sum over k dimension)
-            tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
+            if valid_token_mask is None:
+                tokens_per_expert = torch.mean(one_hot_indices, dim=(0, 1))
+            else:
+                one_hot_indices = one_hot_indices[valid_token_mask]
+                tokens_per_expert = torch.mean(one_hot_indices, dim=0)
 
         # equation (6): compute ratio of router probability allocated to each expert
-        prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
+        if valid_token_mask is None:
+            prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
+        else:
+            expert_probs = expert_probs[valid_token_mask]
+            prob_per_expert = torch.mean(expert_probs.float(), dim=0)
 
         # equation (4): take a scaled dot product between prob/token allocation vectors
         # multiply the result by the number of experts
         return self.n_exp * torch.sum(prob_per_expert * tokens_per_expert)
         
-    def compute_selected_scores(self, logits: torch.Tensor, top_k_indices: torch.Tensor):
+    def compute_selected_scores(
+        self, logits: torch.Tensor, top_k_indices: torch.Tensor, valid_token_mask=None
+    ):
         """
         logits: [B, T, n_exp]  (router logits or scores)
         top_k_indices: [B, T, k]
@@ -909,6 +958,8 @@ class Router(nn.Module):
 
             # counts per expert over (B,T,k)
             one_hot = F.one_hot(top_k_indices, num_classes=n_exp).float()   # [B,T,k,n_exp]
+            if valid_token_mask is not None:
+                one_hot = one_hot * valid_token_mask[:, :, None, None]
             counts = one_hot.sum(dim=(0, 1, 2))                              # [n_exp]
             total = counts.sum().clamp_min(1.0)
 
@@ -939,7 +990,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
-    def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0):
+    def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         x = self.c_fc(x)
         x = F.relu(x).square()
         x = self.c_proj(x)
@@ -956,7 +1007,7 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False, loss_accum=None, router_layer_idx=None, current_ut=0):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         x = x + self.attn(
             norm(x),
             ve,
@@ -971,6 +1022,7 @@ class Block(nn.Module):
             loss_accum=loss_accum,
             router_layer_idx=router_layer_idx,
             current_ut=current_ut,
+            valid_token_mask=valid_token_mask,
         )
         return x
 
@@ -1320,7 +1372,7 @@ class Qwen3MLP(nn.Module):
         )
         MANAGER.add("kappa_slope_scale_abs_mean_normalized", _diagnostic_to_cpu(slope_scale_mean))
 
-    def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0):
+    def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         gate_out_raw = self.gate_proj(x)
         kappa_bias = self._materialize_kappa_bias(current_ut)
         if self.training:
@@ -2146,7 +2198,10 @@ class MOELayer(nn.Module):
             )
         return expert_inputs, expert_router_scores
 
-    def _combine_expert_outputs(self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices, flat_top_k_indices, router_probs, rank):
+    def _combine_expert_outputs(
+        self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices,
+        flat_top_k_indices, router_probs, rank, valid_token_mask=None
+    ):
         valid_mask = flat_rank < exp_capacity
         safe_ranks = flat_rank.clamp_max(exp_capacity - 1)
         output_flat = torch.zeros_like(x_flat)
@@ -2160,7 +2215,7 @@ class MOELayer(nn.Module):
         )
         if MANAGER.collect_load_balancing_stats:
             self._maybe_collect_load_balancing_stats(
-                rank, flat_top_k_indices, valid_mask, exp_capacity
+                rank, flat_top_k_indices, valid_mask, exp_capacity, valid_token_mask
             )
         return output_flat
 
@@ -2226,7 +2281,10 @@ class MOELayer(nn.Module):
             f"Unsupported kappa_input: {self.kappa_input!r}"
         )
 
-    def forward(self, x: torch.Tensor, loss_accum=None, router_layer_idx=None, current_ut=0):
+    def forward(
+        self, x: torch.Tensor, loss_accum=None, router_layer_idx=None,
+        current_ut=0, valid_token_mask=None
+    ):
         # x: [64, 2048, 512]
         B, T, C = x.size() # Keep track of original shape
 
@@ -2235,6 +2293,7 @@ class MOELayer(nn.Module):
             x,
             loss_accum=loss_accum,
             router_layer_idx=router_layer_idx,
+            valid_token_mask=valid_token_mask,
         )
 
         # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
@@ -2308,6 +2367,7 @@ class MOELayer(nn.Module):
             flat_top_k_indices,
             router_probs,
             rank,
+            valid_token_mask,
         )
 
         # Reshape output back to the original input shape
@@ -2315,11 +2375,14 @@ class MOELayer(nn.Module):
 
     @torch._dynamo.disable
     def _maybe_collect_load_balancing_stats(
-        self, rank, flat_top_k_indices, valid_mask, exp_capacity
+        self, rank, flat_top_k_indices, valid_mask, exp_capacity,
+        valid_token_mask=None,
     ):
         if MANAGER.collect_load_balancing_stats and not torch.compiler.is_compiling():
             valid_expert_indices = flat_top_k_indices[valid_mask]
             slot_served = (rank < exp_capacity)                     # [B*T, k]
+            if valid_token_mask is not None:
+                slot_served = slot_served[valid_token_mask.reshape(-1)]
             # Since k=2, drop_rate_per_k = [drop_rate_0_step, drop_rate_1_step].
             # drop_rate_0_step: fraction of tokens whose top-1 expert assignment overflowed capacity.
             # drop_rate_1_step: fraction of tokens whose top-2 expert assignment overflowed capacity.
@@ -2955,7 +3018,10 @@ class GPT(nn.Module):
     # Adapted from nanoMoE's forward() method.
     # With total_ut_steps > 1, we repeat the full decoder stack Universal-Transformer style.
     # loss_reduction is used in chat_rl.py ('mean') and loss_eval.py ('none') only.
-    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
+    def forward(
+        self, idx, targets=None, kv_cache=None, loss_reduction='mean',
+        valid_token_mask=None,
+    ):
         B, T = idx.size()
 
         if targets is not None:
@@ -3023,6 +3089,7 @@ class GPT(nn.Module):
                     loss_accum=loss_accum,
                     router_layer_idx=torch.as_tensor(i, device=x.device),
                     current_ut=current_ut,
+                    valid_token_mask=valid_token_mask,
                 )
                 if i == self.ut_source:
                     next_ut_source = x
