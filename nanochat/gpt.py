@@ -2461,6 +2461,8 @@ class GPT(nn.Module):
     def _aggregate_loop_averaged_loss(self, name):
         value = MANAGER.aggregate(name)
         MANAGER.reset(name)
+        # Average the loss over the total number of micro-steps, 
+        # to avoid inflating the loss by multiple micro-steps in a single iteration.
         return None if value is None else value / self.total_ut_steps
 
     def set_kappa_bias_ema_rms_reg_step(self, step):

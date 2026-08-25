@@ -128,6 +128,8 @@ def print_statistics(
 ) -> None:
     print(f"Checkpoint: {checkpoint_path}")
     for key, scalar_stats in statistics.items():
+        if key == "ut_source_lambdas":
+            continue
         step_stats = scalar_stats if isinstance(scalar_stats, list) else [scalar_stats]
         for step, stats in enumerate(step_stats):
             step_label = f" step={step}" if isinstance(scalar_stats, list) else ""
