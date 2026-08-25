@@ -28,6 +28,14 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
+def test_chat_sft_steps_use_increased_train_capacity():
+    get_step_train_capacity = load_function_from_script("get_step_train_capacity")
+
+    assert get_step_train_capacity(False, 1.0) == 1.0
+    assert get_step_train_capacity(True, 1.0) == 1.25
+    assert get_step_train_capacity(True, 1.0, 1.5) == 1.5
+
+
 def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():
     get_compile_rebuild_plan = load_function_from_script("get_compile_rebuild_plan")
 

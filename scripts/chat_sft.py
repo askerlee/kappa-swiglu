@@ -88,6 +88,7 @@ parser.add_argument("--activation-checkpointing", dest="activation_checkpointing
                     help="override activation checkpointing for each full transformer-stack pass")
 parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=None,
                     help="override storing transformer activations in pinned CPU memory")
+parser.add_argument("--train-capacity", type=float, default=1.25, help="MoE expert capacity factor used during chat SFT")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -162,6 +163,8 @@ if args.ut_detach and not args.ut_everypass_ntp:
     args.ut_detach = False
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
+if args.train_capacity <= 0:
+    raise ValueError("--train-capacity must be > 0")
 if args.kappa_bias_delay_start_min_iterations < 0:
     raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
 if args.kappa_bias_lr_warmup_iterations < 0:
@@ -316,6 +319,7 @@ if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
+model.set_train_capacity(args.train_capacity)
 cast_model_parameters(model, ptdtype)
 print0(f"Model parameter storage dtype: {ptdtype}")
 orig_model = model

@@ -2560,6 +2560,13 @@ class GPT(nn.Module):
             if isinstance(experts, Qwen3MLPExperts) and moe_kappa_slope_max_scale is not None:
                 experts.set_kappa_slope_max_scale(moe_kappa_slope_max_scale)
 
+    def set_train_capacity(self, train_capacity):
+        train_capacity = float(train_capacity)
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.router.train_capacity = train_capacity
+
     def set_router_confidence_gate_bias_grad_scale(self, grad_scale):
         grad_scale = float(grad_scale)
         for block in self.transformer.h:

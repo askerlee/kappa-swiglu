@@ -344,6 +344,7 @@ parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=T
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True,
                     help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
+parser.add_argument("--chat-sft-train-capacity", type=float, default=1.25, help="MoE expert capacity factor used on mixed chat-SFT steps")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=True, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
@@ -513,6 +514,8 @@ if args.chat_sft_train_mixture_repeats < 1:
     raise ValueError("--chat-sft-train-mixture-repeats must be >= 1")
 if args.chat_sft_buffer_size < 1:
     raise ValueError("--chat-sft-buffer-size must be >= 1")
+if args.chat_sft_train_capacity <= 0:
+    raise ValueError("--chat-sft-train-capacity must be > 0")
 if args.resume_lr_warmup_steps < 0:
     raise ValueError("--resume-lr-warmup-steps must be >= 0")
 if args.use_aux_free_load_balancing:
@@ -684,6 +687,7 @@ def build_model_meta(depth):
 # Build the model, move to device, init the weights
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
+base_train_capacity = float(model_config.train_capacity)
 moe_layer_indices = get_moe_layer_indices(model_config)
 model_config_kwargs = vars(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
@@ -1347,6 +1351,9 @@ def get_interval_throughput(total_batch_size, num_flops_per_token, gpu_peak_flop
 
 def should_use_chat_sft_step(step, every_n_steps):
     return every_n_steps > 0 and step > 0 and step % every_n_steps == 0
+
+def get_step_train_capacity(is_chat_sft_step, base_train_capacity, chat_sft_train_capacity=1.25):
+    return chat_sft_train_capacity if is_chat_sft_step else base_train_capacity
 
 def accumulate_step_losses(step_losses, micro_losses, micro_weight=1.0):
     """Accumulate detached per-microstep losses for step-level logging."""
@@ -2045,6 +2052,11 @@ while True:
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
+        orig_model.set_train_capacity(get_step_train_capacity(
+            is_chat_sft_step,
+            base_train_capacity,
+            args.chat_sft_train_capacity,
+        ))
         step_sft_padding_tokens = 0
         step_sft_token_positions = 0
         for micro_step in range(grad_accum_steps):
