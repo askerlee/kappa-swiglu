@@ -2045,6 +2045,8 @@ while True:
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
+        step_sft_padding_tokens = 0
+        step_sft_token_positions = 0
         for micro_step in range(grad_accum_steps):
             micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
             current_training_model = (
@@ -2065,6 +2067,11 @@ while True:
                 micro_y = micro_y[:last_device_batch_size]
                 if micro_valid_token_mask is not None:
                     micro_valid_token_mask = micro_valid_token_mask[:last_device_batch_size]
+            if micro_valid_token_mask is not None:
+                step_sft_padding_tokens = (
+                    step_sft_padding_tokens + (~micro_valid_token_mask).sum()
+                )
+                step_sft_token_positions += micro_valid_token_mask.numel()
             if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
                 print0("starting first resumed forward")
                 if run_eager_training_step_after_core_eval:
@@ -2252,6 +2259,10 @@ while True:
         if train_source == "chat_sft":
             log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])
             log_data["train/chat_sft_seen_conversations"] = chat_sft_dataloader_state_dict["seen_conversations"]
+            if step_sft_token_positions > 0:
+                log_data["train/sft_padding_fraction"] = scalar_loss_to_item(
+                    step_sft_padding_tokens / step_sft_token_positions
+                )
         else:
             log_data["train/loss_step"] = debiased_smooth_loss
         log_data["train/aux_loss_weight"] = aux_loss_weight

@@ -951,6 +951,8 @@ while True:
     )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_bias_lr_scale)
     step_train_loss = 0.0
+    step_sft_padding_tokens = 0
+    step_sft_token_positions = 0
     for micro_step in range(grad_accum_steps):
         micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
         micro_x = x[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else x
@@ -960,6 +962,10 @@ while True:
             if micro_step == grad_accum_steps - 1
             else valid_token_mask
         )
+        step_sft_padding_tokens = (
+            step_sft_padding_tokens + (~micro_valid_token_mask).sum()
+        )
+        step_sft_token_positions += micro_valid_token_mask.numel()
         with autocast_ctx:
             loss, losses = model(
                 micro_x, micro_y, valid_token_mask=micro_valid_token_mask
@@ -1064,6 +1070,9 @@ while True:
             "train/seen_conversations": train_seen_conversations,
             "train/skipped_conversations": train_skipped_conversations,
             "train/skipped_fraction": discard_fraction,
+            "train/sft_padding_fraction": scalar_loss_to_item(
+                step_sft_padding_tokens / step_sft_token_positions
+            ),
         }
         drop_rates = losses['drop_rate_per_ks']
         if drop_rates is not None:
