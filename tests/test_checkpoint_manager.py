@@ -82,6 +82,52 @@ def test_reshard_optimizer_state_dict_expands_legacy_ut_scalar_moments():
     assert loaded_state["step"] == 7
 
 
+def test_reshard_optimizer_state_dict_expands_legacy_kappa_moments():
+    param = torch.nn.Parameter(torch.zeros(3, 2, 4))
+    optimizer = make_optimizer([{
+        "kind": "adamw",
+        "params": [param],
+        "debug_param_names": ["transformer.h.0.mlp.experts.kappa_bias"],
+        "lr": 1e-3,
+    }])
+    saved_param_groups = [{"kind": "adamw", "params": [0], "lr": 1e-3}]
+    exp_avg = torch.arange(8, dtype=torch.float32).reshape(2, 4)
+    exp_avg_sq = exp_avg + 10.0
+
+    state_dict = reshard_optimizer_state_dict([
+        make_adamw_shard(saved_param_groups, 0, exp_avg, exp_avg_sq),
+    ], optimizer)
+
+    loaded_state = state_dict["state"][0]
+    torch.testing.assert_close(loaded_state["exp_avg"], exp_avg.repeat(3, 1, 1))
+    torch.testing.assert_close(loaded_state["exp_avg_sq"], exp_avg_sq.repeat(3, 1, 1))
+
+
+def test_reshard_optimizer_state_dict_expands_sharded_legacy_kappa_moments():
+    param = torch.nn.Parameter(torch.zeros(2, 2, 300))
+    optimizer = make_optimizer([{
+        "kind": "adamw",
+        "params": [param],
+        "debug_param_names": ["transformer.h.0.mlp.experts.kappa_bias"],
+        "lr": 1e-3,
+    }])
+    saved_param_groups = [{"kind": "adamw", "params": [0], "lr": 1e-3}]
+    exp_avg = make_row_tensor(0, 2, 300)
+    exp_avg_sq = exp_avg + 10.0
+    shards = [
+        make_adamw_shard(saved_param_groups, 0, exp_avg[:1], exp_avg_sq[:1]),
+        make_adamw_shard(saved_param_groups, 0, exp_avg[1:], exp_avg_sq[1:]),
+    ]
+
+    state_dict = reshard_optimizer_state_dict(
+        shards, optimizer, saved_world_size=2, current_world_size=1
+    )
+
+    loaded_state = state_dict["state"][0]
+    torch.testing.assert_close(loaded_state["exp_avg"], exp_avg.repeat(2, 1, 1))
+    torch.testing.assert_close(loaded_state["exp_avg_sq"], exp_avg_sq.repeat(2, 1, 1))
+
+
 def test_reshard_optimizer_state_dict_converts_legacy_ut_source_lambda_moments():
     param = torch.nn.Parameter(torch.zeros(3))
     optimizer = make_optimizer([{
@@ -435,7 +481,49 @@ def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable
 
     torch.testing.assert_close(
         model_data["transformer.h.0.mlp.experts.kappa_bias"],
-        torch.full((2, 16), fill_value),
+        torch.full((config.total_ut_steps, 2, 16), fill_value),
+    )
+
+
+def test_patch_missing_keys_resizes_kappa_parameters_for_ut_passes():
+    config = GPTConfig(
+        n_layer=2,
+        moe_start_layer=1,
+        num_moe_layers=1,
+        n_exp=2,
+        n_embd=4,
+        total_ut_steps=3,
+        use_kappa_swiglu=True,
+    )
+    dense_bias = torch.arange(16, dtype=torch.float32)
+    moe_bias = torch.arange(64, dtype=torch.float32).reshape(2, 2, 16)
+    moe_scale = moe_bias + 100.0
+    model_data = {
+        "transformer.h.0.mlp.kappa_bias": dense_bias,
+        "transformer.h.1.mlp.experts.kappa_bias": moe_bias,
+        "transformer.h.1.mlp.experts.kappa_scale": moe_scale,
+        "global_kappa_bias": torch.tensor([0.25]),
+        "global_kappa_scale": torch.tensor([0.5]),
+    }
+
+    _patch_missing_keys(model_data, config)
+
+    torch.testing.assert_close(
+        model_data["transformer.h.0.mlp.kappa_bias"], dense_bias.repeat(3, 1)
+    )
+    torch.testing.assert_close(
+        model_data["transformer.h.1.mlp.experts.kappa_bias"],
+        torch.cat((moe_bias, moe_bias[-1:])),
+    )
+    torch.testing.assert_close(
+        model_data["transformer.h.1.mlp.experts.kappa_scale"],
+        torch.cat((moe_scale, moe_scale[-1:])),
+    )
+    torch.testing.assert_close(
+        model_data["global_kappa_bias"], torch.full((3, 1), 0.25)
+    )
+    torch.testing.assert_close(
+        model_data["global_kappa_scale"], torch.full((3, 1), 0.5)
     )
 
 

@@ -502,6 +502,8 @@ def test_setup_optimizer_scalar_lr_is_x0_lr_and_residual_scalars_use_one_tenth()
     assert resid_group['lr'] == pytest.approx(0.005)
     assert source_group is resid_group
     assert x0_group['lr'] == pytest.approx(0.05)
+    assert resid_group['kind'] == 'adamw'
+    assert x0_group['kind'] == 'adamw'
 
 
 def test_setup_optimizer_keeps_kappa_biases_out_of_muon_groups():
@@ -571,7 +573,7 @@ def test_setup_optimizer_selects_aurora_for_matrix_groups():
 
 
 
-def test_setup_optimizer_places_kappa_biases_in_scaled_groups():
+def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
     config = GPTConfig(
         n_layer=4,
         moe_start_layer=1,
@@ -588,23 +590,21 @@ def test_setup_optimizer_places_kappa_biases_in_scaled_groups():
         matrix_lr=0.01,
         weight_decay=0.0,
         kappa_lr_final_scale=1.0,
-        kappa_lr_warmup_iterations=1000,
+        kappa_bias_lr_warmup_iterations=1000,
     )
 
-    moe_kappa_bias_params = []
-    for block in model.transformer.h:
-        mlp = getattr(block, 'mlp', None)
-        experts = getattr(mlp, 'experts', None)
-        if getattr(experts, 'kappa_bias', None) is not None:
-            moe_kappa_bias_params.append(experts.kappa_bias)
+    kappa_params = {
+        param
+        for name, param in model.named_parameters()
+        if 'kappa_bias' in name or 'kappa_scale' in name
+    }
+    kappa_bias_group = next(
+        group for group in optimizer.param_groups
+        if group.get('name') == 'kappa_bias'
+    )
 
-    kappa_bias_group = None
-    for group in optimizer.param_groups:
-        params = set(group['params'])
-        if params == set(moe_kappa_bias_params):
-            kappa_bias_group = group
-
-    assert kappa_bias_group is not None
+    assert kappa_params
+    assert set(kappa_bias_group['params']) == kappa_params
     assert kappa_bias_group['kind'] == 'adamw'
     dmodel_lr_scale = (config.n_embd / 768) ** -0.5
     assert kappa_bias_group['lr'] == 0.0

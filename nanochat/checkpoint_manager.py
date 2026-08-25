@@ -222,6 +222,51 @@ def _resize_ut_source_lambdas(value, total_ut_steps, n_layer, ut_destination):
     return torch.cat((value, extra_values), dim=0).clone()
 
 
+def _resize_ut_kappa_parameter(value, base_shape, total_ut_steps, name):
+    if tuple(value.shape) == tuple(base_shape):
+        value = value.unsqueeze(0)
+    if value.ndim != len(base_shape) + 1 or tuple(value.shape[1:]) != tuple(base_shape):
+        raise ValueError(
+            f"{name} shape {tuple(value.shape)} is incompatible with target shape "
+            f"{(total_ut_steps, *base_shape)}"
+        )
+    if value.shape[0] >= total_ut_steps:
+        return value[:total_ut_steps].clone()
+    extra_rows = value[-1:].expand(total_ut_steps - value.shape[0], *base_shape)
+    return torch.cat((value, extra_rows), dim=0).clone()
+
+
+def _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps):
+    granularity = getattr(model_config, "global_kappa_bias_granularity", "per-gate")
+    intermediate_size = 4 * model_config.n_embd
+    moe_layer_indices = set(get_moe_layer_indices(model_config))
+    for key in list(model_data):
+        if key in {"global_kappa_bias", "global_kappa_scale"}:
+            base_shape = (1,)
+        else:
+            match = re.match(
+                r"^transformer\.h\.(\d+)\.mlp(\.experts)?\.kappa_(?:bias|scale)$",
+                key,
+            )
+            if match is None:
+                continue
+            layer_idx = int(match.group(1))
+            is_moe = match.group(2) is not None or layer_idx in moe_layer_indices
+            if granularity == "per-gate":
+                base_shape = (
+                    (model_config.n_exp, intermediate_size)
+                    if is_moe
+                    else (intermediate_size,)
+                )
+            elif granularity == "per-expert" and is_moe:
+                base_shape = (model_config.n_exp,)
+            else:
+                base_shape = (1,)
+        model_data[key] = _resize_ut_kappa_parameter(
+            model_data[key], base_shape, total_ut_steps, key
+        )
+
+
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
@@ -290,6 +335,7 @@ def _patch_missing_keys(model_data, model_config):
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)
                 log0(f"Patching missing {expert_bias_key} in model data to zeros")
+    _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps)
 
 
 def _optimizer_shard_path(checkpoint_dir, step, rank):
@@ -413,6 +459,19 @@ def _require_complete_shard_entries(shard_entries, description):
     return present_entries
 
 
+def _resize_optimizer_ut_kappa_state(value, param, param_name):
+    if not (param_name and "kappa_" in param_name) or not torch.is_tensor(value):
+        return value
+    if value.ndim == param.ndim - 1 and value.shape == param.shape[1:]:
+        value = value.unsqueeze(0)
+    if value.ndim != param.ndim or value.shape[1:] != param.shape[1:]:
+        return value
+    if value.shape[0] >= param.shape[0]:
+        return value[:param.shape[0]].clone()
+    extra_rows = value[-1:].expand(param.shape[0] - value.shape[0], *param.shape[1:])
+    return torch.cat((value, extra_rows), dim=0).clone()
+
+
 def _reshard_adamw_state(
     shard_entries,
     param,
@@ -424,6 +483,7 @@ def _reshard_adamw_state(
     if param.numel() < 1024:
         local_state = {}
         for key, value in shard_entries[0].items():
+            resized_value = _resize_optimizer_ut_kappa_state(value, param, param_name)
             if (
                 param_name == "ut_source_lambdas"
                 and torch.is_tensor(value)
@@ -443,6 +503,8 @@ def _reshard_adamw_state(
                 and value.shape == param.shape[1:]
             ):
                 local_state[key] = value.unsqueeze(0).expand_as(param).clone()
+            elif resized_value is not value:
+                local_state[key] = resized_value
             else:
                 local_state[key] = _clone_optimizer_state_value(value)
         return local_state
@@ -460,6 +522,7 @@ def _reshard_adamw_state(
     for key, value in shard_entries[0].items():
         if torch.is_tensor(value) and value.ndim > 0:
             full_value = torch.cat([entry[key] for entry in shard_entries], dim=0)
+            full_value = _resize_optimizer_ut_kappa_state(full_value, param, param_name)
             if full_value.shape[0] != param.shape[0]:
                 raise ValueError(
                     f"AdamW state shape mismatch for key '{key}': "
