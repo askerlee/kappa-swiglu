@@ -243,10 +243,10 @@ parser.add_argument("--ut-everypass-ntp", dest="ut_everypass_ntp", type=str2bool
                     help="compute and average NTP loss at every UT pass; disable to supervise only the final pass")
 parser.add_argument("--ut-detach", dest="ut_detach", type=str2bool, nargs='?', const=True, default=False,
                     help="detach the hidden state between UT passes (truncated BPTT); requires --ut-everypass-ntp and cuts cross-pass gradient flow")
-parser.add_argument("--ut-source", type=int, default=4,
-                    help="source layer whose output is injected into the next UT pass (supports Python negative indices)")
-parser.add_argument("--ut-destination", type=int, default=-4,
-                    help="destination layer that receives the prior pass source features (supports Python negative indices)")
+parser.add_argument("--ut-source", type=int, default=None,
+                    help="source layer whose output is injected into the next UT pass (default: -max(1, depth//6); supports Python negative indices)")
+parser.add_argument("--ut-destination", type=int, default=None,
+                    help="destination layer that receives the prior pass source features (default: max(1, depth//6); supports Python negative indices)")
 parser.add_argument("--moe-start-layer", type=int, default=2, help="first layer index of MoE layers")
 parser.add_argument("--num-moe-layers", type=int, default=-1, help="number of MoE layers to instantiate from --moe-start-layer onward (-1 = all eligible layers)")
 parser.add_argument("--n-exp", type=int, default=64, help="number of experts per MoE layer")
@@ -407,6 +407,12 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+
+ut_edge_offset = max(1, args.depth // 6)
+if args.ut_source is None:
+    args.ut_source = -ut_edge_offset
+if args.ut_destination is None:
+    args.ut_destination = ut_edge_offset
 
 if args.activation_checkpointing and args.activation_offload:
     raise ValueError("--activation-checkpointing and --activation-offload are mutually exclusive")
