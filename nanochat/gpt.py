@@ -594,7 +594,6 @@ class CausalSelfAttention(nn.Module):
         self.c_v = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.ve_gate_channels = 32
-        self.use_ve = has_ve(layer_idx, config.n_layer)
         self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache, cache_layer_idx=None, advance_kv_cache=False):
@@ -606,13 +605,11 @@ class CausalSelfAttention(nn.Module):
         k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
         v = self.c_v(x).view(B, T, self.n_kv_head, self.head_dim)
 
-        # Value residual (ResFormer): mix in value embedding with input-dependent gate per head
-        # Branch only on a static module attribute to avoid Dynamo recompiles on ve presence.
-        if self.use_ve:
-            assert ve is not None, "Expected value embeddings for VE-enabled layer"
-            ve = ve.view(B, T, self.n_kv_head, self.head_dim)
-            gate = 2 * torch.sigmoid(self.ve_gate(x[..., :self.ve_gate_channels]))  # (B, T, n_kv_head), range (0, 2)
-            v = v + gate.unsqueeze(-1) * ve
+        # Value residual (ResFormer): non-VE layers receive a zero placeholder.
+        # Keeping this path branch-free avoids per-layer Dynamo specialization.
+        ve = ve.view(B, T, self.n_kv_head, self.head_dim)
+        gate = 2 * torch.sigmoid(self.ve_gate(x[..., :self.ve_gate_channels]))  # (B, T, n_kv_head), range (0, 2)
+        v = v + gate.unsqueeze(-1) * ve
 
         # Apply Rotary Embeddings to queries and keys to get relative positional encoding
         cos, sin = cos_sin
