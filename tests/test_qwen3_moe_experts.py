@@ -304,6 +304,49 @@ def test_router_valid_token_mask_excludes_padding_from_capacity():
     assert not router_probs[~valid_token_mask.reshape(-1)].any()
 
 
+@pytest.mark.parametrize(
+    "valid_token_mask",
+    [
+        torch.tensor([[True, True, False], [True, False, False]]),
+        torch.tensor([[True, True, True], [True, True, False]]),
+    ],
+)
+def test_router_masked_reductions_match_compacted_reference(valid_token_mask):
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=3,
+        moe_top_k=2,
+        n_embd=4,
+        use_noisy_top_k=False,
+        use_aux_loss=True,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    router = Router(config)
+    expert_probs = torch.softmax(torch.randn(2, 3, config.n_exp), dim=-1)
+    top_k_indices = torch.topk(expert_probs, config.moe_top_k, dim=-1).indices
+
+    actual_aux_loss = router.compute_aux_loss(
+        expert_probs, top_k_indices, valid_token_mask
+    )
+    compact_indices = top_k_indices[valid_token_mask]
+    compact_probs = expert_probs[valid_token_mask]
+    compact_one_hot = F.one_hot(compact_indices, num_classes=config.n_exp).float()
+    expected_aux_loss = config.n_exp * torch.sum(
+        compact_probs.mean(dim=0) * compact_one_hot.sum(dim=1).mean(dim=0)
+    )
+    torch.testing.assert_close(actual_aux_loss, expected_aux_loss)
+
+    router.set_aux_free_load_balancing(True)
+    router._accumulate_aux_free_load_balancing_counts(
+        top_k_indices.reshape(-1, config.moe_top_k), valid_token_mask.reshape(-1)
+    )
+    expected_counts = torch.bincount(
+        compact_indices.reshape(-1), minlength=config.n_exp
+    ).float()
+    torch.testing.assert_close(router.tokens_per_expert_counter, expected_counts)
+
+
 def test_config_allows_constant_dense_kappa_bias_with_router_probs_for_moe_layers():
     config = GPTConfig(
         n_exp=2,

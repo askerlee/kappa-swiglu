@@ -1161,7 +1161,6 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
         target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
         targets[~target_mask] = -1
-        #breakpoint()
         yield inputs, targets, valid_token_mask, {
             "cursor": cursor,
             "consumed": consumed,

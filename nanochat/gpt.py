@@ -698,10 +698,15 @@ class Router(nn.Module):
         return logits + expert_bias
 
     @torch.no_grad()
-    def _accumulate_aux_free_load_balancing_counts(self, top_k_indices):
+    def _accumulate_aux_free_load_balancing_counts(self, top_k_indices, valid_token_mask=None):
         if not self.use_aux_free_load_balancing:
             return
-        token_counts = torch.bincount(top_k_indices.reshape(-1), minlength=self.n_exp)
+        weights = None
+        if valid_token_mask is not None:
+            weights = valid_token_mask[:, None].expand_as(top_k_indices).reshape(-1).float()
+        token_counts = torch.bincount(
+            top_k_indices.reshape(-1), weights=weights, minlength=self.n_exp
+        )
         token_counts = token_counts.to(
             device=self.tokens_per_expert_counter.device,
             dtype=self.tokens_per_expert_counter.dtype,
@@ -774,7 +779,7 @@ class Router(nn.Module):
                     )
                 else:
                     self._accumulate_aux_free_load_balancing_counts(
-                        top_k_indices[valid_token_mask_flat]
+                        top_k_indices, valid_token_mask_flat
                     )
 
                 logits_for_router = logits
@@ -796,7 +801,9 @@ class Router(nn.Module):
                         z_loss_penalize_mean_logits=self.z_loss_penalize_mean_logits,
                         reduction="none",
                     )
-                    router_z_loss = router_z_loss_per_token[valid_token_mask].mean()
+                    router_z_loss = (
+                        router_z_loss_per_token * valid_token_mask
+                    ).sum() / valid_token_mask.sum().clamp_min(1)
                     if loss_accum is not None:
                         loss_accum.add("router_z_loss", router_z_loss)
                     else:
@@ -927,15 +934,18 @@ class Router(nn.Module):
             if valid_token_mask is None:
                 tokens_per_expert = torch.mean(one_hot_indices, dim=(0, 1))
             else:
-                one_hot_indices = one_hot_indices[valid_token_mask]
-                tokens_per_expert = torch.mean(one_hot_indices, dim=0)
+                valid_token_count = valid_token_mask.sum().clamp_min(1)
+                tokens_per_expert = (
+                    one_hot_indices * valid_token_mask[:, :, None]
+                ).sum(dim=(0, 1)) / valid_token_count
 
         # equation (6): compute ratio of router probability allocated to each expert
         if valid_token_mask is None:
             prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
         else:
-            expert_probs = expert_probs[valid_token_mask]
-            prob_per_expert = torch.mean(expert_probs.float(), dim=0)
+            prob_per_expert = (
+                expert_probs.float() * valid_token_mask[:, :, None]
+            ).sum(dim=(0, 1)) / valid_token_count
 
         # equation (4): take a scaled dot product between prob/token allocation vectors
         # multiply the result by the number of experts
