@@ -30,6 +30,7 @@ def test_tulu3_persona_if_loads_focused_training_dataset(monkeypatch):
 
 
 def test_tulu3_english_filter_checks_full_conversation(monkeypatch):
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "1")
     english_messages = [
         {"role": "user", "content": "Analyze the meaning of this song."},
         {"role": "assistant", "content": "The song describes memory and loss."},
@@ -54,6 +55,49 @@ def test_tulu3_english_filter_checks_full_conversation(monkeypatch):
     assert task[0] == {"messages": english_messages}
 
 
+def test_tulu3_english_filter_uses_allocated_slurm_cpus(monkeypatch):
+    filter_kwargs = {}
+
+    class FakeDataset:
+        def filter(self, predicate, **kwargs):
+            filter_kwargs.update(kwargs)
+            return self
+
+        def shuffle(self, seed):
+            return self
+
+        def __len__(self):
+            return 0
+
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "8")
+    monkeypatch.delenv("LOCAL_WORLD_SIZE", raising=False)
+    monkeypatch.setattr(tulu3, "load_dataset", lambda path, split: FakeDataset())
+
+    tulu3.Tulu3SFTMixture(split="train", english_only=True)
+
+    assert filter_kwargs["num_proc"] == 8
+    assert filter_kwargs["desc"] == "Filtering non-English Tulu conversations"
+
+
+def test_tulu3_english_filter_divides_pbs_cpus_between_local_ranks(monkeypatch):
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.setenv("PBS_NCPUS", "16")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
+
+    assert tulu3.get_filter_num_proc() == 8
+
+
+def test_tulu3_english_filter_uses_local_cpu_affinity(monkeypatch):
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.delenv("PBS_NCPUS", raising=False)
+    monkeypatch.delenv("NCPUS", raising=False)
+    monkeypatch.delenv("PBS_NP", raising=False)
+    monkeypatch.delenv("LOCAL_WORLD_SIZE", raising=False)
+    monkeypatch.setattr(tulu3.os, "sched_getaffinity", lambda process_id: {0, 1, 2, 3})
+
+    assert tulu3.get_filter_num_proc() == 4
+
+
 def test_training_scripts_enable_english_only_tulu_data():
     for script_name in ("base_train_mix.py", "chat_sft.py"):
         tree = ast.parse((ROOT / "scripts" / script_name).read_text())
@@ -74,3 +118,16 @@ def test_training_scripts_enable_english_only_tulu_data():
             )
             assert isinstance(english_only, ast.Constant)
             assert english_only.value is True
+
+
+def test_pbs_jobs_request_fourteen_cpus_per_gpu():
+    expected_resources = {
+        "base_train_mix.pbs": "select=1:ncpus=14:ngpus=1",
+        "base_train_mix2u.pbs": "select=1:ncpus=28:ngpus=2",
+        "base_train_mix4u.pbs": "select=1:ncpus=56:ngpus=4",
+        "chat_train.pbs": "select=1:ncpus=14:ngpus=1",
+        "chat_train2u.pbs": "select=1:ncpus=28:ngpus=2",
+    }
+
+    for script_name, resources in expected_resources.items():
+        assert f"#PBS -l {resources}" in (ROOT / script_name).read_text()

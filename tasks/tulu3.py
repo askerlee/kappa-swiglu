@@ -3,6 +3,8 @@ Tulu 3 SFT mixture by Allen AI.
 https://huggingface.co/datasets/allenai/tulu-3-sft-mixture
 """
 
+import os
+
 from datasets import load_dataset
 from langdetect import DetectorFactory, LangDetectException, detect
 from tasks.common import Task, normalize_conversation
@@ -26,10 +28,28 @@ def has_only_english_messages(row):
         return False
 
 
+def get_filter_num_proc():
+    allocated_cpus = None
+    for variable in ("SLURM_CPUS_PER_TASK", "PBS_NCPUS", "NCPUS", "PBS_NP"):
+        if variable in os.environ:
+            allocated_cpus = int(os.environ[variable])
+            break
+    if allocated_cpus is None and hasattr(os, "sched_getaffinity"):
+        allocated_cpus = len(os.sched_getaffinity(0))
+    if allocated_cpus is None:
+        allocated_cpus = os.cpu_count() or 1
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+    return max(1, allocated_cpus // local_world_size)
+
+
 def load_tulu_dataset(path, split, english_only):
     dataset = load_dataset(path, split=split)
     if english_only:
-        dataset = dataset.filter(has_only_english_messages)
+        filter_num_proc = get_filter_num_proc()
+        filter_kwargs = {"desc": "Filtering non-English Tulu conversations"}
+        if filter_num_proc > 1:
+            filter_kwargs["num_proc"] = filter_num_proc
+        dataset = dataset.filter(has_only_english_messages, **filter_kwargs)
     return dataset.shuffle(seed=42)
 
 
