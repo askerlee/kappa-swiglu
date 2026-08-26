@@ -80,8 +80,8 @@ def test_fresh_model_scripts_wire_ut_source_and_destination():
 
         assert 'parser.add_argument("--ut-source", type=int, default=None' in source
         assert 'parser.add_argument("--ut-destination", type=int, default=None' in source
-        assert "ut_edge_offset = max(1, args.depth // 6)" in source
-        assert "args.ut_source = -ut_edge_offset" in source
+        assert "ut_edge_offset = args.depth // 6" in source
+        assert "args.ut_source = -max(1, ut_edge_offset)" in source
         assert "args.ut_destination = ut_edge_offset" in source
         config_calls = _find_calls(tree, "GPTConfig")
         assert any(

@@ -408,9 +408,9 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 
-ut_edge_offset = max(1, args.depth // 6)
+ut_edge_offset = args.depth // 6
 if args.ut_source is None:
-    args.ut_source = -ut_edge_offset
+    args.ut_source = -max(1, ut_edge_offset)
 if args.ut_destination is None:
     args.ut_destination = ut_edge_offset
 
