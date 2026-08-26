@@ -42,14 +42,12 @@ def test_chat_sft_casts_parameters_before_compile_and_optimizer_setup():
     assert cast_index < compile_index < optimizer_index
 
 
-def test_chat_sft_uses_increased_train_capacity_before_compile():
+def test_chat_sft_inherits_checkpoint_train_capacity():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'parser.add_argument("--train-capacity", type=float, default=1.25' in source
-    capacity_index = source.index("model.set_train_capacity(args.train_capacity)")
-    compile_index = source.index("model = torch.compile(model, dynamic=False)")
-
-    assert capacity_index < compile_index
+    assert 'parser.add_argument("--train-capacity"' not in source
+    assert "args.train_capacity" not in source
+    assert "model.set_train_capacity" not in source
 
 
 def test_chat_sft_scalar_lr_defaults_to_005_and_is_wired_to_optimizer():
