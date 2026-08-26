@@ -395,9 +395,9 @@ train_tasks = [
 ]
 if args.use_tulu3_sft_mixture:
     # allenai/tulu-3-sft-mixture: 939,344 samples
-    train_tasks.append(Tulu3SFTMixture(split="train"))
+    train_tasks.append(Tulu3SFTMixture(split="train", english_only=True))
     # Adds a second exposure to the 30k focused Persona-IF examples.
-    train_tasks.append(Tulu3SFTPersonaIF(split="train"))
+    train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=True))
 if args.use_ultradata_sft_if:
     # openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before English filtering
     train_tasks.append(UltraDataSFTIF())

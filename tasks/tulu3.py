@@ -4,16 +4,46 @@ https://huggingface.co/datasets/allenai/tulu-3-sft-mixture
 """
 
 from datasets import load_dataset
+from langdetect import DetectorFactory, LangDetectException, detect
 from tasks.common import Task, normalize_conversation
+
+
+DetectorFactory.seed = 42
+
+
+def has_only_english_messages(row):
+    messages = row.get("messages", [])
+    contents = [
+        message.get("content", "").strip()
+        for message in messages
+        if isinstance(message.get("content"), str)
+    ]
+    if not contents or len(contents) != len(messages) or not all(contents):
+        return False
+    try:
+        return all(detect(content) == "en" for content in contents)
+    except LangDetectException:
+        return False
+
+
+def load_tulu_dataset(path, split, english_only):
+    dataset = load_dataset(path, split=split)
+    if english_only:
+        dataset = dataset.filter(has_only_english_messages)
+    return dataset.shuffle(seed=42)
 
 
 class Tulu3SFTMixture(Task):
     """ Tulu 3 SFT mixture. train is 939K rows. """
 
-    def __init__(self, split="train", **kwargs):
+    def __init__(self, split="train", english_only=False, **kwargs):
         super().__init__(**kwargs)
         assert split == "train", "Tulu3SFTMixture split must be train"
-        self.ds = load_dataset("allenai/tulu-3-sft-mixture", split=split).shuffle(seed=42)
+        self.ds = load_tulu_dataset(
+            "allenai/tulu-3-sft-mixture",
+            split,
+            english_only,
+        )
         self.length = len(self.ds)
 
     def num_examples(self):
@@ -33,13 +63,14 @@ class Tulu3SFTMixture(Task):
 class Tulu3SFTPersonaIF(Task):
     """Focused 29,980-example Persona-IF subset already present in the full mixture."""
 
-    def __init__(self, split="train", **kwargs):
+    def __init__(self, split="train", english_only=False, **kwargs):
         super().__init__(**kwargs)
         assert split == "train", "Tulu3SFTPersonaIF split must be train"
-        self.ds = load_dataset(
+        self.ds = load_tulu_dataset(
             "allenai/tulu-3-sft-personas-instruction-following",
-            split=split,
-        ).shuffle(seed=42)
+            split,
+            english_only,
+        )
         self.length = len(self.ds)
 
     def num_examples(self):

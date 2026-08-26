@@ -975,6 +975,8 @@ class Router(nn.Module):
         # expert capacity is given by (tokens_per_batch / num_experts) * capacity_factor
         # see eq (3) in Switch Transformer (https://arxiv.org/abs/2101.03961)
         capacity_factor = self.train_capacity if self.training else self.eval_capacity
+        # The larger top_k is, the more (token, expert) pairs need to be accommodated.
+        # Therefore, capacity scales with the top_k value.
         capacity = math.floor(self.top_k * capacity_factor * tokens_per_batch / self.n_exp)
         capacity += capacity % 2 # make sure capacity is an even number
         capacity = max(capacity, self.min_capacity) # use min capacity

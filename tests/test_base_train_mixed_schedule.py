@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,21 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, 10) is True
     assert should_use_chat_sft_step(20, 10) is True
     assert should_use_chat_sft_step(10, -1) is False
+
+
+def test_get_task_mixture_source_resolves_shuffled_index():
+    get_task_mixture_source = load_function_from_script("get_task_mixture_source")
+    dataset = SimpleNamespace(
+        index_map=[(1, 7), (0, 3)],
+        tasks=[SimpleNamespace(), []],
+    )
+
+    assert get_task_mixture_source(dataset, 0) == {
+        "mixture_index": 0,
+        "task_index": 1,
+        "task_name": "list",
+        "local_index": 7,
+    }
 
 
 def test_chat_sft_steps_keep_base_train_capacity():

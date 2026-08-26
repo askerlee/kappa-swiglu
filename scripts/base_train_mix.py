@@ -1022,8 +1022,8 @@ def build_chat_sft_train_dataset(
         CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
     ]
     if use_tulu3_sft_mixture:
-        train_tasks.append(Tulu3SFTMixture(split="train"))
-        train_tasks.append(Tulu3SFTPersonaIF(split="train"))
+        train_tasks.append(Tulu3SFTMixture(split="train", english_only=True))
+        train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=True))
     if use_ultradata_sft_if:
         train_tasks.append(UltraDataSFTIF())
     for repeat_idx in range(train_mixture_repeats):
@@ -1054,6 +1054,16 @@ def build_chat_sft_train_dataset(
     return TaskMixture(train_tasks)
 
 
+def get_task_mixture_source(dataset, mixture_index):
+    task_index, local_index = dataset.index_map[mixture_index]
+    return {
+        "mixture_index": mixture_index,
+        "task_index": task_index,
+        "task_name": type(dataset.tasks[task_index]).__name__,
+        "local_index": local_index,
+    }
+
+
 def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, max_seq_len, device, device_type, ddp_rank, ddp_world_size, buffer_size=100, resume_state_dict=None):
     dataset_size = len(dataset)
     if dataset_size <= 0:
@@ -1079,10 +1089,12 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
     def refill_buffer():
         nonlocal cursor, epoch, skipped_overlong
         while len(conv_buffer) < buffer_size:
+            mixture_index = cursor
             conversation = dataset[cursor]
             ids, mask = tokenizer.render_conversation(conversation, max_tokens=None)
             if len(ids) <= row_capacity:
-                conv_buffer.append((ids, mask))
+                source = get_task_mixture_source(dataset, mixture_index)
+                conv_buffer.append((ids, mask, source))
             else:
                 skipped_overlong += ddp_world_size
             cursor += ddp_world_size
@@ -1094,10 +1106,12 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
         rows = []
         row_masks = []
         row_valid_masks = []
+        packed_conversation_sources = []
         for _ in range(device_batch_size):
             row = []
             row_mask = []
             row_valid_mask = []
+            row_sources = []
             while len(row) < row_capacity:
                 while len(conv_buffer) < buffer_size:
                     refill_buffer()
@@ -1105,17 +1119,23 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
                 remaining = row_capacity - len(row)
                 best_idx = -1
                 best_len = 0
-                for i, (conv, _) in enumerate(conv_buffer):
+                for i, (conv, _, _) in enumerate(conv_buffer):
                     conv_len = len(conv)
                     if conv_len <= remaining and conv_len > best_len:
                         best_idx = i
                         best_len = conv_len
 
                 if best_idx >= 0:
-                    conv, conv_mask = conv_buffer.pop(best_idx)
+                    conv, conv_mask, source = conv_buffer.pop(best_idx)
+                    token_start = len(row)
                     row.extend(conv)
                     row_mask.extend(conv_mask)
                     row_valid_mask.extend([1] * len(conv))
+                    row_sources.append({
+                        **source,
+                        "token_start": token_start,
+                        "token_end": len(row),
+                    })
                     consumed += ddp_world_size
                 else:
                     # Pad with BOS tokens
@@ -1130,6 +1150,7 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
             rows.append(row[:row_capacity])
             row_masks.append(row_mask[:row_capacity])
             row_valid_masks.append(row_valid_mask[:row_capacity])
+            packed_conversation_sources.append(row_sources)
 
         iteration += 1
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
@@ -1140,6 +1161,7 @@ def chat_sft_data_generator_bos_bestfit(dataset, tokenizer, device_batch_size, m
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda)
         target_mask = mask_tensor[:, 1:].to(device=device, dtype=torch.bool, non_blocking=use_cuda)
         targets[~target_mask] = -1
+        #breakpoint()
         yield inputs, targets, valid_token_mask, {
             "cursor": cursor,
             "consumed": consumed,
