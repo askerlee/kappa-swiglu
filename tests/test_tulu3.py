@@ -35,6 +35,10 @@ def test_tulu3_english_filter_checks_full_conversation(monkeypatch):
         {"role": "user", "content": "Analyze the meaning of this song."},
         {"role": "assistant", "content": "The song describes memory and loss."},
     ]
+    short_reply_messages = [
+        {"role": "user", "content": "Confirm that you understand these instructions."},
+        {"role": "assistant", "content": "OK"},
+    ]
     telugu_messages = [
         {"role": "user", "content": "ఈ పాటను విశ్లేషించండి."},
         {"role": "assistant", "content": "ఈ పాట జీవితం గురించి చెబుతుంది."},
@@ -45,14 +49,24 @@ def test_tulu3_english_filter_checks_full_conversation(monkeypatch):
     ]
 
     def fake_load_dataset(path, split):
-        return Dataset.from_dict({"messages": [english_messages, telugu_messages, mixed_messages]})
+        return Dataset.from_dict({
+            "messages": [
+                english_messages,
+                short_reply_messages,
+                telugu_messages,
+                mixed_messages,
+            ]
+        })
 
     monkeypatch.setattr(tulu3, "load_dataset", fake_load_dataset)
 
     task = tulu3.Tulu3SFTMixture(split="train", english_only=True)
 
-    assert len(task) == 1
-    assert task[0] == {"messages": english_messages}
+    assert len(task) == 2
+    assert {task[index]["messages"][-1]["content"] for index in range(len(task))} == {
+        "The song describes memory and loss.",
+        "OK",
+    }
 
 
 def test_tulu3_english_filter_uses_allocated_slurm_cpus(monkeypatch):

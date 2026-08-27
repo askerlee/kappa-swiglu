@@ -4,6 +4,7 @@ https://huggingface.co/datasets/allenai/tulu-3-sft-mixture
 """
 
 import os
+import unicodedata
 
 from datasets import load_dataset
 from langdetect import DetectorFactory, LangDetectException, detect
@@ -11,6 +12,7 @@ from tasks.common import Task, normalize_conversation
 
 
 DetectorFactory.seed = 42
+MAX_NON_LATIN_LETTER_RATIO = 0.1
 
 
 def has_only_english_messages(row):
@@ -22,8 +24,16 @@ def has_only_english_messages(row):
     ]
     if not contents or len(contents) != len(messages) or not all(contents):
         return False
+
+    conversation = "\n".join(contents)
+    letters = [character for character in conversation if character.isalpha()]
+    non_latin_letters = sum(
+        "LATIN" not in unicodedata.name(character, "") for character in letters
+    )
+    if letters and non_latin_letters / len(letters) > MAX_NON_LATIN_LETTER_RATIO:
+        return False
     try:
-        return all(detect(content) == "en" for content in contents)
+        return detect(conversation) == "en"
     except LangDetectException:
         return False
 
