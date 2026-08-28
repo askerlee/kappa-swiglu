@@ -26,9 +26,16 @@ from nanochat.dataset import DATA_DIR, MAX_SHARD, index_to_filename, list_parque
 parser = argparse.ArgumentParser(description="Check integrity of base_train_mix.py training data")
 parser.add_argument("--data-dir", type=str, default=None, help="Override the base pretraining data dir (default: nanochat/dataset.py DATA_DIR)")
 parser.add_argument("--sample-docs", type=int, default=5, help="Number of documents to spot-check per parquet file for malformed/empty text")
-parser.add_argument("--check-sft", action="store_true", help="Also instantiate the HF-backed SFT task datasets (requires network access, can be slow)")
+parser.add_argument("--check-sft", dest="check_sft", action="store_true", default=True, help="Also instantiate the HF-backed SFT task datasets (requires network access, can be slow). Enabled by default.")
+parser.add_argument("--no-check-sft", dest="check_sft", action="store_false", help="Skip the HF-backed SFT task dataset checks")
 parser.add_argument("--identity-filepath", type=str, default=None, help="Override the identity_conversations.jsonl path")
+parser.add_argument("--filter-num-proc", type=int, default=None, help="Pin the num_proc used for Tulu3/UltraData english_only filtering (via NCPUS), so it matches whatever value produced the on-disk HF datasets filter cache and avoids a full recompute")
 args = parser.parse_args()
+
+# tasks.tulu3.get_filter_num_proc() reads NCPUS (among others) before falling back to CPU
+# affinity; pinning it here keeps the .filter() cache fingerprint stable across runs/hosts.
+if args.filter_num_proc is not None:
+    os.environ["NCPUS"] = str(args.filter_num_proc)
 
 errors = []
 warnings = []
@@ -247,4 +254,14 @@ if args.check_sft:
     check_sft_tasks()
 
 print(f"\n=== Summary: {len(errors)} error(s), {len(warnings)} warning(s) ===")
+if errors:
+    print("\nErrors:")
+    for msg in errors:
+        print(f"  - {msg}")
+if warnings:
+    print("\nWarnings:")
+    for msg in warnings:
+        print(f"  - {msg}")
+if not errors and not warnings:
+    print("All checks passed.")
 sys.exit(1 if errors else 0)
