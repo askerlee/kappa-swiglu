@@ -246,6 +246,8 @@ parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
+parser.add_argument("--kappa-router-norm-gate-scale", dest="kappa_router_norm_gate_scale", type=float, default=0.1,
+                    help="detached mean router row norm at which normalized top-logit kappa confidence is gated to half strength")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=True,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing",
@@ -438,6 +440,8 @@ if args.kappa_l2_ema_floor_frac < 0.0:
     raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
 if args.kappa_input_logit_norm_exponent is not None and args.kappa_input_logit_norm_exponent < 0.0:
     raise ValueError("--kappa-input-logit-norm-exponent must be >= 0")
+if args.kappa_router_norm_gate_scale <= 0.0:
+    raise ValueError("--kappa-router-norm-gate-scale must be > 0")
 if not (0.0 <= args.kappa_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--kappa-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
@@ -625,6 +629,7 @@ def build_model_meta(depth):
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
         kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,
+        kappa_router_norm_gate_scale=args.kappa_router_norm_gate_scale,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
@@ -1815,6 +1820,7 @@ while True:
         t0 = time.time()
         step_losses = None
         training_model = model
+        orig_model.set_training_step(step)
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         for micro_step in range(grad_accum_steps):

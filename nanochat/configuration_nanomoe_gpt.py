@@ -27,6 +27,7 @@ class GPTConfig:
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
         kappa_input_logit_norm_exponent: float = 0.5,
+        kappa_router_norm_gate_scale: float = 0.1,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
@@ -43,6 +44,8 @@ class GPTConfig:
         kappa_bias_l2_ema_floor_frac: float = 0.8,
         refresh_kappa_bias_references: bool = False,
         use_noisy_top_k: bool = False,
+        router_tie_noise_steps: int = 10,
+        router_tie_noise_scale: float = 1e-6,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
         router_z_loss_weight: float = 1e-5,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
@@ -116,6 +119,9 @@ class GPTConfig:
                 f"{resolved_kappa_input_logit_norm_exponent}"
             )
         self.kappa_input_logit_norm_exponent = resolved_kappa_input_logit_norm_exponent
+        self.kappa_router_norm_gate_scale = float(kappa_router_norm_gate_scale)
+        if self.kappa_router_norm_gate_scale <= 0.0:
+            raise ValueError("kappa_router_norm_gate_scale must be > 0")
         self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
         self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
         valid_kappa_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
@@ -169,6 +175,12 @@ class GPTConfig:
         self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
         self.refresh_kappa_bias_references = bool(refresh_kappa_bias_references)
         self.use_noisy_top_k = use_noisy_top_k
+        self.router_tie_noise_steps = int(router_tie_noise_steps)
+        self.router_tie_noise_scale = float(router_tie_noise_scale)
+        if self.router_tie_noise_steps < 0:
+            raise ValueError("router_tie_noise_steps must be >= 0")
+        if self.router_tie_noise_scale < 0.0:
+            raise ValueError("router_tie_noise_scale must be >= 0")
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale

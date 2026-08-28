@@ -264,6 +264,37 @@ def test_router_returns_selected_top_k_router_scores():
     MANAGER._selected_scores_size = 0
 
 
+def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        n_exp=4,
+        moe_top_k=2,
+        n_embd=4,
+        train_capacity=100.0,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        debug=False,
+    )
+    router = Router(config).train()
+    with torch.no_grad():
+        router.w_g.weight.zero_()
+    x = torch.randn(8, 16, config.n_embd)
+
+    router.set_training_step(9)
+    early_indices = router(x)[3]
+    assert torch.unique(early_indices).numel() == config.n_exp
+
+    router.set_training_step(10)
+    rng_before = torch.random.get_rng_state()
+    late_indices = router(x)[3]
+    rng_after = torch.random.get_rng_state()
+
+    assert torch.equal(late_indices, late_indices[:1].expand_as(late_indices))
+    assert torch.equal(rng_after, rng_before)
+    MANAGER._selected_scores_buffer = None
+    MANAGER._selected_scores_size = 0
+
+
 def test_dense_qwen3_gate_projection_has_no_bias_parameter():
     config = GPTConfig(
         n_exp=1,
@@ -1392,6 +1423,10 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
         * smoothed_router_weight_magnitudes.sqrt()
         * scale_compensation
     )
+    layer_router_norm = moe_layer.router.w_g.weight.norm(dim=-1).mean()
+    expected = expected * layer_router_norm / (
+        layer_router_norm + config.kappa_router_norm_gate_scale
+    )
 
     torch.testing.assert_close(actual, expected)
 
@@ -1422,19 +1457,7 @@ def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
     )
 
     assert torch.isfinite(actual).all()
-    scale_compensation = (
-        torch.sqrt(
-            moe_layer.router.w_g.weight.norm(dim=-1).square()
-            + moe_layer.top_logit_norm_eps
-        )
-        .pow(1.0 - config.kappa_input_logit_norm_exponent)
-        .mean()
-    )
-    expected = 6.0 * top_k_scores / (
-        math.sqrt(config.n_embd)
-        * (moe_layer.top_logit_norm_eps ** 0.25)
-        * scale_compensation.detach()
-    )
+    expected = torch.zeros_like(top_k_scores)
 
     torch.testing.assert_close(actual, expected)
 
@@ -1489,7 +1512,37 @@ def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
         top_k_indices=top_k_indices,
     )
 
-    torch.testing.assert_close(actual, target_gate_confidence)
+    layer_router_norm = moe_layer.router.w_g.weight.norm(dim=-1).mean()
+    expected = target_gate_confidence * layer_router_norm / (
+        layer_router_norm + config.kappa_router_norm_gate_scale
+    )
+    torch.testing.assert_close(actual, expected)
+
+
+def test_kappa_router_norm_gate_is_detached_from_router_weights():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        moe_top_k=1,
+        kappa_input="top_logits",
+        kappa_input_logit_norm_exponent=0.5,
+        kappa_router_norm_gate_scale=0.1,
+        debug=False,
+    )
+    moe_layer = MOELayer(config, layer_idx=0)
+    with torch.no_grad():
+        moe_layer.router.w_g.weight.fill_(0.05)
+
+    top_k_scores = torch.tensor([[0.2]], requires_grad=True)
+    confidence = moe_layer._select_gate_confidence(
+        top_k_scores,
+        torch.ones_like(top_k_scores),
+        top_k_indices=torch.tensor([[0]]),
+    )
+    confidence.sum().backward()
+
+    assert top_k_scores.grad is not None
+    assert moe_layer.router.w_g.weight.grad is None
 
 def test_kappa_bias_l2_loss_is_mean_square():
     config = GPTConfig(

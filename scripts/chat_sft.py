@@ -808,6 +808,7 @@ while True:
         max(progress, approx_progress),
     )
     orig_model.set_kappa_bias_ema_rms_reg_total_iterations(kappa_bias_schedule_total_iterations)
+    orig_model.set_training_step(loaded_checkpoint_step + step)
     orig_model.set_kappa_bias_ema_rms_reg_step(step)
     moe_kappa_slope_max_scale = getattr(orig_model.config, "moe_kappa_slope_max_scale", 3.0)
     dense_kappa_slope_max_scale = getattr(orig_model.config, "dense_kappa_slope_max_scale", 2.0)

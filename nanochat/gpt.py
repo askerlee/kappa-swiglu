@@ -649,6 +649,11 @@ class Router(nn.Module):
         self.n_exp = config.n_exp
         assert self.top_k >= 1 and self.top_k <= config.n_exp
         self.use_noisy_top_k = config.use_noisy_top_k
+        self.router_tie_noise_steps = int(getattr(config, 'router_tie_noise_steps', 10))
+        self.router_tie_noise_scale = float(getattr(config, 'router_tie_noise_scale', 1e-6))
+        self.router_tie_noise_enabled = (
+            self.router_tie_noise_steps > 0 and self.router_tie_noise_scale > 0.0
+        )
         self.train_capacity = config.train_capacity
         self.eval_capacity = config.eval_capacity
         self.min_capacity = config.min_capacity
@@ -681,6 +686,11 @@ class Router(nn.Module):
             torch.zeros(self.n_exp, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer(
+            'training_step',
+            torch.zeros((), dtype=torch.int64),
+            persistent=False,
+        )
         if self.use_aux_loss and self.use_aux_free_load_balancing:
             raise ValueError("use_aux_loss and use_aux_free_load_balancing are mutually exclusive")
 
@@ -691,11 +701,24 @@ class Router(nn.Module):
             self.aux_free_load_balancing_bias_update_speed = float(bias_update_speed)
         self.tokens_per_expert_counter.zero_()
 
+    def set_training_step(self, step):
+        step = int(step)
+        self.training_step.fill_(step)
+        self.router_tie_noise_enabled = (
+            step < self.router_tie_noise_steps and self.router_tie_noise_scale > 0.0
+        )
+
     def _get_selection_scores(self, logits):
-        if not self.use_aux_free_load_balancing:
-            return logits
-        expert_bias = self.expert_bias.to(device=logits.device, dtype=logits.dtype)
-        return logits + expert_bias
+        if self.use_aux_free_load_balancing:
+            expert_bias = self.expert_bias.to(device=logits.device, dtype=logits.dtype)
+            selection_scores = logits + expert_bias
+        else:
+            selection_scores = logits
+        if self.training and self.router_tie_noise_enabled:
+            selection_scores = selection_scores + self.router_tie_noise_scale * torch.rand_like(
+                selection_scores
+            )
+        return selection_scores
 
     @torch.no_grad()
     def _accumulate_aux_free_load_balancing_counts(self, top_k_indices, valid_token_mask=None):
@@ -2084,6 +2107,9 @@ class MOELayer(nn.Module):
         self.kappa_input_logit_norm_exponent = float(
             getattr(config, 'kappa_input_logit_norm_exponent', 0.0)
         )
+        self.kappa_router_norm_gate_scale = float(
+            getattr(config, 'kappa_router_norm_gate_scale', 0.1)
+        )
         self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
@@ -2275,7 +2301,16 @@ class MOELayer(nn.Module):
             # Empirically, the average cosine(token embeddings, router weights) is 0.15.
             # top_k_scores / normalizer is roughly the cosine similarity, i.e., ~ 0.15.
             # We should multiply it by 6 to get it to be close to 1.0.
-            return 6 * top_k_scores / normalizer.to(dtype=top_k_scores.dtype)
+            normalized_confidence = 6 * top_k_scores / normalizer.to(
+                dtype=top_k_scores.dtype
+            )
+            layer_router_norm = router_weight_magnitudes_all.mean().detach()
+            router_norm_gate = layer_router_norm / (
+                layer_router_norm + self.kappa_router_norm_gate_scale
+            )
+            return normalized_confidence * router_norm_gate.to(
+                dtype=top_k_scores.dtype
+            )
         
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
@@ -2548,6 +2583,14 @@ class GPT(nn.Module):
             if isinstance(experts, Qwen3MLPExperts):
                 experts.set_kappa_bias_ema_rms_reg_step(step)
 
+    def set_training_step(self, step):
+        step = int(step)
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            router = getattr(mlp, 'router', None)
+            if isinstance(router, Router):
+                router.set_training_step(step)
+
     def set_kappa_bias_ema_rms_reg_total_iterations(self, total_iterations):
         total_iterations = int(total_iterations)
         for block in self.transformer.h:
@@ -2663,6 +2706,16 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(block.mlp.c_proj.weight)
             elif isinstance(block.mlp, MOELayer):
                 experts = block.mlp.experts
+                torch.nn.init.zeros_(block.mlp.router.w_g.weight)
+                if block.mlp.router.w_noise is not None:
+                    torch.nn.init.uniform_(block.mlp.router.w_noise.weight, -s, s)
+                block.mlp.router.expert_bias.zero_()
+                block.mlp.router.tokens_per_expert_counter.zero_()
+                block.mlp.router.training_step.zero_()
+                block.mlp.router.router_tie_noise_enabled = (
+                    block.mlp.router.router_tie_noise_steps > 0
+                    and block.mlp.router.router_tie_noise_scale > 0.0
+                )
                 if isinstance(experts, Qwen3MLPExperts):
                     torch.nn.init.uniform_(experts.gate_proj, -s, s)
                     torch.nn.init.uniform_(experts.c_fc, -s, s)
@@ -3230,7 +3283,6 @@ class GPT(nn.Module):
                    'kappa_scale_l2_loss': 0,
                    'kappa_bias_ema_rms_reg_loss': 0,
                    'kappa_scale_ema_rms_reg_loss': 0,
-                   'gate_grad_scale_mean': None,
                    'kappa_slope_scale_abs_top5p_mean': 0,
                    'kappa_slope_scale_abs_bottom5p_mean': 0,
                    'kappa_slope_scale_abs_mean': 0,
@@ -3262,13 +3314,6 @@ class GPT(nn.Module):
                 [scores[moe_layer_indices] for scores in checkpoint_selected_scores],
                 dim=0,
             ).detach()
-        gate_grad_scale_mean = MANAGER.aggregate("gate_grad_scale_mean")
-        losses['gate_grad_scale_mean'] = (
-            gate_grad_scale_mean.detach()
-            if gate_grad_scale_mean is not None
-            else None
-        )
-        MANAGER.reset("gate_grad_scale_mean")
         kappa_slope_scale_abs_top5p_mean = MANAGER.aggregate("kappa_slope_scale_abs_top5p_mean")
         losses['kappa_slope_scale_abs_top5p_mean'] = (
             kappa_slope_scale_abs_top5p_mean.detach()
