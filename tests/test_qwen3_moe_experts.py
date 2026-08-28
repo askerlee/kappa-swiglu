@@ -335,6 +335,44 @@ def test_router_valid_token_mask_excludes_padding_from_capacity():
     assert not router_probs[~valid_token_mask.reshape(-1)].any()
 
 
+def test_no_expert_rate_tracks_joint_assignment_drops():
+    rank = torch.tensor([
+        [0, 0],
+        [1, 2],
+        [2, 1],
+        [2, 2],
+        [2, 2],
+    ])
+    exp_capacity = 2
+    valid_token_mask = torch.tensor([[True, True, True, True, False]])
+    valid_mask = rank.reshape(-1) < exp_capacity
+    flat_top_k_indices = torch.zeros(rank.numel(), dtype=torch.long)
+    layer_stub = type("LayerStub", (), {"n_exp": 1})()
+
+    old_collect = MANAGER.collect_load_balancing_stats
+    MANAGER.collect_load_balancing_stats = True
+    MANAGER.reset("drop_rate_per_ks")
+    MANAGER.reset("no_expert_rates")
+    try:
+        MOELayer._maybe_collect_load_balancing_stats(
+            layer_stub,
+            rank,
+            flat_top_k_indices,
+            valid_mask,
+            exp_capacity,
+            valid_token_mask,
+        )
+        drop_rates = MANAGER.aggregate("drop_rate_per_ks")
+        no_expert_rates = MANAGER.aggregate("no_expert_rates")
+    finally:
+        MANAGER.collect_load_balancing_stats = old_collect
+        MANAGER.reset("drop_rate_per_ks")
+        MANAGER.reset("no_expert_rates")
+
+    torch.testing.assert_close(drop_rates, torch.tensor([[0.5, 0.5]]))
+    torch.testing.assert_close(no_expert_rates, torch.tensor([0.25]))
+
+
 @pytest.mark.parametrize(
     "valid_token_mask",
     [

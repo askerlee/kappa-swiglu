@@ -1088,6 +1088,15 @@ while True:
                 log_data[f"inspect/drop_rate_1_step_{layer_idx}"] = scalar_loss_to_item(
                     drop_rates[stats_idx, 1]
                 )        
+        no_expert_rates = losses['no_expert_rates']
+        if no_expert_rates is not None:
+            log_data["inspect/no_expert_rate_step"] = no_expert_rates.mean()
+            for stats_idx, layer_idx in enumerate(moe_layer_indices):
+                if stats_idx >= no_expert_rates.shape[0]:
+                    continue
+                log_data[f"inspect/no_expert_rate_step_{layer_idx}"] = scalar_loss_to_item(
+                    no_expert_rates[stats_idx]
+                )
         expert_utilities = losses['expert_utilities']
         moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
         for i in moe_layer_indices:

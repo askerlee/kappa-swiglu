@@ -19,6 +19,7 @@ class MOEManager:
             "kappa_slope_scale_abs_top5p_mean": [],
             "kappa_slope_scale_abs_bottom5p_mean": [],
             "drop_rate_per_ks": [],
+            "no_expert_rates": [],
             "expert_utilities": [],
             "selected_scores": [],
             "kappa_slope_scale_abs_mean": [],
@@ -32,6 +33,8 @@ class MOEManager:
         self._tensor_var_capacity = 32
         self._drop_rate_buffer = None
         self._drop_rate_size = 0
+        self._no_expert_rate_buffer = None
+        self._no_expert_rate_size = 0
         self._expert_utilities_buffer = None
         self._expert_utilities_size = 0
         self._selected_scores_buffer = None
@@ -55,7 +58,8 @@ class MOEManager:
         self._routed_token_router_weight_cosine_bottom5p_mean_buffer = None
         self._routed_token_router_weight_cosine_bottom5p_mean_size = 0
         self.tensor_var_names = \
-        set(["drop_rate_per_ks", 
+           set(["drop_rate_per_ks",
+               "no_expert_rates",
              "expert_utilities",
              "selected_scores",
              "kappa_slope_scale_abs_top5p_mean",
@@ -71,6 +75,9 @@ class MOEManager:
     def reset(self, name):
         if name == "drop_rate_per_ks":
             self._drop_rate_size = 0
+            return
+        if name == "no_expert_rates":
+            self._no_expert_rate_size = 0
             return
         if name == "expert_utilities":
             self._expert_utilities_size = 0
@@ -126,6 +133,20 @@ class MOEManager:
                 new_size = self._drop_rate_size + 1
                 self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
                 self._drop_rate_size = new_size
+            return
+        if name == "no_expert_rates":
+            with torch.inference_mode(False):
+                if self._no_expert_rate_buffer is None:
+                    self._no_expert_rate_buffer = torch.empty(
+                        (self._tensor_var_capacity,),
+                        device=value.device,
+                        dtype=value.dtype,
+                    )
+                new_size = self._no_expert_rate_size + 1
+                self._no_expert_rate_buffer[self._no_expert_rate_size:new_size].copy_(
+                    value.reshape(1)
+                )
+                self._no_expert_rate_size = new_size
             return
         if name == "expert_utilities":
             with torch.inference_mode(False):
@@ -288,6 +309,10 @@ class MOEManager:
             # Keep one [top_k] row per MoE layer; the training loop averages
             # across microsteps separately when it accumulates step losses.
             return values
+        elif name == "no_expert_rates":
+            if self._no_expert_rate_buffer is None or self._no_expert_rate_size == 0:
+                return None
+            return self._no_expert_rate_buffer[:self._no_expert_rate_size]
         elif name == "expert_utilities":
             if self._expert_utilities_buffer is None or self._expert_utilities_size == 0:
                 return None

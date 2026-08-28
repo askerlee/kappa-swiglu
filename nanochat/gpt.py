@@ -2438,6 +2438,8 @@ class MOELayer(nn.Module):
             # if both overflow, the token gets no MoE contribution from that layer            
             drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
             MANAGER.add("drop_rate_per_ks", _diagnostic_to_cpu(drop_rate_per_k))
+            no_expert_rate = (~slot_served).all(dim=1).float().mean()
+            MANAGER.add("no_expert_rates", _diagnostic_to_cpu(no_expert_rate))
             # Derive expert utilities: fraction of buffers used per expert.
             expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
             expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
@@ -3293,6 +3295,7 @@ class GPT(nn.Module):
                    'routed_token_router_weight_cosine_top5p_mean': 0,
                    'routed_token_router_weight_cosine_bottom5p_mean': 0,
                    'drop_rate_per_ks': None,
+                   'no_expert_rates': None,
                    'expert_utilities': None,
                    'selected_scores': None,
                  }
@@ -3304,6 +3307,9 @@ class GPT(nn.Module):
         drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
         losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")
+        no_expert_rates = MANAGER.aggregate("no_expert_rates")
+        losses['no_expert_rates'] = no_expert_rates.detach() if no_expert_rates is not None else None
+        MANAGER.reset("no_expert_rates")
         moe_layer_indices = get_moe_layer_indices(self.config)
         selected_scores = MANAGER.aggregate("selected_scores")
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
