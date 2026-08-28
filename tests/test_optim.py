@@ -606,10 +606,9 @@ def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
     assert kappa_params
     assert set(kappa_bias_group['params']) == kappa_params
     assert kappa_bias_group['kind'] == 'adamw'
-    dmodel_lr_scale = (config.n_embd / 768) ** -0.5
     assert kappa_bias_group['lr'] == 0.0
     assert kappa_bias_group['initial_lr'] == kappa_bias_group['lr']
-    assert kappa_bias_group['base_lr'] == 0.2 * dmodel_lr_scale
+    assert kappa_bias_group['base_lr'] == 0.05  # default scalar_lr, matches resid/x0 scalar groups
     assert kappa_bias_group['lr_scale_end'] == 1.0
     assert kappa_bias_group['lr_scale_warmup_iterations'] == 1000
 

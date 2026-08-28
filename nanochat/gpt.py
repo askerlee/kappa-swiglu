@@ -2108,7 +2108,7 @@ class MOELayer(nn.Module):
             getattr(config, 'kappa_input_logit_norm_exponent', 0.0)
         )
         self.kappa_router_norm_gate_scale = float(
-            getattr(config, 'kappa_router_norm_gate_scale', 0.1)
+            getattr(config, 'kappa_router_norm_gate_scale', 0.01)
         )
         self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
         self._expert_inputs_cache = None
@@ -2940,7 +2940,7 @@ class GPT(nn.Module):
         dense_nonmatrix_params = []
         moe_matrix_params = []
         moe_nonmatrix_params = []
-        kappa_bias_params = []
+        kappa_params = []
         seen_param_ids = set()
         param_names = {}
 
@@ -2970,13 +2970,13 @@ class GPT(nn.Module):
                     or name.startswith('mlp.experts.kappa_scale')
                     or name.startswith('mlp.kappa_scale')
                 ):
-                    append_param(kappa_bias_params, param, full_name)
+                    append_param(kappa_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
                 else:
                     append_param(target_matrix_params, param, full_name)
-        append_param(kappa_bias_params, self.global_kappa_bias, 'global_kappa_bias')
-        append_param(kappa_bias_params, self.global_kappa_scale, 'global_kappa_scale')
+        append_param(kappa_params, self.global_kappa_bias, 'global_kappa_bias')
+        append_param(kappa_params, self.global_kappa_scale, 'global_kappa_scale')
         value_embeds_params = []
         for param in self.value_embeds.parameters():
             append_param(value_embeds_params, param)
@@ -2994,7 +2994,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
-            len(kappa_bias_params) +
+            len(kappa_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -3021,10 +3021,10 @@ class GPT(nn.Module):
             dict(
                 kind='adamw',
                 name='kappa_bias',
-                params=kappa_bias_params,
-                debug_param_names=[param_names[id(p)] for p in kappa_bias_params],
+                params=kappa_params,
+                debug_param_names=[param_names[id(p)] for p in kappa_params],
                 lr=0.0,
-                base_lr=embedding_lr * dmodel_lr_scale,
+                base_lr=scalar_lr,
                 lr_scale_end=kappa_lr_final_scale,
                 lr_scale_max=kappa_lr_max_scale,
                 lr_scale_nolearn_iterations=kappa_bias_delay_start_iterations,
