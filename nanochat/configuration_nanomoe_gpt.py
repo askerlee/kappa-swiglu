@@ -27,7 +27,6 @@ class GPTConfig:
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
         kappa_input_logit_norm_exponent: float = 0.5,
-        kappa_router_norm_gate_scale: float = 0.1,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
@@ -57,6 +56,7 @@ class GPTConfig:
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
         router_use_full_prec: bool = False,  # use float32 precision in the router
+        router_wg_delta: bool = False,  # train a full additive delta while freezing the base router projection
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
         bilinear_mlp_moe: bool = False,  # disable SiLU gating in Qwen3-style MoE MLPs and use raw bilinear gating instead
@@ -119,9 +119,6 @@ class GPTConfig:
                 f"{resolved_kappa_input_logit_norm_exponent}"
             )
         self.kappa_input_logit_norm_exponent = resolved_kappa_input_logit_norm_exponent
-        self.kappa_router_norm_gate_scale = float(kappa_router_norm_gate_scale)
-        if self.kappa_router_norm_gate_scale <= 0.0:
-            raise ValueError("kappa_router_norm_gate_scale must be > 0")
         self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
         self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
         valid_kappa_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
@@ -193,6 +190,7 @@ class GPTConfig:
             raise ValueError(f"num_moe_layers must be >= -1, got {num_moe_layers}")
         self.num_moe_layers = int(num_moe_layers)
         self.router_use_full_prec = router_use_full_prec
+        self.router_wg_delta = bool(router_wg_delta)
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
         self.bilinear_mlp_moe = bool(bilinear_mlp_moe)

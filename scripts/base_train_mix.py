@@ -263,8 +263,6 @@ parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
                     help="when --kappa-input=top_logits, divide selected router logits by selected router-weight magnitudes raised to this exponent (0 = disabled, 1 = full router-weight normalization)")
-parser.add_argument("--kappa-router-norm-gate-scale", dest="kappa_router_norm_gate_scale", type=float, default=0.1,
-                    help="detached mean router row norm at which normalized top-logit kappa confidence is gated to half strength")
 parser.add_argument("--loss-recompute-backward", dest="loss_recompute_backward", type=str2bool, nargs='?', const=True, default=True,
                     help="recompute lm_head loss chunks during backward to reduce retained vocab-logit memory at the cost of speed")
 parser.add_argument("--activation-checkpointing", dest="activation_checkpointing", type=str2bool, nargs='?', const=True, default=False,
@@ -346,6 +344,9 @@ parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=T
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True,
                     help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
+parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive router delta only on mixed chat-SFT optimizer steps")
+parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=1e-2,
+                    help="L2 weight on the additive router delta during mixed chat-SFT steps")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
 parser.add_argument("--rebuild-compile-after-eval", type=str2bool, nargs='?', const=True, default=True, help="rebuild the compiled training wrapper after uncompiled CORE/sample passes; disable to avoid recompile overhead, but resumed training may hang")
@@ -462,8 +463,6 @@ if args.kappa_l2_ema_floor_frac < 0.0:
     raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
 if args.kappa_input_logit_norm_exponent is not None and args.kappa_input_logit_norm_exponent < 0.0:
     raise ValueError("--kappa-input-logit-norm-exponent must be >= 0")
-if args.kappa_router_norm_gate_scale <= 0.0:
-    raise ValueError("--kappa-router-norm-gate-scale must be > 0")
 if not (0.0 <= args.kappa_l2_loss_stage1_frac <= 1.0):
     raise ValueError(
         "--kappa-l2-loss-stage1-frac must satisfy 0 <= stage1_frac <= 1"
@@ -657,7 +656,6 @@ def build_model_meta(depth):
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
         kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,
-        kappa_router_norm_gate_scale=args.kappa_router_norm_gate_scale,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
@@ -733,8 +731,21 @@ if resuming:
         )
     if skip_optimizer_reason is not None:
         print0(skip_optimizer_reason)
+    checkpoint_has_router_wg_delta = any(name.endswith('.router.w_g_delta') for name in model_data)
+    if checkpoint_has_router_wg_delta:
+        model.setup_router_wg_delta()
     model.load_state_dict(model_data, strict=True, assign=True)
+    if args.router_wg_delta and not checkpoint_has_router_wg_delta:
+        model.setup_router_wg_delta()
+        if load_optimizer_state:
+            print0("Router w_g delta adds optimizer groups; resuming with fresh optimizer state.")
+            load_optimizer_state = False
     del model_data # free up this memory after the copy
+elif args.router_wg_delta:
+    model.setup_router_wg_delta()
+
+args.router_wg_delta = bool(getattr(model.config, "router_wg_delta", False))
+user_config["router_wg_delta"] = args.router_wg_delta
 
 cast_model_parameters(model, ptdtype)
 print0(f"Model parameter and optimizer-state storage dtype: {ptdtype}")
@@ -1446,7 +1457,7 @@ def snapshot_exp_gate_implicit_bias_signs(model, moe_layer_indices):
             experts = getattr(layer.mlp, 'experts', None)
             if experts is None:
                 continue
-            router_weight = layer.mlp.router.w_g.weight.float()  # [n_exp, d_model]
+            router_weight = layer.mlp.router.effective_w_g_weight().float()  # [n_exp, d_model]
             exp_gate_weight = experts.gate_proj.float()  # [n_exp, d_model, intermediate_size]
             normalized_router_weight = torch.nn.functional.normalize(router_weight, dim=1, eps=1e-12)
             normalized_exp_gate_weight = torch.nn.functional.normalize(exp_gate_weight, dim=1, eps=1e-12)
@@ -1517,7 +1528,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         layer = model.transformer.h[i]
         if hasattr(layer.mlp, 'experts'):
             # [n_exp, hidden_size]
-            router_gate_grad = layer.mlp.router.w_g.weight.grad
+            router_gate_grad = layer.mlp.router.trainable_w_g_weight().grad
             router_grad_norm = router_gate_grad.norm(dim=1)
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
@@ -1533,7 +1544,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             # Compute router grad - router weight alignment.
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
-                router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                router_weight = layer.mlp.router.effective_w_g_weight()  # [n_exp, hidden_size]
                 router_row_norm = router_weight.norm(dim=1)
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
@@ -1770,6 +1781,8 @@ while True:
         moe_kappa_slope_max_scale=moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=dense_kappa_slope_max_scale,
     )
+    if args.router_wg_delta:
+        orig_model.enable_router_wg_delta(False)
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if (
@@ -2065,6 +2078,7 @@ while True:
             'ntp_loss': 0.0,
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
+            'router_wg_delta_l2_loss': 0.0,
             'kappa_bias_l2_loss': 0.0,
             'kappa_scale_l2_loss': 0.0,
             'kappa_bias_ema_rms_reg_loss': 0.0,
@@ -2092,6 +2106,8 @@ while True:
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
         is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
+        if args.router_wg_delta:
+            orig_model.enable_router_wg_delta(is_chat_sft_step)
         step_sft_padding_tokens = 0
         step_sft_token_positions = 0
         for micro_step in range(grad_accum_steps):
@@ -2134,6 +2150,10 @@ while True:
             if aux_loss is None:
                 aux_loss = 0.0
             loss = loss + aux_loss_weight * aux_loss
+            if args.router_wg_delta:
+                router_wg_delta_l2_loss = micro_losses["router_wg_delta_l2_loss"]
+                if is_chat_sft_step:
+                    loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss
             kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
             if kappa_bias_l2_loss is None:
                 kappa_bias_l2_loss = 0.0
@@ -2193,6 +2213,17 @@ while True:
 
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)
+
+        if args.router_wg_delta:
+            for group in optimizer.param_groups:
+                inactive_router_group = (
+                    group.get("name") == "router_wg_delta" and not is_chat_sft_step
+                ) or (
+                    group.get("name") == "router_wg_base" and is_chat_sft_step
+                )
+                if inactive_router_group:
+                    for param in group["params"]:
+                        param.grad = None
         
         # step the optimizer
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
@@ -2209,6 +2240,10 @@ while True:
                 if resume_kappa_lr_scale == 0.0:
                     for param in group["params"]:
                         param.grad = None
+            elif group.get("name") == "router_wg_delta":
+                group["lr"] = group["initial_lr"] * lrm if is_chat_sft_step else 0.0
+            elif group.get("name") == "router_wg_base":
+                group["lr"] = group["initial_lr"] * lrm if not is_chat_sft_step else 0.0
             else:
                 group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':
@@ -2282,6 +2317,7 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
+            "train/router_wg_delta_l2_loss_step": losses['router_wg_delta_l2_loss'],
             "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
             "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
             "train/kappa_bias_ema_rms_reg_loss_step": losses['kappa_bias_ema_rms_reg_loss'],
@@ -2313,6 +2349,7 @@ while True:
         else:
             log_data["train/loss_step"] = debiased_smooth_loss
         log_data["train/aux_loss_weight"] = aux_loss_weight
+        log_data["train/router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
         log_data["train/kappa_bias_l2_loss_weight"] = kappa_bias_l2_loss_weight
         log_data["train/kappa_scale_l2_loss_weight"] = kappa_scale_l2_loss_weight
         log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale

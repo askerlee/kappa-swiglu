@@ -673,6 +673,10 @@ class Router(nn.Module):
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
+        self.register_parameter('w_g_delta', None)
+        self.w_g_delta_enabled = False
+        if getattr(config, 'router_wg_delta', False):
+            self.setup_router_wg_delta()
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
         self.router_z_loss_input_grad_scale = config.router_z_loss_input_grad_scale
         self.expert_probs = None
@@ -693,6 +697,28 @@ class Router(nn.Module):
         )
         if self.use_aux_loss and self.use_aux_free_load_balancing:
             raise ValueError("use_aux_loss and use_aux_free_load_balancing are mutually exclusive")
+
+    def setup_router_wg_delta(self):
+        if self.w_g_delta is None:
+            self.w_g_delta = nn.Parameter(torch.zeros_like(self.w_g.weight))
+        self.enable_router_wg_delta(True)
+
+    def enable_router_wg_delta(self, enabled):
+        enabled = bool(enabled)
+        if enabled and self.w_g_delta is None:
+            raise RuntimeError("w_g_delta must be allocated before it can be enabled")
+        self.w_g_delta_enabled = enabled
+        self.w_g.weight.requires_grad_(not enabled)
+        if self.w_g_delta is not None:
+            self.w_g_delta.requires_grad_(enabled)
+
+    def effective_w_g_weight(self):
+        if not self.w_g_delta_enabled:
+            return self.w_g.weight
+        return self.w_g.weight + self.w_g_delta
+
+    def trainable_w_g_weight(self):
+        return self.w_g_delta if self.w_g_delta_enabled else self.w_g.weight
 
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
@@ -783,7 +809,8 @@ class Router(nn.Module):
 
             # 1. GET ROUTING LOGITS
             # ---------------------
-            logits_wg = F.linear(x_flat, self.w_g.weight)  # [B*T, n_exp]
+            router_weight = self.effective_w_g_weight()
+            logits_wg = F.linear(x_flat, router_weight)  # [B*T, n_exp]
             noise = None  # Initialize noise variable
 
             if self.training and self.use_noisy_top_k:
@@ -814,7 +841,7 @@ class Router(nn.Module):
                     else:
                         input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
-                            logits_wg, x_flat, self.w_g.weight, input_alpha_t
+                            logits_wg, x_flat, router_weight, input_alpha_t
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
@@ -2107,9 +2134,6 @@ class MOELayer(nn.Module):
         self.kappa_input_logit_norm_exponent = float(
             getattr(config, 'kappa_input_logit_norm_exponent', 0.0)
         )
-        self.kappa_router_norm_gate_scale = float(
-            getattr(config, 'kappa_router_norm_gate_scale', 0.01)
-        )
         self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
@@ -2268,7 +2292,7 @@ class MOELayer(nn.Module):
             # For exp32-d10, router_weight_magnitudes_all has (min, max, std)
             # of (0.24, 0.83, 0.21).
             router_weight_magnitudes_all = torch.linalg.vector_norm(
-                self.router.w_g.weight,
+                self.router.effective_w_g_weight(),
                 ord=2,
                 dim=-1,
                 dtype=torch.float32,
@@ -2304,13 +2328,7 @@ class MOELayer(nn.Module):
             normalized_confidence = 6 * top_k_scores / normalizer.to(
                 dtype=top_k_scores.dtype
             )
-            layer_router_norm = router_weight_magnitudes_all.mean().detach()
-            router_norm_gate = layer_router_norm / (
-                layer_router_norm + self.kappa_router_norm_gate_scale
-            )
-            return normalized_confidence * router_norm_gate.to(
-                dtype=top_k_scores.dtype
-            )
+            return normalized_confidence
         
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
@@ -2396,7 +2414,7 @@ class MOELayer(nn.Module):
         expert_outputs = self.experts(
             expert_inputs,
             selected_router_scores=expert_router_scores,
-            router_weight=self.router.w_g.weight,
+            router_weight=self.router.effective_w_g_weight(),
             loss_accum=loss_accum,
             current_ut=current_ut,
         ) # [n_exp, exp_capacity, C]
@@ -2709,6 +2727,8 @@ class GPT(nn.Module):
             elif isinstance(block.mlp, MOELayer):
                 experts = block.mlp.experts
                 torch.nn.init.zeros_(block.mlp.router.w_g.weight)
+                if block.mlp.router.w_g_delta is not None:
+                    torch.nn.init.zeros_(block.mlp.router.w_g_delta)
                 if block.mlp.router.w_noise is not None:
                     torch.nn.init.uniform_(block.mlp.router.w_noise.weight, -s, s)
                 block.mlp.router.expert_bias.zero_()
@@ -2920,6 +2940,33 @@ class GPT(nn.Module):
                     bias_update_speed=bias_update_speed,
                 )
 
+    def setup_router_wg_delta(self):
+        self.config.router_wg_delta = True
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer):
+                mlp.router.setup_router_wg_delta()
+
+    def enable_router_wg_delta(self, enabled):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, MOELayer) and mlp.router.w_g_delta is not None:
+                mlp.router.enable_router_wg_delta(enabled)
+
+    def compute_router_wg_delta_l2_loss(self):
+        losses = []
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            router = getattr(mlp, 'router', None)
+            if (
+                isinstance(router, Router)
+                and router.w_g_delta is not None
+            ):
+                losses.append(router.w_g_delta.float().square().mean())
+        if losses:
+            return torch.stack(losses).mean()
+        return self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
+
     def update_aux_free_load_balancing(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
@@ -2942,6 +2989,8 @@ class GPT(nn.Module):
         dense_nonmatrix_params = []
         moe_matrix_params = []
         moe_nonmatrix_params = []
+        router_wg_base_params = []
+        router_wg_delta_params = []
         kappa_params = []
         seen_param_ids = set()
         param_names = {}
@@ -2973,6 +3022,14 @@ class GPT(nn.Module):
                     or name.startswith('mlp.kappa_scale')
                 ):
                     append_param(kappa_params, param, full_name)
+                elif name == 'mlp.router.w_g_delta':
+                    append_param(router_wg_delta_params, param, full_name)
+                elif (
+                    name == 'mlp.router.w_g.weight'
+                    and isinstance(mlp, MOELayer)
+                    and mlp.router.w_g_delta is not None
+                ):
+                    append_param(router_wg_base_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
                 else:
@@ -2996,6 +3053,8 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
+            len(router_wg_base_params) +
+            len(router_wg_delta_params) +
             len(kappa_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
@@ -3026,7 +3085,7 @@ class GPT(nn.Module):
                 params=kappa_params,
                 debug_param_names=[param_names[id(p)] for p in kappa_params],
                 lr=0.0,
-                base_lr=scalar_lr,
+                base_lr=embedding_lr * dmodel_lr_scale,
                 lr_scale_end=kappa_lr_final_scale,
                 lr_scale_max=kappa_lr_max_scale,
                 lr_scale_nolearn_iterations=kappa_bias_delay_start_iterations,
@@ -3073,6 +3132,26 @@ class GPT(nn.Module):
                 kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
                 chunk_size=2,
+                match_rms_adamw=muon_match_rms_adamw,
+            ))
+        for shape in sorted({p.shape for p in router_wg_delta_params}):
+            group_params = [p for p in router_wg_delta_params if p.shape == shape]
+            group_param_names = [param_names[id(p)] for p in group_params]
+            param_groups.append(dict(
+                kind=matrix_kind, name='router_wg_delta', params=group_params,
+                debug_param_names=group_param_names, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
+                nesterov=True, weight_decay=weight_decay, chunk_size=2,
+                match_rms_adamw=muon_match_rms_adamw,
+            ))
+        for shape in sorted({p.shape for p in router_wg_base_params}):
+            group_params = [p for p in router_wg_base_params if p.shape == shape]
+            group_param_names = [param_names[id(p)] for p in group_params]
+            param_groups.append(dict(
+                kind=matrix_kind, name='router_wg_base', params=group_params,
+                debug_param_names=group_param_names, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
+                nesterov=True, weight_decay=weight_decay, chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         factory_map = {
@@ -3281,6 +3360,7 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
+                   'router_wg_delta_l2_loss': 0,
                    'kappa_bias_l2_loss': 0,
                    'kappa_scale_l2_loss': 0,
                    'kappa_bias_ema_rms_reg_loss': 0,
@@ -3499,6 +3579,10 @@ class GPT(nn.Module):
             loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
 
+            if getattr(self.config, 'router_wg_delta', False):
+                router_wg_delta_l2_loss = self.compute_router_wg_delta_l2_loss()
+                losses['router_wg_delta_l2_loss'] = router_wg_delta_l2_loss
+
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = (
                     checkpoint_loss_totals[_UT_LOSS_NAMES.index("aux_loss")] / self.total_ut_steps
@@ -3557,7 +3641,7 @@ class GPT(nn.Module):
             layer = self.transformer.h[i]
             if hasattr(layer.mlp, 'experts'):
                 # [n_exp, hidden_size]
-                router_gate_grad = layer.mlp.router.w_g.weight.grad
+                router_gate_grad = layer.mlp.router.trainable_w_g_weight().grad
                 router_grad_norm = router_gate_grad.norm(dim=1)
                 router_grad_norms.append(router_grad_norm)
                 losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
@@ -3573,7 +3657,7 @@ class GPT(nn.Module):
                 # Compute router grad - router weight alignment
                 # Compute router expert - gate weight alignment
                 with torch.no_grad():
-                    router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                    router_weight = layer.mlp.router.effective_w_g_weight()  # [n_exp, hidden_size]
                     exp_gate_weight = layer.mlp.experts.gate_proj
                     exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                     # Compute the cosine similarity between router weights and router weight grads.

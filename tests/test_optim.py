@@ -476,6 +476,59 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
 
 
+def test_setup_optimizer_includes_router_wg_delta_matrix():
+    config = GPTConfig(
+        n_layer=3,
+        moe_start_layer=1,
+        moe_layer_stride=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+    )
+    model = GPT(config)
+    model.setup_router_wg_delta()
+
+    optimizer = model.setup_optimizer(matrix_lr=0.01)
+    optimizer_params = {
+        parameter
+        for group in optimizer.param_groups
+        for parameter in group['params']
+    }
+    for block in model.transformer.h:
+        if hasattr(block.mlp, 'router'):
+            assert block.mlp.router.w_g_delta in optimizer_params
+            assert not block.mlp.router.w_g.weight.requires_grad
+    delta_groups = [
+        group for group in optimizer.param_groups
+        if group.get('name') == 'router_wg_delta'
+    ]
+    assert len(delta_groups) == 1
+    assert set(delta_groups[0]['params']) == {
+        block.mlp.router.w_g_delta
+        for block in model.transformer.h
+        if hasattr(block.mlp, 'router')
+    }
+    base_router_groups = [
+        group for group in optimizer.param_groups
+        if group.get('name') == 'router_wg_base'
+    ]
+    assert len(base_router_groups) == 1
+
+    delta_group = delta_groups[0]
+    delta_param = delta_group['params'][0]
+    initial_delta = delta_param.detach().clone()
+    delta_param.grad = torch.randn_like(delta_param)
+    delta_group['lr'] = 0.0
+    optimizer.step()
+    torch.testing.assert_close(delta_param, initial_delta)
+
+    optimizer.zero_grad(set_to_none=True)
+    delta_param.grad = torch.randn_like(delta_param)
+    delta_group['lr'] = 0.01
+    optimizer.step()
+    assert not torch.equal(delta_param, initial_delta)
+
+
 def test_setup_optimizer_scalar_lr_is_x0_lr_and_residual_scalars_use_one_tenth():
     config = GPTConfig(
         n_layer=2,

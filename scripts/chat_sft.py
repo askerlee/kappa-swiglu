@@ -132,6 +132,9 @@ parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zer
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
+parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive delta for each MoE router while freezing its base w_g")
+parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=0,
+                    help="L2 weight on the additive router delta")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
 
 # Evaluation
@@ -239,6 +242,14 @@ model, tokenizer, meta = load_model(
     activation_offload=args.activation_offload,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
+if args.router_wg_delta:
+    model.setup_router_wg_delta()
+user_config["router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
+if not use_dummy_wandb:
+    wandb_run.config.update(
+        {"router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight},
+        allow_val_change=True,
+    )
 args.total_ut_steps = model.config.total_ut_steps
 args.ut_everypass_ntp = model.config.ut_everypass_ntp
 args.ut_detach = model.config.ut_detach
@@ -673,7 +684,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         layer = model.transformer.h[i]
         if hasattr(layer.mlp, 'experts'):
             # [n_exp, hidden_size]
-            router_gate_grad = layer.mlp.router.w_g.weight.grad
+            router_gate_grad = layer.mlp.router.trainable_w_g_weight().grad
             router_grad_norm = router_gate_grad.norm(dim=1)
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
@@ -689,7 +700,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             # Compute router grad - router weight alignment.
             # Compute router weight alignment against expert projections.
             with torch.inference_mode():
-                router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                router_weight = layer.mlp.router.effective_w_g_weight()  # [n_exp, hidden_size]
                 router_row_norm = router_weight.norm(dim=1)
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
@@ -976,6 +987,9 @@ while True:
         if aux_loss is None:
             aux_loss = 0.0
         loss = loss + aux_loss_weight * aux_loss
+        if args.router_wg_delta:
+            router_wg_delta_l2_loss = losses["router_wg_delta_l2_loss"]
+            loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss
         kappa_bias_l2_loss = losses.get("kappa_bias_l2_loss")
         if kappa_bias_l2_loss is None:
             kappa_bias_l2_loss = 0.0
@@ -1000,7 +1014,9 @@ while True:
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
-        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
+        if group.get("name") == "router_wg_base":
+            group["lr"] = 0.0
+        elif group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
@@ -1053,6 +1069,7 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
+            "train/router_wg_delta_l2_loss_step": scalar_loss_to_item(losses['router_wg_delta_l2_loss']),
             "train/kappa_bias_l2_loss_step": scalar_loss_to_item(losses['kappa_bias_l2_loss']),
             "train/kappa_scale_l2_loss_step": scalar_loss_to_item(losses['kappa_scale_l2_loss']),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
@@ -1060,6 +1077,7 @@ while True:
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
+            "train/router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight,
             "train/kappa_bias_l2_loss_weight": args.kappa_l2_loss_weight,
             "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,

@@ -335,6 +335,111 @@ def test_router_valid_token_mask_excludes_padding_from_capacity():
     assert not router_probs[~valid_token_mask.reshape(-1)].any()
 
 
+def test_router_full_delta_preserves_logits_and_receives_gradients():
+    config = GPTConfig(
+        n_layer=3,
+        moe_start_layer=1,
+        n_exp=2,
+        n_embd=8,
+        n_head=2,
+        use_router_z_loss=False,
+    )
+    router = Router(config).eval()
+    x = torch.randn(2, 3, config.n_embd)
+    expected_logits = F.linear(x.view(-1, config.n_embd), router.w_g.weight)
+    expected_scores, expected_indices = router(x)[2:4]
+
+    router.setup_router_wg_delta()
+    actual_logits = F.linear(x.view(-1, config.n_embd), router.effective_w_g_weight())
+    actual_scores, actual_indices = router(x)[2:4]
+    torch.testing.assert_close(actual_logits, expected_logits)
+    torch.testing.assert_close(actual_scores, expected_scores)
+    torch.testing.assert_close(actual_indices, expected_indices)
+    assert not router.w_g.weight.requires_grad
+    assert router.w_g_delta.requires_grad
+
+    actual_logits.sum().backward()
+    assert router.w_g.weight.grad is None
+    assert router.w_g_delta.grad is not None
+
+    with torch.no_grad():
+        router.w_g_delta.fill_(0.25)
+    assert not torch.equal(router.effective_w_g_weight(), router.w_g.weight)
+    router.enable_router_wg_delta(False)
+    assert router.w_g.weight.requires_grad
+    assert not router.w_g_delta.requires_grad
+    torch.testing.assert_close(router.effective_w_g_weight(), router.w_g.weight)
+
+    config.router_wg_delta = True
+    reloaded_router = Router(config)
+    reloaded_router.load_state_dict(router.state_dict(), strict=True)
+    torch.testing.assert_close(reloaded_router.w_g_delta, router.w_g_delta)
+
+
+def test_router_wg_delta_l2_loss_tracks_allocated_delta_and_does_not_touch_base_weights():
+    config = GPTConfig(
+        sequence_len=4,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+    )
+    model = GPT(config, pad_vocab_size_to=1)
+    model.init_weights()
+    model.setup_router_wg_delta()
+    routers = [block.mlp.router for block in model.transformer.h]
+    with torch.no_grad():
+        routers[0].w_g_delta.fill_(0.25)
+        routers[1].w_g_delta.fill_(0.5)
+
+    delta_l2_loss = model.compute_router_wg_delta_l2_loss()
+    torch.testing.assert_close(delta_l2_loss, torch.tensor((0.25 ** 2 + 0.5 ** 2) / 2))
+    delta_l2_loss.backward()
+    assert all(router.w_g_delta.grad is not None for router in routers)
+    assert all(router.w_g.weight.grad is None for router in routers)
+
+    model.enable_router_wg_delta(False)
+    disabled_loss = model.compute_router_wg_delta_l2_loss()
+    torch.testing.assert_close(disabled_loss, delta_l2_loss.detach())
+    assert not disabled_loss.requires_grad
+
+    ids = torch.randint(0, config.vocab_size, (1, config.sequence_len))
+    _, base_mode_losses = model(ids, ids)
+    torch.testing.assert_close(
+        base_mode_losses["router_wg_delta_l2_loss"],
+        delta_l2_loss.detach(),
+    )
+
+
+def test_gpt_forward_skips_router_wg_delta_l2_when_not_enabled(monkeypatch):
+    config = GPTConfig(
+        sequence_len=4,
+        vocab_size=32,
+        n_layer=2,
+        moe_start_layer=0,
+        n_exp=2,
+        n_embd=32,
+        n_head=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+    )
+    model = GPT(config, pad_vocab_size_to=1)
+    model.init_weights()
+
+    def fail_if_called():
+        raise AssertionError("router delta L2 must not be computed when disabled")
+
+    monkeypatch.setattr(model, "compute_router_wg_delta_l2_loss", fail_if_called)
+    ids = torch.randint(0, config.vocab_size, (1, config.sequence_len))
+    _, losses = model(ids, ids)
+
+    assert losses["router_wg_delta_l2_loss"] == 0
+
+
 def test_no_expert_rate_tracks_joint_assignment_drops():
     rank = torch.tensor([
         [0, 0],
@@ -1461,10 +1566,6 @@ def test_moe_select_gate_confidence_can_normalize_top_logits():
         * smoothed_router_weight_magnitudes.sqrt()
         * scale_compensation
     )
-    layer_router_norm = moe_layer.router.w_g.weight.norm(dim=-1).mean()
-    expected = expected * layer_router_norm / (
-        layer_router_norm + config.kappa_router_norm_gate_scale
-    )
 
     torch.testing.assert_close(actual, expected)
 
@@ -1495,7 +1596,18 @@ def test_moe_select_gate_confidence_smooths_tiny_router_weight_norms():
     )
 
     assert torch.isfinite(actual).all()
-    expected = torch.zeros_like(top_k_scores)
+    smoothed_router_weight_magnitudes = torch.sqrt(
+        moe_layer.router.w_g.weight[top_k_indices].norm(dim=-1).square()
+        + moe_layer.top_logit_norm_eps
+    )
+    scale_compensation = torch.sqrt(
+        moe_layer.router.w_g.weight.norm(dim=-1).square() + moe_layer.top_logit_norm_eps
+    ).sqrt().mean()
+    expected = (top_k_scores * 6.0) / (
+        math.sqrt(config.n_embd)
+        * smoothed_router_weight_magnitudes.sqrt()
+        * scale_compensation
+    )
 
     torch.testing.assert_close(actual, expected)
 
@@ -1550,37 +1662,7 @@ def test_moe_select_gate_confidence_keeps_partial_norm_scale_near_unit():
         top_k_indices=top_k_indices,
     )
 
-    layer_router_norm = moe_layer.router.w_g.weight.norm(dim=-1).mean()
-    expected = target_gate_confidence * layer_router_norm / (
-        layer_router_norm + config.kappa_router_norm_gate_scale
-    )
-    torch.testing.assert_close(actual, expected)
-
-
-def test_kappa_router_norm_gate_is_detached_from_router_weights():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        moe_top_k=1,
-        kappa_input="top_logits",
-        kappa_input_logit_norm_exponent=0.5,
-        kappa_router_norm_gate_scale=0.1,
-        debug=False,
-    )
-    moe_layer = MOELayer(config, layer_idx=0)
-    with torch.no_grad():
-        moe_layer.router.w_g.weight.fill_(0.05)
-
-    top_k_scores = torch.tensor([[0.2]], requires_grad=True)
-    confidence = moe_layer._select_gate_confidence(
-        top_k_scores,
-        torch.ones_like(top_k_scores),
-        top_k_indices=torch.tensor([[0]]),
-    )
-    confidence.sum().backward()
-
-    assert top_k_scores.grad is not None
-    assert moe_layer.router.w_g.weight.grad is None
+    torch.testing.assert_close(actual, target_gate_confidence)
 
 def test_kappa_bias_l2_loss_is_mean_square():
     config = GPTConfig(

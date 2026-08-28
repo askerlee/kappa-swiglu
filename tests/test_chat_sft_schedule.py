@@ -57,6 +57,16 @@ def test_chat_sft_scalar_lr_defaults_to_005_and_is_wired_to_optimizer():
     assert "scalar_lr=args.scalar_lr" in source
 
 
+def test_router_wg_delta_cli_applies_during_training_and_eval():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert "if args.router_wg_delta:" in source
+    assert "if args.router_wg_delta and not args.eval_only:" not in source
+    assert "model.setup_router_wg_delta()" in source
+    assert '--router-wg-delta-l2-loss-weight' in source
+    assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
+
+
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
     get_interval_throughput = load_function_from_script("get_interval_throughput")
 
