@@ -708,7 +708,7 @@ class Router(nn.Module):
         if enabled and self.w_g_delta is None:
             raise RuntimeError("w_g_delta must be allocated before it can be enabled")
         self.w_g_delta_enabled = enabled
-        self.w_g.weight.requires_grad_(not enabled)
+        self.w_g.weight.requires_grad_(True)
         if self.w_g_delta is not None:
             self.w_g_delta.requires_grad_(enabled)
 

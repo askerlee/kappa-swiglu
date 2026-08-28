@@ -355,12 +355,13 @@ def test_router_full_delta_preserves_logits_and_receives_gradients():
     torch.testing.assert_close(actual_logits, expected_logits)
     torch.testing.assert_close(actual_scores, expected_scores)
     torch.testing.assert_close(actual_indices, expected_indices)
-    assert not router.w_g.weight.requires_grad
+    assert router.w_g.weight.requires_grad
     assert router.w_g_delta.requires_grad
 
     actual_logits.sum().backward()
-    assert router.w_g.weight.grad is None
+    assert router.w_g.weight.grad is not None
     assert router.w_g_delta.grad is not None
+    torch.testing.assert_close(router.w_g.weight.grad, router.w_g_delta.grad)
 
     with torch.no_grad():
         router.w_g_delta.fill_(0.25)

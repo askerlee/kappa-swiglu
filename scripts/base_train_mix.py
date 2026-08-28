@@ -2218,8 +2218,6 @@ while True:
             for group in optimizer.param_groups:
                 inactive_router_group = (
                     group.get("name") == "router_wg_delta" and not is_chat_sft_step
-                ) or (
-                    group.get("name") == "router_wg_base" and is_chat_sft_step
                 )
                 if inactive_router_group:
                     for param in group["params"]:
@@ -2243,7 +2241,7 @@ while True:
             elif group.get("name") == "router_wg_delta":
                 group["lr"] = group["initial_lr"] * lrm if is_chat_sft_step else 0.0
             elif group.get("name") == "router_wg_base":
-                group["lr"] = group["initial_lr"] * lrm if not is_chat_sft_step else 0.0
+                group["lr"] = group["initial_lr"] * lrm
             else:
                 group["lr"] = group["initial_lr"] * lrm
             if group['kind'] == 'muon':

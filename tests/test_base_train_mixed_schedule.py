@@ -59,8 +59,9 @@ def test_router_wg_delta_updates_only_on_mixed_chat_sft_steps():
     assert "model.setup_router_wg_delta()" in source
     assert "orig_model.enable_router_wg_delta(is_chat_sft_step)" in source
     assert 'group.get("name") == "router_wg_delta" and not is_chat_sft_step' in source
-    assert 'group.get("name") == "router_wg_base" and is_chat_sft_step' in source
+    assert 'group.get("name") == "router_wg_base" and is_chat_sft_step' not in source
     assert 'group["initial_lr"] * lrm if is_chat_sft_step else 0.0' in source
+    assert 'group["lr"] = group["initial_lr"] * lrm' in source
     assert 'args.router_wg_delta = bool(getattr(model.config, "router_wg_delta", False))' in source
     assert "if is_chat_sft_step:" in source
     assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
