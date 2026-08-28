@@ -52,14 +52,20 @@ def get_filter_num_proc():
     return max(1, allocated_cpus // local_world_size)
 
 
-def load_tulu_dataset(path, split, english_only):
+def print_row_count(label: str, ds) -> None:
+    print(f"{label}: {len(ds)} rows")
+
+
+def load_tulu_dataset(path, split, english_only, dataset_label):
     dataset = load_dataset(path, split=split)
     if english_only:
+        print_row_count(f"{dataset_label} rows before filtering", dataset)
         filter_num_proc = get_filter_num_proc()
         filter_kwargs = {"desc": "Filtering non-English Tulu conversations"}
         if filter_num_proc > 1:
             filter_kwargs["num_proc"] = filter_num_proc
         dataset = dataset.filter(has_only_english_messages, **filter_kwargs)
+        print_row_count(f"{dataset_label} rows after filtering", dataset)
     return dataset.shuffle(seed=42)
 
 
@@ -73,6 +79,7 @@ class Tulu3SFTMixture(Task):
             "allenai/tulu-3-sft-mixture",
             split,
             english_only,
+            type(self).__name__,
         )
         self.length = len(self.ds)
 
@@ -100,6 +107,7 @@ class Tulu3SFTPersonaIF(Task):
             "allenai/tulu-3-sft-personas-instruction-following",
             split,
             english_only,
+            type(self).__name__,
         )
         self.length = len(self.ds)
 
