@@ -65,6 +65,7 @@ def test_router_wg_delta_cli_applies_during_training_and_eval():
     assert "model.setup_router_wg_delta()" in source
     assert '--router-wg-delta-l2-loss-weight' in source
     assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
+    assert 'group.get("name") == "router_wg_base"' not in source
 
 
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():

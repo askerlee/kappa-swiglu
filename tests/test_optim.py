@@ -497,7 +497,7 @@ def test_setup_optimizer_includes_router_wg_delta_matrix():
     for block in model.transformer.h:
         if hasattr(block.mlp, 'router'):
             assert block.mlp.router.w_g_delta in optimizer_params
-            assert not block.mlp.router.w_g.weight.requires_grad
+            assert block.mlp.router.w_g.weight.requires_grad
     delta_groups = [
         group for group in optimizer.param_groups
         if group.get('name') == 'router_wg_delta'
@@ -513,6 +513,7 @@ def test_setup_optimizer_includes_router_wg_delta_matrix():
         if group.get('name') == 'router_wg_base'
     ]
     assert len(base_router_groups) == 1
+    assert all(parameter.requires_grad for parameter in base_router_groups[0]['params'])
 
     delta_group = delta_groups[0]
     delta_param = delta_group['params'][0]

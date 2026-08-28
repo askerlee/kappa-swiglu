@@ -717,9 +717,6 @@ class Router(nn.Module):
             return self.w_g.weight
         return self.w_g.weight + self.w_g_delta
 
-    def trainable_w_g_weight(self):
-        return self.w_g_delta if self.w_g_delta_enabled else self.w_g.weight
-
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
         self.use_aux_loss = not self.use_aux_free_load_balancing
@@ -3641,7 +3638,7 @@ class GPT(nn.Module):
             layer = self.transformer.h[i]
             if hasattr(layer.mlp, 'experts'):
                 # [n_exp, hidden_size]
-                router_gate_grad = layer.mlp.router.trainable_w_g_weight().grad
+                router_gate_grad = layer.mlp.router.w_g.weight.grad
                 router_grad_norm = router_gate_grad.norm(dim=1)
                 router_grad_norms.append(router_grad_norm)
                 losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()

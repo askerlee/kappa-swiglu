@@ -56,7 +56,7 @@ class GPTConfig:
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
         router_use_full_prec: bool = False,  # use float32 precision in the router
-        router_wg_delta: bool = False,  # train a full additive delta while freezing the base router projection
+        router_wg_delta: bool = False,  # train a full additive delta alongside the base router projection
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
         bilinear_mlp_moe: bool = False,  # disable SiLU gating in Qwen3-style MoE MLPs and use raw bilinear gating instead

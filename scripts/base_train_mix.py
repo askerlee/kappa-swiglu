@@ -1528,7 +1528,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
         layer = model.transformer.h[i]
         if hasattr(layer.mlp, 'experts'):
             # [n_exp, hidden_size]
-            router_gate_grad = layer.mlp.router.trainable_w_g_weight().grad
+            router_gate_grad = layer.mlp.router.w_g.weight.grad
             router_grad_norm = router_gate_grad.norm(dim=1)
             router_grad_norms.append(router_grad_norm)
             losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
