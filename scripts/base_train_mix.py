@@ -345,7 +345,7 @@ parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=Tr
                     help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
 parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive router delta only on mixed chat-SFT optimizer steps")
-parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=1e-2,
+parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=1e-3,
                     help="L2 weight on the additive router delta during mixed chat-SFT steps")
 # Optimization
 parser.add_argument("--compile", type=str2bool, nargs='?', const=True, default=True, help="use torch.compile to speed up training (may cause instability, use with caution)")
