@@ -214,7 +214,7 @@ AUX_LOSS_WEIGHT_DEFAULT = 1e-3
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
                     help="autocast compute dtype")
-parser.add_argument("--parameter-dtype", type=str, default="reference", choices=("reference", "float32", "bfloat16"),
+parser.add_argument("--parameter-dtype", type=str, default="bfloat16", choices=("reference", "float32", "bfloat16"),
                     help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")

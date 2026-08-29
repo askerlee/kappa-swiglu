@@ -112,9 +112,22 @@ def test_tulu3_english_filter_uses_local_cpu_affinity(monkeypatch):
     assert tulu3.get_filter_num_proc() == 4
 
 
-def test_training_scripts_enable_english_only_tulu_data():
+def test_training_scripts_expose_optional_english_only_tulu_data():
     for script_name in ("base_train_mix.py", "chat_sft.py"):
         tree = ast.parse((ROOT / "scripts" / script_name).read_text())
+        flag_call = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--tulu3-english-only"
+        )
+        default = next(
+            keyword.value
+            for keyword in flag_call.keywords
+            if keyword.arg == "default"
+        )
         tulu_calls = [
             node
             for node in ast.walk(tree)
@@ -123,6 +136,8 @@ def test_training_scripts_enable_english_only_tulu_data():
             and node.func.id in {"Tulu3SFTMixture", "Tulu3SFTPersonaIF"}
         ]
 
+        assert isinstance(default, ast.Constant)
+        assert default.value is False
         assert len(tulu_calls) == 2
         for call in tulu_calls:
             english_only = next(
@@ -130,8 +145,12 @@ def test_training_scripts_enable_english_only_tulu_data():
                 for keyword in call.keywords
                 if keyword.arg == "english_only"
             )
-            assert isinstance(english_only, ast.Constant)
-            assert english_only.value is True
+            if script_name == "base_train_mix.py":
+                assert isinstance(english_only, ast.Name)
+                assert english_only.id == "tulu3_english_only"
+            else:
+                assert isinstance(english_only, ast.Attribute)
+                assert english_only.attr == "tulu3_english_only"
 
 
 def test_pbs_jobs_request_fourteen_cpus_per_gpu():

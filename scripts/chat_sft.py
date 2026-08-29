@@ -73,7 +73,7 @@ parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('d
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
                     help="autocast compute dtype")
-parser.add_argument("--parameter-dtype", type=str, default="reference", choices=("reference", "float32", "bfloat16"),
+parser.add_argument("--parameter-dtype", type=str, default="bfloat16", choices=("reference", "float32", "bfloat16"),
                     help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
@@ -95,6 +95,7 @@ parser.add_argument("--num-iterations", type=int, default=-1, help="number of op
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
                     "tulu3 is not repeated; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4)")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
+parser.add_argument("--tulu3-english-only", type=str2bool, nargs='?', const=True, default=False, help="filter Tulu 3 conversations to English only")
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True, help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
@@ -424,9 +425,9 @@ train_tasks = [
 ]
 if args.use_tulu3_sft_mixture:
     # allenai/tulu-3-sft-mixture: 939,344 samples
-    train_tasks.append(Tulu3SFTMixture(split="train", english_only=True))
+    train_tasks.append(Tulu3SFTMixture(split="train", english_only=args.tulu3_english_only))
     # Adds a second exposure to the 30k focused Persona-IF examples.
-    train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=True))
+    train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=args.tulu3_english_only))
 if args.use_ultradata_sft_if:
     # openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before English filtering
     train_tasks.append(UltraDataSFTIF())

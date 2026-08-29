@@ -231,7 +231,7 @@ AUX_LOSS_WEIGHT_DEFAULT = 1e-3
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
                     help="autocast compute dtype")
-parser.add_argument("--parameter-dtype", type=str, default="reference", choices=("reference", "float32", "bfloat16"),
+parser.add_argument("--parameter-dtype", type=str, default="bfloat16", choices=("reference", "float32", "bfloat16"),
                     help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
@@ -343,6 +343,8 @@ parser.add_argument("--chat-sft-every", type=int, default=100, help="run one cha
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
                     help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
+parser.add_argument("--tulu3-english-only", type=str2bool, nargs='?', const=True, default=False,
+                    help="filter Tulu 3 conversations to English only")
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True,
                     help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
@@ -1032,6 +1034,7 @@ def build_chat_sft_train_dataset(
     train_mixture_repeats,
     identity_conversations_filepath,
     use_tulu3_sft_mixture=False,
+    tulu3_english_only=False,
     use_ultradata_sft_if=False,
 ):
     smoltalk_rows_per_repeat = 50000
@@ -1049,8 +1052,8 @@ def build_chat_sft_train_dataset(
         CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
     ]
     if use_tulu3_sft_mixture:
-        train_tasks.append(Tulu3SFTMixture(split="train", english_only=True))
-        train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=True))
+        train_tasks.append(Tulu3SFTMixture(split="train", english_only=tulu3_english_only))
+        train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=tulu3_english_only))
     if use_ultradata_sft_if:
         train_tasks.append(UltraDataSFTIF())
     for repeat_idx in range(train_mixture_repeats):
@@ -1226,6 +1229,7 @@ chat_sft_train_dataset = build_chat_sft_train_dataset(
     args.chat_sft_train_mixture_repeats,
     identity_conversations_filepath,
     use_tulu3_sft_mixture=args.use_tulu3_sft_mixture,
+    tulu3_english_only=args.tulu3_english_only,
     use_ultradata_sft_if=args.use_ultradata_sft_if,
 )
 chat_sft_train_loader = chat_sft_data_generator_bos_bestfit(

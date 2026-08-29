@@ -183,5 +183,7 @@ def test_mixed_script_adds_focused_chat_sft_datasets():
     assert defaults["default"] is True
     assert {"Tulu3SFTMixture", "Tulu3SFTPersonaIF"} <= guarded_calls["use_tulu3_sft_mixture"]
     assert "UltraDataSFTIF" in guarded_calls["use_ultradata_sft_if"]
+    assert isinstance(call_keywords["tulu3_english_only"], ast.Attribute)
+    assert call_keywords["tulu3_english_only"].attr == "tulu3_english_only"
     assert isinstance(call_keywords["use_ultradata_sft_if"], ast.Attribute)
     assert call_keywords["use_ultradata_sft_if"].attr == "use_ultradata_sft_if"
