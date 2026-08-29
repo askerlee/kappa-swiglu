@@ -9,25 +9,37 @@ from tasks import ultradata
 CHAT_SFT = Path(__file__).resolve().parents[1] / "scripts" / "chat_sft.py"
 
 
-def test_has_only_english_user_questions_filters_non_english_questions():
-    assert ultradata.has_only_english_user_questions({
+def test_has_no_cjk_user_questions_filters_only_cjk_questions():
+    assert ultradata.has_no_cjk_user_questions({
         "messages": [
             {"role": "user", "content": "Write a short poem about the ocean."},
             {"role": "assistant", "content": "Waves fold into the shore."},
         ]
     })
-    assert not ultradata.has_only_english_user_questions({
+    assert not ultradata.has_no_cjk_user_questions({
         "messages": [
             {"role": "user", "content": "请写一首关于海洋的短诗。"},
             {"role": "assistant", "content": "海浪轻拍岸边。"},
         ]
     })
-    assert not ultradata.has_only_english_user_questions({
+    assert ultradata.has_no_cjk_user_questions({
         "messages": [
             {"role": "user", "content": "Write a short poem about the ocean."},
             {"role": "assistant", "content": "Here it is."},
             {"role": "user", "content": "Ahora hazlo más corto."},
             {"role": "assistant", "content": "Waves rest."},
+        ]
+    })
+    assert ultradata.has_no_cjk_user_questions({
+        "messages": [
+            {"role": "user", "content": "تابع"},
+            {"role": "assistant", "content": "Continuing."},
+        ]
+    })
+    assert ultradata.has_no_cjk_user_questions({
+        "messages": [
+            {"role": "user", "content": "```python\nprint(42)\n```"},
+            {"role": "assistant", "content": "42"},
         ]
     })
 

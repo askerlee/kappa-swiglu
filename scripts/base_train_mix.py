@@ -348,7 +348,7 @@ parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=T
 parser.add_argument("--tulu3-english-only", type=str2bool, nargs='?', const=True, default=False,
                     help="filter Tulu 3 conversations to English only")
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True,
-                    help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
+                    help="include CJK-filtered openbmb/UltraData-SFT-2605 IF/no_think data in the auxiliary chat-SFT train mixture")
 parser.add_argument("--chat-sft-buffer-size", type=int, default=100, help="conversation packing buffer size for mixed chat-SFT batches")
 parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive router delta only on mixed chat-SFT optimizer steps")
 parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=0.001,

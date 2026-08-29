@@ -195,14 +195,14 @@ def check_sft_tasks():
     from tasks.smoltalk import SmolTalk
     from tasks.spellingbee import SimpleSpelling, SpellingBee
     from tasks.tulu3 import Tulu3SFTMixture, Tulu3SFTPersonaIF, has_only_english_messages
-    from tasks.ultradata import UltraDataSFTIF, has_only_english_user_questions
+    from tasks.ultradata import UltraDataSFTIF, has_no_cjk_user_questions
 
     # Tasks that filter their rows down to English-only content, and the predicate
     # used to do so (reused here to verify the filtering actually took effect).
     language_filters = {
         "Tulu3SFTMixture": has_only_english_messages,
         "Tulu3SFTPersonaIF": has_only_english_messages,
-        "UltraDataSFTIF": has_only_english_user_questions,
+        "UltraDataSFTIF": has_no_cjk_user_questions,
     }
 
     task_builders = {

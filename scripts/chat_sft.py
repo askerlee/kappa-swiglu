@@ -96,7 +96,7 @@ parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand
                     "tulu3 is not repeated; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4)")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 parser.add_argument("--tulu3-english-only", type=str2bool, nargs='?', const=True, default=False, help="filter Tulu 3 conversations to English only")
-parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True, help="include English-only openbmb/UltraData-SFT-2605 IF/no_think data in the SFT train mixture")
+parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True, help="include CJK-filtered openbmb/UltraData-SFT-2605 IF/no_think data in the SFT train mixture")
 # Batch sizes
 parser.add_argument("--max-seq-len", type=int, default=2048, help="max context length")
 parser.add_argument("--device-batch-size", type=int, default=16, help="per-device batch size")
@@ -429,7 +429,7 @@ if args.use_tulu3_sft_mixture:
     # Adds a second exposure to the 30k focused Persona-IF examples.
     train_tasks.append(Tulu3SFTPersonaIF(split="train", english_only=args.tulu3_english_only))
 if args.use_ultradata_sft_if:
-    # openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before English filtering
+    # openbmb/UltraData-SFT-2605 IF/no_think: 199,991 samples before CJK filtering
     train_tasks.append(UltraDataSFTIF())
 
 for repeat_idx in range(args.train_mixture_repeats):
