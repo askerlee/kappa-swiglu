@@ -79,6 +79,9 @@ def test_router_wg_delta_cli_applies_during_training_and_eval():
     assert "if args.router_wg_delta:" in source
     assert "if args.router_wg_delta and not args.eval_only:" not in source
     assert "model.setup_router_wg_delta()" in source
+    assert "args.router_wg_delta = args.router_wg_delta or bool(" in source
+    assert 'getattr(model.config, "router_wg_delta", False)' in source
+    assert 'user_config["router_wg_delta"] = args.router_wg_delta' in source
     assert '--router-wg-delta-l2-loss-weight' in source
     assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
     assert 'group.get("name") == "router_wg_base"' not in source

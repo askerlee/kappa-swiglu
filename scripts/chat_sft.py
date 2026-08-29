@@ -250,12 +250,19 @@ model, tokenizer, meta = load_model(
     activation_offload=args.activation_offload,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
+args.router_wg_delta = args.router_wg_delta or bool(
+    getattr(model.config, "router_wg_delta", False)
+)
 if args.router_wg_delta:
     model.setup_router_wg_delta()
+user_config["router_wg_delta"] = args.router_wg_delta
 user_config["router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update(
-        {"router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight},
+        {
+            "router_wg_delta": args.router_wg_delta,
+            "router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight,
+        },
         allow_val_change=True,
     )
 args.total_ut_steps = model.config.total_ut_steps
