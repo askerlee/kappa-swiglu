@@ -677,6 +677,13 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
     }
 
 
+def _migrate_optimizer_param_group_names(state_dict):
+    for group in state_dict.get("param_groups", []):
+        if group.get("name") == "kappa_bias":
+            group["name"] = "kappa_params"
+    return state_dict
+
+
 def load_optimizer_state_dict(checkpoint_dir, step, optimizer, device, rank=0, current_world_size=1, saved_world_size=None):
     shard_info = inspect_optimizer_shards(checkpoint_dir, step, saved_world_size=saved_world_size)
     available_ranks = shard_info["available_ranks"]
@@ -693,19 +700,21 @@ def load_optimizer_state_dict(checkpoint_dir, step, optimizer, device, rank=0, c
         )
 
     if current_world_size == saved_world_size:
-        return torch.load(_optimizer_shard_path(checkpoint_dir, step, rank), map_location=device)
+        state_dict = torch.load(_optimizer_shard_path(checkpoint_dir, step, rank), map_location=device)
+        return _migrate_optimizer_param_group_names(state_dict)
 
     shard_state_dicts = [
         torch.load(_optimizer_shard_path(checkpoint_dir, step, saved_rank), map_location=device)
         for saved_rank in expected_ranks
     ]
-    return reshard_optimizer_state_dict(
+    state_dict = reshard_optimizer_state_dict(
         shard_state_dicts,
         optimizer,
         rank=rank,
         saved_world_size=saved_world_size,
         current_world_size=current_world_size,
     )
+    return _migrate_optimizer_param_group_names(state_dict)
 
 # the sharding being handled is optimizer-state sharding, not model-weight sharding. 
 # Rank 0 saves one full model checkpoint, while every rank saves its own optimizer 

@@ -1350,7 +1350,7 @@ def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup
 
 def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
     for group in optimizer.param_groups:
-        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
+        if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
                 step,
                 num_iterations,
@@ -2230,7 +2230,7 @@ while True:
         lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
-            if group.get("name") == "kappa_bias" and group['kind'] == 'adamw':
+            if group.get("name") == "kappa_params" and group['kind'] == 'adamw':
                 resume_kappa_lr_scale = get_resume_kappa_lr_scale(
                     step, args.resume_from_step, args.resume_lr_warmup_steps
                 )

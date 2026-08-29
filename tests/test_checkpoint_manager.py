@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nanochat.checkpoint_manager import _infer_kappa_bias, _infer_use_qwen3_dense_mlp, _override_kappa_bias_values, _override_kappa_scale_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
+from nanochat.checkpoint_manager import _infer_kappa_bias, _infer_use_qwen3_dense_mlp, _migrate_optimizer_param_group_names, _override_kappa_bias_values, _override_kappa_scale_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 
 
@@ -29,6 +29,14 @@ def make_adamw_shard(param_groups, param_id, exp_avg, exp_avg_sq, step=7):
 def make_row_tensor(start_row, rows, cols):
     row_values = torch.arange(start_row, start_row + rows, dtype=torch.float32)
     return row_values.unsqueeze(1).expand(rows, cols).clone()
+
+
+def test_migrate_optimizer_param_group_names_renames_legacy_kappa_group():
+    state_dict = {"param_groups": [{"name": "kappa_bias"}, {"name": "router_wg_base"}]}
+
+    result = _migrate_optimizer_param_group_names(state_dict)
+
+    assert [group["name"] for group in result["param_groups"]] == ["kappa_params", "router_wg_base"]
 
 
 def write_sized_file(path, size):

@@ -107,7 +107,7 @@ def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
     assert "def get_kappa_bias_lr_scale(optimizer, step, num_iterations):" in source
-    assert 'if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":' in source
+    assert 'if group.get("name") == "kappa_params" and group.get("kind") == "adamw":' in source
     assert 'end_scale=group.get("lr_scale_end", 1.0)' in source
     assert 'max_scale=group.get("lr_scale_max", 1.0)' in source
 

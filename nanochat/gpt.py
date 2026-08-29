@@ -3078,7 +3078,7 @@ class GPT(nn.Module):
         param_groups.append(
             dict(
                 kind='adamw',
-                name='kappa_bias',
+                name='kappa_params',
                 params=kappa_params,
                 debug_param_names=[param_names[id(p)] for p in kappa_params],
                 lr=0.0,

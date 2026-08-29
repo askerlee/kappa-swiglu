@@ -624,7 +624,7 @@ def get_kappa_bias_schedule_total_iterations(step, progress):
 
 def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
     for group in optimizer.param_groups:
-        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
+        if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
                 step,
                 num_iterations,
@@ -1014,7 +1014,7 @@ while True:
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
-        if group.get("name") == "kappa_bias" and group.get("kind") == "adamw":
+        if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm

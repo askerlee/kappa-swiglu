@@ -654,7 +654,7 @@ def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
     }
     kappa_bias_group = next(
         group for group in optimizer.param_groups
-        if group.get('name') == 'kappa_bias'
+        if group.get('name') == 'kappa_params'
     )
 
     assert kappa_params
