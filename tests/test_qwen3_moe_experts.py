@@ -317,6 +317,31 @@ def test_kappa_router_softmax_l2_loss_is_mean_square():
     loss.backward()
     torch.testing.assert_close(router.router_softmax_kappa.grad, torch.tensor(4.0))
 
+def test_router_softmax_kappa_stats_report_top_and_bottom_five_percent():
+    config = GPTConfig(
+        sequence_len=8,
+        vocab_size=32,
+        n_layer=4,
+        moe_start_layer=0,
+        num_moe_layers=-1,
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=32,
+        n_head=4,
+        use_kappa_router_softmax=True,
+        debug=False,
+    )
+    model = GPT(config)
+    values = (-2.0, -1.0, 1.0, 3.0)
+    with torch.no_grad():
+        for block, value in zip(model.transformer.h, values):
+            block.mlp.router.router_softmax_kappa.fill_(value)
+
+    top_mean, bottom_mean = model.compute_router_softmax_kappa_stats()
+
+    torch.testing.assert_close(top_mean, torch.tensor(3.0))
+    torch.testing.assert_close(bottom_mean, torch.tensor(-2.0))
+
 
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
     torch.manual_seed(0)

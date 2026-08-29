@@ -2604,6 +2604,21 @@ class GPT(nn.Module):
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
         return losses
 
+    def compute_router_softmax_kappa_stats(self):
+        kappas = [
+            block.mlp.router.router_softmax_kappa.detach().float()
+            for block in self.transformer.h
+            if isinstance(block.mlp, MOELayer) and block.mlp.router.use_kappa_router_softmax
+        ]
+        if not kappas:
+            zero = self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
+            return zero, zero
+        kappas = torch.stack(kappas)
+        return (
+            _mean_extreme_percentile(kappas, fraction=0.05, largest=True),
+            _mean_extreme_percentile(kappas, fraction=0.05, largest=False),
+        )
+
     def _update_kappa_ema_rms_targets(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
@@ -3392,6 +3407,8 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_wg_delta_l2_loss': 0,
                    'router_softmax_kappa_l2_loss': 0,
+                   'router_softmax_kappa_top5p_mean': 0,
+                   'router_softmax_kappa_bottom5p_mean': 0,
                    'kappa_bias_l2_loss': 0,
                    'kappa_scale_l2_loss': 0,
                    'kappa_bias_ema_rms_reg_loss': 0,
@@ -3410,6 +3427,11 @@ class GPT(nn.Module):
                    'expert_utilities': None,
                    'selected_scores': None,
                  }
+
+        (
+            losses['router_softmax_kappa_top5p_mean'],
+            losses['router_softmax_kappa_bottom5p_mean'],
+        ) = self.compute_router_softmax_kappa_stats()
 
         # If MANAGER.collect_load_balancing_stats is False, these will return None
         expert_utilities = MANAGER.aggregate("expert_utilities")
