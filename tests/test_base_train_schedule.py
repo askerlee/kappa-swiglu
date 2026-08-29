@@ -20,20 +20,26 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_base_train_dtype_controls_autocast_parameter_and_optimizer_storage():
+def test_base_train_separates_compute_and_parameter_storage_dtypes():
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         source = script.read_text()
 
         dtype_arg_index = source.index('parser.add_argument("--dtype"')
+        parameter_dtype_arg_index = source.index('parser.add_argument("--parameter-dtype"')
         dtype_resolution_index = source.index('ptdtype = torch.float32 if args.dtype == "float32" else torch.bfloat16')
+        parameter_dtype_resolution_index = source.index(
+            'parameter_dtype = torch.bfloat16 if args.parameter_dtype == "bfloat16" else torch.float32'
+        )
         autocast_index = source.index('dtype=ptdtype')
-        cast_index = source.index("cast_model_parameters(model, ptdtype)")
+        cast_index = source.index("cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)")
         fp8_guard_index = source.index("if args.fp8:")
         convert_index = source.index("convert_to_float8_training(model", fp8_guard_index)
         optimizer_index = source.index("optimizer = model.setup_optimizer(", convert_index)
 
-        assert source.count("cast_model_parameters(model, ptdtype)") == 1
-        assert dtype_arg_index < dtype_resolution_index < autocast_index < cast_index
+        assert 'default="reference", choices=("reference", "float32", "bfloat16")' in source[parameter_dtype_arg_index:parameter_dtype_arg_index + 180]
+        assert source.count("cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)") == 1
+        assert dtype_arg_index < parameter_dtype_arg_index < dtype_resolution_index
+        assert dtype_resolution_index < parameter_dtype_resolution_index < autocast_index < cast_index
         assert cast_index < fp8_guard_index < convert_index < optimizer_index
 
 

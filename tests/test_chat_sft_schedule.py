@@ -32,13 +32,29 @@ def test_chat_sft_casts_floating_parameters_without_casting_buffers():
     assert module.stats.dtype == torch.float32
 
 
+def test_reference_parameter_storage_keeps_only_embeddings_in_bfloat16():
+    module = torch.nn.Module()
+    module.transformer = torch.nn.Module()
+    module.transformer.wte = torch.nn.Embedding(8, 4)
+    module.value_embeds = torch.nn.ModuleDict({"0": torch.nn.Embedding(8, 2)})
+    module.projection = torch.nn.Linear(4, 3)
+
+    cast_model_parameters(module, torch.float32, embedding_dtype=torch.bfloat16)
+
+    assert module.transformer.wte.weight.dtype == torch.bfloat16
+    assert module.value_embeds["0"].weight.dtype == torch.bfloat16
+    assert module.projection.weight.dtype == torch.float32
+
+
 def test_chat_sft_casts_parameters_before_compile_and_optimizer_setup():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    cast_index = source.index("cast_model_parameters(model, ptdtype)")
+    parameter_dtype_arg_index = source.index('parser.add_argument("--parameter-dtype"')
+    cast_index = source.index("cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)")
     compile_index = source.index("model = torch.compile(model, dynamic=False)")
     optimizer_index = source.index("optimizer = model.setup_optimizer(")
 
+    assert 'default="reference", choices=("reference", "float32", "bfloat16")' in source[parameter_dtype_arg_index:parameter_dtype_arg_index + 180]
     assert cast_index < compile_index < optimizer_index
 
 

@@ -72,7 +72,9 @@ parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('d
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
-                    help="compute, model parameter, and optimizer-state dtype")
+                    help="autocast compute dtype")
+parser.add_argument("--parameter-dtype", type=str, default="reference", choices=("reference", "float32", "bfloat16"),
+                    help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-save-tag", type=str, default=None, help="extra model tag to append to the saved folder")
@@ -132,7 +134,7 @@ parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zer
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
-parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive delta for each MoE router while freezing its base w_g")
+parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive delta for each MoE router")
 parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=0.001,
                     help="L2 weight on the additive router delta")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
@@ -193,6 +195,12 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 master_process = ddp_rank == 0
 ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
+parameter_dtype = torch.bfloat16 if args.parameter_dtype == 'bfloat16' else torch.float32
+embedding_dtype = (
+    torch.bfloat16
+    if args.parameter_dtype == 'reference' and device_type == 'cuda'
+    else parameter_dtype
+)
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
@@ -327,8 +335,11 @@ if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
-cast_model_parameters(model, ptdtype)
-print0(f"Model parameter storage dtype: {ptdtype}")
+cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)
+print0(
+    f"Compute dtype: {ptdtype}; parameter storage mode: {args.parameter_dtype} "
+    f"(default={parameter_dtype}, embeddings={embedding_dtype})"
+)
 orig_model = model
 model = torch.compile(model, dynamic=False)
 depth = model.config.n_layer

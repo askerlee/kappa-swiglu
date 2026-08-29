@@ -32,11 +32,15 @@ def _detect_compute_dtype():
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
 
-def cast_model_parameters(model, dtype):
+def cast_model_parameters(model, dtype, embedding_dtype=None):
     with torch.no_grad():
         for parameter in model.parameters():
             if parameter.is_floating_point() and parameter.dtype != dtype:
                 parameter.data = parameter.data.to(dtype=dtype)
+        if embedding_dtype is not None:
+            model.transformer.wte.to(dtype=embedding_dtype)
+            for value_embed in model.value_embeds.values():
+                value_embed.to(dtype=embedding_dtype)
 
 
 class ColoredFormatter(logging.Formatter):

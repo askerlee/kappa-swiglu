@@ -213,7 +213,9 @@ AUX_LOSS_WEIGHT_DEFAULT = 1e-3
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32", "bfloat16"),
-                    help="compute, model parameter, and optimizer-state dtype")
+                    help="autocast compute dtype")
+parser.add_argument("--parameter-dtype", type=str, default="reference", choices=("reference", "float32", "bfloat16"),
+                    help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
 parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
 # FP8 training
@@ -527,6 +529,12 @@ def trace_rank(message):
 
 
 ptdtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
+parameter_dtype = torch.bfloat16 if args.parameter_dtype == "bfloat16" else torch.float32
+embedding_dtype = (
+    torch.bfloat16
+    if args.parameter_dtype == "reference" and device_type == "cuda"
+    else parameter_dtype
+)
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
@@ -703,8 +711,11 @@ if resuming:
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data # free up this memory after the copy
 
-cast_model_parameters(model, ptdtype)
-print0(f"Model parameter and optimizer-state storage dtype: {ptdtype}")
+cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)
+print0(
+    f"Compute dtype: {ptdtype}; parameter storage mode: {args.parameter_dtype} "
+    f"(default={parameter_dtype}, embeddings={embedding_dtype})"
+)
 
 # -----------------------------------------------------------------------------
 # FP8 training initialization and management (this has to be done before torch.compile)
