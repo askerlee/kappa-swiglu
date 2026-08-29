@@ -295,6 +295,29 @@ def test_kappa_router_softmax_modulates_temperature_and_receives_gradient():
     assert router.router_softmax_kappa.grad.abs() > 0
 
 
+def test_kappa_router_softmax_l2_loss_is_mean_square():
+    config = GPTConfig(
+        n_exp=2,
+        moe_top_k=2,
+        n_embd=4,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_kappa_router_softmax=True,
+    )
+    router = Router(config)
+    with torch.no_grad():
+        router.router_softmax_kappa.fill_(2.0)
+    MANAGER.reset("router_softmax_kappa_l2_loss")
+
+    router(torch.randn(1, 2, config.n_embd))
+    loss = MANAGER.aggregate("router_softmax_kappa_l2_loss")
+
+    MANAGER.reset("router_softmax_kappa_l2_loss")
+    torch.testing.assert_close(loss, torch.tensor(4.0))
+    loss.backward()
+    torch.testing.assert_close(router.router_softmax_kappa.grad, torch.tensor(4.0))
+
+
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -1330,6 +1353,7 @@ def test_gpt_total_ut_steps_averages_repeated_manager_losses():
     loss_names = (
         "aux_loss",
         "router_z_loss",
+        "router_softmax_kappa_l2_loss",
         "kappa_bias_l2_loss",
         "kappa_scale_l2_loss",
         "kappa_bias_ema_rms_reg_loss",

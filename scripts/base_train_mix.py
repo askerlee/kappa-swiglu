@@ -2097,6 +2097,7 @@ while True:
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
             'router_wg_delta_l2_loss': 0.0,
+            'router_softmax_kappa_l2_loss': 0.0,
             'kappa_bias_l2_loss': 0.0,
             'kappa_scale_l2_loss': 0.0,
             'kappa_bias_ema_rms_reg_loss': 0.0,
@@ -2172,6 +2173,9 @@ while True:
                 router_wg_delta_l2_loss = micro_losses["router_wg_delta_l2_loss"]
                 if is_chat_sft_step:
                     loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss
+            router_softmax_kappa_l2_loss = micro_losses.get("router_softmax_kappa_l2_loss")
+            if router_softmax_kappa_l2_loss is None:
+                router_softmax_kappa_l2_loss = 0.0
             kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
             if kappa_bias_l2_loss is None:
                 kappa_bias_l2_loss = 0.0
@@ -2184,6 +2188,7 @@ while True:
             kappa_scale_ema_rms_reg_loss = micro_losses.get("kappa_scale_ema_rms_reg_loss")
             if kappa_scale_ema_rms_reg_loss is None:
                 kappa_scale_ema_rms_reg_loss = 0.0
+            loss = loss + kappa_bias_l2_loss_weight * router_softmax_kappa_l2_loss
             loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
             loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
             loss = loss + kappa_bias_l2_loss_weight * kappa_bias_ema_rms_reg_loss
@@ -2334,6 +2339,7 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_wg_delta_l2_loss_step": losses['router_wg_delta_l2_loss'],
+            "train/router_softmax_kappa_l2_loss_step": losses['router_softmax_kappa_l2_loss'],
             "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
             "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
             "train/kappa_bias_ema_rms_reg_loss_step": losses['kappa_bias_ema_rms_reg_loss'],
@@ -2366,6 +2372,7 @@ while True:
             log_data["train/loss_step"] = debiased_smooth_loss
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data["train/router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
+        log_data["train/router_softmax_kappa_l2_loss_weight"] = kappa_bias_l2_loss_weight
         log_data["train/kappa_bias_l2_loss_weight"] = kappa_bias_l2_loss_weight
         log_data["train/kappa_scale_l2_loss_weight"] = kappa_scale_l2_loss_weight
         log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale

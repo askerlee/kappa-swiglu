@@ -42,6 +42,7 @@ from nanochat.flash_attention import flash_attn
 _UT_LOSS_NAMES = (
     "aux_loss",
     "router_z_loss",
+    "router_softmax_kappa_l2_loss",
     "kappa_bias_l2_loss",
     "kappa_scale_l2_loss",
     "kappa_bias_ema_rms_reg_loss",
@@ -736,6 +737,15 @@ class Router(nn.Module):
         slope = torch.exp(torch.log(max_scale) * torch.tanh(self.router_softmax_kappa))
         return logits * slope.to(dtype=logits.dtype)
 
+    def _accumulate_kappa_l2_loss(self, loss_accum=None):
+        if not self.use_kappa_router_softmax:
+            return
+        loss = self.router_softmax_kappa.float().square()
+        if loss_accum is not None:
+            loss_accum.add("router_softmax_kappa_l2_loss", loss)
+        else:
+            MANAGER.add("router_softmax_kappa_l2_loss", loss)
+
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
         self.use_aux_loss = not self.use_aux_free_load_balancing
@@ -834,6 +844,8 @@ class Router(nn.Module):
                 noise *= torch.randn_like(noise)
             logits = logits_wg if noise is None else logits_wg + noise
             logits_for_router = self._modulate_logits(logits)
+            if self.training:
+                self._accumulate_kappa_l2_loss(loss_accum=loss_accum)
 
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
@@ -2582,6 +2594,7 @@ class GPT(nn.Module):
         device = self.transformer.wte.weight.device
         losses = {}
         for name in (
+            'router_softmax_kappa_l2_loss',
             'kappa_bias_l2_loss',
             'kappa_scale_l2_loss',
             'kappa_bias_ema_rms_reg_loss',
@@ -3378,6 +3391,7 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'router_z_loss': 0,
                    'router_wg_delta_l2_loss': 0,
+                   'router_softmax_kappa_l2_loss': 0,
                    'kappa_bias_l2_loss': 0,
                    'kappa_scale_l2_loss': 0,
                    'kappa_bias_ema_rms_reg_loss': 0,
@@ -3616,11 +3630,12 @@ class GPT(nn.Module):
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
 
-            # Updates losses['kappa_bias_l2_loss'] and losses['kappa_scale_l2_loss'].
+            # Updates the kappa L2 and EMA regularization losses.
             if checkpoint_loss_totals is not None:
                 losses.update({
                     name: checkpoint_loss_totals[_UT_LOSS_NAMES.index(name)] / self.total_ut_steps
                     for name in (
+                        'router_softmax_kappa_l2_loss',
                         'kappa_bias_l2_loss',
                         'kappa_scale_l2_loss',
                         'kappa_bias_ema_rms_reg_loss',
