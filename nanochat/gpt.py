@@ -3138,7 +3138,7 @@ class GPT(nn.Module):
                 kind=matrix_kind, name='router_wg_delta', params=group_params,
                 debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
-                nesterov=True, weight_decay=weight_decay, chunk_size=2,
+                nesterov=True, weight_decay=0, chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         for shape in sorted({p.shape for p in router_wg_base_params}):
@@ -3148,7 +3148,7 @@ class GPT(nn.Module):
                 kind=matrix_kind, name='router_wg_base', params=group_params,
                 debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
-                nesterov=True, weight_decay=weight_decay, chunk_size=2,
+                nesterov=True, weight_decay=0.1 * weight_decay, chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         factory_map = {

@@ -133,7 +133,7 @@ parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=Tr
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
 parser.add_argument("--router-wg-delta", action="store_true", help="train a full additive delta for each MoE router while freezing its base w_g")
-parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=0,
+parser.add_argument("--router-wg-delta-l2-loss-weight", type=float, default=0.001,
                     help="L2 weight on the additive router delta")
 parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', const=True, default=None, help="enable DeepSeekV3 auxiliary-loss-free load balancing instead of the Switch auxiliary router loss (default: inherit from saved config of base model)")
 
