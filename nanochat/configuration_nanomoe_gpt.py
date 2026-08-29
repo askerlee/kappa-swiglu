@@ -23,6 +23,8 @@ class GPTConfig:
         use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         z_loss_demean_logits: bool = True,  # fix router z loss bug by removing mean of logits
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
+        use_kappa_router_softmax: bool = False,  # learn a bounded per-layer slope for router softmax
+        router_kappa_slope_max_scale: float = 3.0,
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
@@ -93,6 +95,13 @@ class GPTConfig:
         self.use_router_z_loss = use_router_z_loss
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
+        self.use_kappa_router_softmax = bool(use_kappa_router_softmax)
+        self.router_kappa_slope_max_scale = float(router_kappa_slope_max_scale)
+        if self.router_kappa_slope_max_scale <= 1.0:
+            raise ValueError(
+                "router_kappa_slope_max_scale must be > 1, got "
+                f"{router_kappa_slope_max_scale}"
+            )
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
         valid_kappa_inputs = {"top_logits", "router_probs", "constant"}
         if kappa_input not in valid_kappa_inputs:

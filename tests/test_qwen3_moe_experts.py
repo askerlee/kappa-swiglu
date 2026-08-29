@@ -264,6 +264,37 @@ def test_router_returns_selected_top_k_router_scores():
     MANAGER._selected_scores_size = 0
 
 
+def test_kappa_router_softmax_modulates_temperature_and_receives_gradient():
+    config = GPTConfig(
+        n_exp=3,
+        moe_top_k=2,
+        n_embd=2,
+        eval_capacity=100.0,
+        use_aux_loss=False,
+        use_router_z_loss=False,
+        use_kappa_router_softmax=True,
+        router_kappa_slope_max_scale=4.0,
+    )
+    router = Router(config).eval()
+    with torch.no_grad():
+        router.w_g.weight.copy_(torch.tensor([[2.0, 0.0], [1.0, 0.0], [-1.0, 0.0]]))
+        target_slope = torch.tensor(2.0)
+        router.router_softmax_kappa.copy_(
+            torch.atanh(torch.log(target_slope) / math.log(config.router_kappa_slope_max_scale))
+        )
+    x = torch.tensor([[[1.0, 0.0]]])
+
+    _, router_probs, _, top_k_indices, _ = router(x)
+
+    assert torch.equal(top_k_indices, torch.tensor([[0, 1]]))
+    expected_probs = F.softmax(torch.tensor([[2.0, 1.0]]) * target_slope, dim=-1)
+    torch.testing.assert_close(router_probs, expected_probs)
+
+    router_probs.square().sum().backward()
+    assert router.router_softmax_kappa.grad is not None
+    assert router.router_softmax_kappa.grad.abs() > 0
+
+
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
     torch.manual_seed(0)
     config = GPTConfig(

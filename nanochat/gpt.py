@@ -670,6 +670,16 @@ class Router(nn.Module):
         self.use_router_z_loss      = config.use_router_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
+        self.use_kappa_router_softmax = bool(
+            getattr(config, 'use_kappa_router_softmax', False)
+        )
+        self.router_kappa_slope_max_scale = float(
+            getattr(config, 'router_kappa_slope_max_scale', 3.0)
+        )
+        if self.use_kappa_router_softmax:
+            self.router_softmax_kappa = nn.Parameter(torch.zeros((), dtype=torch.float32))
+        else:
+            self.register_parameter('router_softmax_kappa', None)
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
@@ -716,6 +726,15 @@ class Router(nn.Module):
         if not self.w_g_delta_enabled:
             return self.w_g.weight
         return self.w_g.weight + self.w_g_delta
+
+    def _modulate_logits(self, logits):
+        if not self.use_kappa_router_softmax:
+            return logits
+        max_scale = torch.as_tensor(
+            self.router_kappa_slope_max_scale, device=logits.device, dtype=torch.float32
+        )
+        slope = torch.exp(torch.log(max_scale) * torch.tanh(self.router_softmax_kappa))
+        return logits * slope.to(dtype=logits.dtype)
 
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
@@ -814,11 +833,12 @@ class Router(nn.Module):
                 noise = F.softplus(self.w_noise(x_flat))
                 noise *= torch.randn_like(noise)
             logits = logits_wg if noise is None else logits_wg + noise
+            logits_for_router = self._modulate_logits(logits)
 
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
             if self.training:
-                selection_scores = self._get_selection_scores(logits)
+                selection_scores = self._get_selection_scores(logits_for_router)
                 _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
                 if loss_accum is not None:
                     loss_accum.add_router_counts(
@@ -829,8 +849,6 @@ class Router(nn.Module):
                         top_k_indices, valid_token_mask_flat
                     )
 
-                logits_for_router = logits
-
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     if self.router_z_loss_input_grad_scale == 1:
@@ -840,7 +858,8 @@ class Router(nn.Module):
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
                             logits_wg, x_flat, router_weight, input_alpha_t
                         )
-                        logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
+                        logits_for_z_loss_raw = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
+                        logits_for_z_loss = self._modulate_logits(logits_for_z_loss_raw)
 
                     router_z_loss_per_token = compute_z_loss(
                         logits_for_z_loss.view(B, T, -1),
@@ -879,9 +898,9 @@ class Router(nn.Module):
                         self.top_k_indices = top_k_indices.view(B, T, -1).clone()
             else:
                 # At inference, we just need the top-k
-                selection_scores = self._get_selection_scores(logits)
+                selection_scores = self._get_selection_scores(logits_for_router)
                 _, top_k_indices = selection_scores.topk(self.top_k, dim=-1)
-                top_k_logits = logits.gather(-1, top_k_indices)
+                top_k_logits = logits_for_router.gather(-1, top_k_indices)
                 router_probs = F.softmax(top_k_logits, dim=-1) # [B*T, k]
 
             top_k_scores = top_k_logits
@@ -3017,6 +3036,7 @@ class GPT(nn.Module):
                     or name.startswith('mlp.kappa_bias')
                     or name.startswith('mlp.experts.kappa_scale')
                     or name.startswith('mlp.kappa_scale')
+                    or name == 'mlp.router.router_softmax_kappa'
                 ):
                     append_param(kappa_params, param, full_name)
                 elif name == 'mlp.router.w_g_delta':
