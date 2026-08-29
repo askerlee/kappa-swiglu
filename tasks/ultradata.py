@@ -8,6 +8,7 @@ import re
 from datasets import load_dataset
 
 from tasks.common import Task, normalize_conversation
+from tasks.tulu3 import get_filter_num_proc
 
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -49,7 +50,11 @@ class UltraDataSFTIF(Task):
             token=True,
         )
         print_row_count("UltraDataSFTIF rows before filtering", raw_ds)
-        filtered_ds = raw_ds.filter(has_no_cjk_user_questions)
+        filter_kwargs = {"desc": "Filtering CJK UltraData conversations"}
+        filter_num_proc = get_filter_num_proc()
+        if filter_num_proc > 1:
+            filter_kwargs["num_proc"] = filter_num_proc
+        filtered_ds = raw_ds.filter(has_no_cjk_user_questions, **filter_kwargs)
         print_row_count("UltraDataSFTIF rows after filtering", filtered_ds)
         self.ds = filtered_ds.shuffle(seed=42)
         self.length = len(self.ds)

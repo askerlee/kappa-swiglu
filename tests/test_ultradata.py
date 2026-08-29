@@ -45,6 +45,7 @@ def test_has_no_cjk_user_questions_filters_only_cjk_questions():
 
 
 def test_ultradata_sft_if_loads_expected_slice_and_filters_before_shuffle(monkeypatch):
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "1")
     rows = {
         "uid": ["english", "chinese"],
         "messages": [
@@ -71,6 +72,30 @@ def test_ultradata_sft_if_loads_expected_slice_and_filters_before_shuffle(monkey
     assert load_calls == [("openbmb/UltraData-SFT-2605", "IF", "no_think", True)]
     assert len(task) == 1
     assert task[0]["messages"][0]["content"] == "List three uses for a paper clip."
+
+
+def test_ultradata_filter_uses_allocated_cpus(monkeypatch):
+    filter_kwargs = {}
+
+    class FakeDataset:
+        def filter(self, predicate, **kwargs):
+            filter_kwargs.update(kwargs)
+            return self
+
+        def shuffle(self, seed):
+            return self
+
+        def __len__(self):
+            return 0
+
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "8")
+    monkeypatch.delenv("LOCAL_WORLD_SIZE", raising=False)
+    monkeypatch.setattr(ultradata, "load_dataset", lambda *args, **kwargs: FakeDataset())
+
+    ultradata.UltraDataSFTIF()
+
+    assert filter_kwargs["num_proc"] == 8
+    assert filter_kwargs["desc"] == "Filtering CJK UltraData conversations"
 
 
 def test_chat_sft_ultradata_flag_defaults_true_and_guards_dataset_construction():
