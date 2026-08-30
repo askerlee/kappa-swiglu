@@ -1255,6 +1255,7 @@ class Qwen3MLP(nn.Module):
         self.has_active_kappa_bias = self.use_kappa_swiglu and (
             layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
+        self.kappa_swiglu_enabled = self.has_active_kappa_bias
         self._shared_kappa_bias = None
         self._eval_kappa_slope_scales_cache = None
         self._eval_kappa_slope_scales_cache_dtype = None
@@ -1302,6 +1303,9 @@ class Qwen3MLP(nn.Module):
         raise ValueError(
               f"Unsupported kappa bias granularity: {self.global_kappa_bias_granularity!r}"
         )
+
+    def set_kappa_swiglu_enabled(self, enabled):
+        self.kappa_swiglu_enabled = self.has_active_kappa_bias and bool(enabled)
 
     def bind_shared_kappa_bias(self, kappa_bias):
         if self.global_kappa_bias_granularity != 'global':
@@ -1461,6 +1465,9 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         gate_out_raw = self.gate_proj(x)
+        if not self.kappa_swiglu_enabled:
+            gate_out = self.act_fn(gate_out_raw)
+            return self.c_proj(gate_out * self.c_fc(x))
         kappa_bias = self._materialize_kappa_bias(current_ut)
         if self.training:
             slope_scales = self._compute_kappa_slope_scales(kappa_bias)
@@ -1506,6 +1513,7 @@ class Qwen3MLPExperts(nn.Module):
         self.use_kappa_swiglu = bool(getattr(config, 'use_kappa_swiglu', False)) and (
             layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
+        self.kappa_swiglu_enabled = self.use_kappa_swiglu
         self.log_implicit_gate_proj_bias = bool(getattr(config, 'log_implicit_gate_proj_bias', False))
         self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_kappa_bias = None
@@ -1613,6 +1621,9 @@ class Qwen3MLPExperts(nn.Module):
         if self.bilinear_mlp_moe:
             return gate_out_raw
         return self.act_fn(gate_out_raw)
+
+    def set_kappa_swiglu_enabled(self, enabled):
+        self.kappa_swiglu_enabled = self.use_kappa_swiglu and bool(enabled)
 
     def _get_kappa_bias_parameter_shape(self):
         if self.global_kappa_bias_granularity == 'per-gate':
@@ -2097,7 +2108,7 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        if selected_router_scores is not None and self.use_kappa_swiglu:
+        if selected_router_scores is not None and self.kappa_swiglu_enabled:
             if self.training:
                 kappa_bias = self._materialize_kappa_bias(current_ut)
                 self._accumulate_kappa_bias_l2_losses(
@@ -2996,6 +3007,16 @@ class GPT(nn.Module):
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer) and mlp.router.w_g_delta is not None:
                 mlp.router.enable_router_wg_delta(enabled)
+
+    def set_kappa_swiglu_enabled(self, enabled):
+        for block in self.transformer.h:
+            mlp = getattr(block, 'mlp', None)
+            if isinstance(mlp, Qwen3MLP):
+                mlp.set_kappa_swiglu_enabled(enabled)
+                continue
+            experts = getattr(mlp, 'experts', None)
+            if isinstance(experts, Qwen3MLPExperts):
+                experts.set_kappa_swiglu_enabled(enabled)
 
     def compute_router_wg_delta_l2_loss(self):
         losses = []

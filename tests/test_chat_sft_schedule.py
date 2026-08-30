@@ -58,6 +58,14 @@ def test_chat_sft_casts_parameters_before_compile_and_optimizer_setup():
     assert cast_index < compile_index < optimizer_index
 
 
+def test_chat_sft_enables_kappa_swiglu_for_all_iterations():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    enable_index = source.index("model.set_kappa_swiglu_enabled(True)")
+    compile_index = source.index("model = torch.compile(model, dynamic=False)")
+    assert enable_index < compile_index
+
+
 def test_chat_sft_inherits_checkpoint_train_capacity():
     source = CHAT_SFT.read_text(encoding="utf-8")
 

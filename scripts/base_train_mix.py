@@ -261,6 +261,8 @@ parser.add_argument("--use-kappa-router-softmax", type=str2bool, nargs='?', cons
                     help="learn a bounded per-layer slope for router softmax")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', const=True, default=False,
+                    help="allocate kappa SwiGLU parameters but use them only on mixed chat-SFT iterations")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
@@ -341,7 +343,7 @@ parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate 
 parser.add_argument("--target-param-data-ratio", type=float, default=5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?', const=True, default=True,
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
-parser.add_argument("--chat-sft-every", type=int, default=100, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
+parser.add_argument("--chat-sft-every", type=int, default=10, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
                     help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
@@ -416,6 +418,9 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+
+if args.use_kappa_swiglu_sft_only:
+    args.use_kappa_swiglu = True
 
 ut_edge_offset = args.depth // 6
 if args.ut_source is None:
@@ -1754,6 +1759,10 @@ if hasattr(signal, "SIGHUP"):
 while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     is_resume_step = resuming and step == args.resume_from_step
+    is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
+    orig_model.set_kappa_swiglu_enabled(
+        is_chat_sft_step if args.use_kappa_swiglu_sft_only else True
+    )
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     refresh_compiled_training_model = False
     run_eager_training_step_after_core_eval = False
@@ -2126,7 +2135,6 @@ while True:
         orig_model.set_training_step(step)
         orig_model.set_kappa_bias_ema_rms_reg_step(step)
         kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
-        is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
         if args.router_wg_delta:
             orig_model.enable_router_wg_delta(is_chat_sft_step)
         step_sft_padding_tokens = 0
@@ -2364,6 +2372,10 @@ while True:
             "mfu": logged_mfu,
             "epoch": epoch,
             "train/is_chat_sft_step": 1.0 if train_source == "chat_sft" else 0.0,
+            "train/kappa_swiglu_enabled": 1.0 if (
+                args.use_kappa_swiglu
+                and (not args.use_kappa_swiglu_sft_only or is_chat_sft_step)
+            ) else 0.0,
         }
         if train_source == "chat_sft":
             log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])

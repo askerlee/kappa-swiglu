@@ -68,6 +68,16 @@ def test_router_wg_delta_updates_only_on_mixed_chat_sft_steps():
     assert '"train/router_wg_delta_l2_loss_step"' in source
 
 
+def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
+    source = BASE_TRAIN_MIX.read_text()
+
+    assert 'parser.add_argument("--use-kappa-swiglu-sft-only"' in source
+    assert "if args.use_kappa_swiglu_sft_only:" in source
+    assert "args.use_kappa_swiglu = True" in source
+    assert "orig_model.set_kappa_swiglu_enabled(" in source
+    assert "is_chat_sft_step if args.use_kappa_swiglu_sft_only else True" in source
+
+
 def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():
     get_compile_rebuild_plan = load_function_from_script("get_compile_rebuild_plan")
 

@@ -343,6 +343,7 @@ if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
+model.set_kappa_swiglu_enabled(True)
 cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)
 print0(
     f"Compute dtype: {ptdtype}; parameter storage mode: {args.parameter_dtype} "

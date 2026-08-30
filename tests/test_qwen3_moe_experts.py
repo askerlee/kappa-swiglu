@@ -637,6 +637,65 @@ def test_dense_qwen3_mlp_enables_constant_kappa_bias_when_requested():
     assert experts.use_kappa_scale is True
 
 
+def test_kappa_swiglu_runtime_toggle_preserves_parameters():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_kappa_swiglu=True,
+        kappa_input="router_probs",
+        constant_kappa_bias_dense_layers=True,
+        debug=False,
+    )
+    mlp = Qwen3MLP(config, layer_idx=0)
+    experts = Qwen3MLPExperts(config, layer_idx=0)
+    mlp_kappa_bias = mlp.kappa_bias
+    experts_kappa_bias = experts.kappa_bias
+
+    mlp.set_kappa_swiglu_enabled(False)
+    experts.set_kappa_swiglu_enabled(False)
+
+    assert mlp.kappa_swiglu_enabled is False
+    assert experts.kappa_swiglu_enabled is False
+    assert mlp.kappa_bias is mlp_kappa_bias
+    assert experts.kappa_bias is experts_kappa_bias
+
+    mlp.set_kappa_swiglu_enabled(True)
+    experts.set_kappa_swiglu_enabled(True)
+
+    assert mlp.kappa_swiglu_enabled is True
+    assert experts.kappa_swiglu_enabled is True
+
+
+def test_disabled_dense_kappa_swiglu_uses_standard_activation_without_l2_loss():
+    config = GPTConfig(
+        n_embd=4,
+        use_kappa_swiglu=True,
+        kappa_input="constant",
+        constant_kappa_bias_dense_layers=True,
+        debug=False,
+    )
+    mlp = Qwen3MLP(config, layer_idx=0).train()
+    with torch.no_grad():
+        mlp.kappa_bias.fill_(1.0)
+    x = torch.randn(2, 3, config.n_embd)
+    gate_out_raw = mlp.gate_proj(x)
+    expected = mlp.c_proj(mlp.act_fn(gate_out_raw) * mlp.c_fc(x))
+    MANAGER.reset("kappa_bias_l2_loss")
+
+    mlp.set_kappa_swiglu_enabled(False)
+    disabled_output = mlp(x)
+
+    torch.testing.assert_close(disabled_output, expected)
+    assert MANAGER.aggregate("kappa_bias_l2_loss") == 0
+
+    mlp.set_kappa_swiglu_enabled(True)
+    enabled_output = mlp(x)
+
+    assert not torch.allclose(enabled_output, expected)
+    assert MANAGER.aggregate("kappa_bias_l2_loss") > 0
+    MANAGER.reset("kappa_bias_l2_loss")
+
+
 def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
     torch.manual_seed(0)
     config = GPTConfig(
