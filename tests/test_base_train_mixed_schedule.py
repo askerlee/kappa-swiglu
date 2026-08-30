@@ -2,6 +2,8 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_TRAIN_MIX = ROOT / "scripts" / "base_train_mix.py"
@@ -13,7 +15,7 @@ def load_function_from_script(function_name):
     for node in module.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             function_module = ast.Module(body=[node], type_ignores=[])
-            namespace = {}
+            namespace = {"torch": torch}
             exec(compile(function_module, filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
             return namespace[function_name]
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN_MIX}")
@@ -76,6 +78,36 @@ def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
     assert "args.use_kappa_swiglu = True" in source
     assert "orig_model.set_kappa_swiglu_enabled(" in source
     assert "is_chat_sft_step if args.use_kappa_swiglu_sft_only else True" in source
+
+
+def test_base_logging_reuses_last_chat_sft_kappa_metrics():
+    snapshot_kappa_metrics = load_function_from_script("snapshot_kappa_metrics")
+    overlay_metrics = load_function_from_script("overlay_last_chat_sft_kappa_metrics")
+    source_value = torch.tensor(3.0)
+    cached = snapshot_kappa_metrics({
+        "kappa_scale_l2_loss": source_value,
+        "aux_loss": torch.tensor(7.0),
+    })
+    source_value.fill_(9.0)
+    current = {
+        "kappa_scale_l2_loss": torch.tensor(0.0),
+        "aux_loss": torch.tensor(2.0),
+    }
+
+    base_logging = overlay_metrics(current, cached, is_chat_sft_step=False)
+    sft_logging = overlay_metrics(current, cached, is_chat_sft_step=True)
+
+    torch.testing.assert_close(base_logging["kappa_scale_l2_loss"], torch.tensor(3.0))
+    torch.testing.assert_close(base_logging["aux_loss"], torch.tensor(2.0))
+    assert "aux_loss" not in cached
+    assert sft_logging is current
+
+
+def test_sft_only_kappa_collects_stats_on_non_logging_sft_steps():
+    source = BASE_TRAIN_MIX.read_text()
+
+    assert "or (args.use_kappa_swiglu_sft_only and is_chat_sft_step)" in source
+    assert "last_chat_sft_kappa_metrics = snapshot_kappa_metrics(losses)" in source
 
 
 def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():

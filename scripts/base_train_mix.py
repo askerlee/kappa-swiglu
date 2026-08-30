@@ -343,7 +343,7 @@ parser.add_argument("--target-flops", type=float, default=-1.0, help="calculate 
 parser.add_argument("--target-param-data-ratio", type=float, default=5, help="calculate num_iterations to maintain data:param ratio (Chinchilla=20, -1 = disable)")
 parser.add_argument("--use-moe-adjusted-scaling-params", type=str2bool, nargs='?', const=True, default=True,
                     help="use MoE-adjusted scaling params instead of raw scaling params when --target-param-data-ratio determines target tokens")
-parser.add_argument("--chat-sft-every", type=int, default=10, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
+parser.add_argument("--chat-sft-every", type=int, default=11, help="run one chat-SFT optimizer step every N training steps (-1 = disable)")
 parser.add_argument("--chat-sft-train-mixture-repeats", type=int, default=4, help="repeat factor for the auxiliary chat-SFT train mixture")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True,
                     help="include allenai/tulu-3-sft-mixture in the auxiliary chat-SFT train mixture")
@@ -1463,6 +1463,22 @@ def average_step_losses(step_losses, grad_accum_normalizer):
             averaged_losses[key] = value / grad_accum_normalizer
     return averaged_losses
 
+
+def snapshot_kappa_metrics(losses):
+    return {
+        key: value.detach().clone() if torch.is_tensor(value) else value
+        for key, value in losses.items()
+        if key.startswith("kappa_")
+    }
+
+
+def overlay_last_chat_sft_kappa_metrics(losses, cached_metrics, is_chat_sft_step):
+    if is_chat_sft_step or not cached_metrics:
+        return losses
+    logging_losses = dict(losses)
+    logging_losses.update(cached_metrics)
+    return logging_losses
+
 def get_dense_kappa_bias_stat_layer_indices(model):
     start_layer = max(0, int(getattr(model.config, 'kappa_bias_start_layer', 0)))
     return [
@@ -1743,6 +1759,7 @@ if args.mockup_mode:
 
 core_results = {}
 prev_exp_gate_implicit_bias_signs = {}
+last_chat_sft_kappa_metrics = {}
 has_rebuilt_compile_after_eval = False
 throughput_interval_steps = 0
 throughput_interval_time = 0.0
@@ -2090,7 +2107,10 @@ while True:
     if is_last_step:
         break
 
-    MANAGER.collect_load_balancing_stats = args.log_grad_stats and (step % args.log_interval == 0)
+    MANAGER.collect_load_balancing_stats = args.log_grad_stats and (
+        step % args.log_interval == 0
+        or (args.use_kappa_swiglu_sft_only and is_chat_sft_step)
+    )
     MANAGER.collect_backward_stats = False
 
     # -------------------------------------------------------------------------
@@ -2247,6 +2267,9 @@ while True:
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)
 
+        if args.use_kappa_swiglu_sft_only and is_chat_sft_step:
+            last_chat_sft_kappa_metrics = snapshot_kappa_metrics(losses)
+
         if args.router_wg_delta:
             for group in optimizer.param_groups:
                 inactive_router_group = (
@@ -2326,6 +2349,11 @@ while True:
         epoch = dataloader_state_dict["epoch"]
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | source: {train_source} | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
     if step % args.log_interval == 0:
+        losses = overlay_last_chat_sft_kappa_metrics(
+            losses,
+            last_chat_sft_kappa_metrics,
+            is_chat_sft_step,
+        )
         logged_dt, logged_tok_per_sec, logged_mfu = get_interval_throughput(
             total_batch_size,
             num_flops_per_token,
