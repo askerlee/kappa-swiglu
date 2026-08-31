@@ -98,6 +98,16 @@ EVAL_BUNDLE_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundl
 BOOLQ_YES_RATE_PRIOR = 0.62
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    if value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
 def place_eval_bundle(file_path):
     """Unzip eval_bundle.zip and place it in the base directory."""
     base_dir = get_base_dir()
@@ -278,7 +288,7 @@ def main():
     parser.add_argument('--eval', type=str, default='core,bpb,sample', help='Comma-separated evaluations to run: core,bpb,sample (default: all)')
     parser.add_argument('--hf-path', type=str, default=None, help='HuggingFace model path (e.g. openai-community/gpt2-xl)')
     parser.add_argument('--model-tag', type=str, default=None, help='nanochat model tag to identify the checkpoint directory')
-    parser.add_argument('-i', '--source', type=str, default='base', required=True, 
+    parser.add_argument('-i', '--source', type=str, default='base', required=False, 
                         help="Source of the model: base|sft|rl")
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--loop', dest='total_ut_steps', type=int, default=None, help='Override the checkpoint Universal Transformer loop count')
@@ -301,7 +311,9 @@ def main():
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument(
         '--use-kappa-swiglu',
-        action=argparse.BooleanOptionalAction,
+        type=str2bool,
+        nargs='?',
+        const=True,
         dest='use_kappa_swiglu',
         default=None,
         help='Override the checkpoint config for expert kappa_bias on nanochat checkpoints',

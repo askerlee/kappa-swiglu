@@ -26,6 +26,16 @@ BOOLQ_RANDOM_BASELINE = 0.62
 BOOLQ_YES_RATE_PRIOR = 0.62
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    if value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
 class ModelWrapper:
     """Lightweight wrapper to give HuggingFace models a nanochat-compatible interface."""
 
@@ -246,7 +256,9 @@ def build_parser():
     parser.add_argument('--eval-capacity', type=float, default=None, help='Override MoE eval capacity for nanochat checkpoints')
     parser.add_argument(
         '--use-kappa-swiglu',
-        action=argparse.BooleanOptionalAction,
+        type=str2bool,
+        nargs='?',
+        const=True,
         dest='use_kappa_swiglu',
         default=None,
         help='Override the checkpoint config for expert kappa_bias on nanochat checkpoints',
