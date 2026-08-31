@@ -343,6 +343,8 @@ if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
+# If the model has not initialized kappa swiglu params, this has no effect.
+# Therefore, if the model is trained without enabling kappa swiglu, this call has no effect.
 model.set_kappa_swiglu_enabled(True)
 cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)
 print0(

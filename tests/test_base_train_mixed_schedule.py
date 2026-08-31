@@ -80,6 +80,22 @@ def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
     assert "is_chat_sft_step if args.use_kappa_swiglu_sft_only else True" in source
 
 
+def test_core_eval_temporarily_disables_kappa_swiglu():
+    source = BASE_TRAIN_MIX.read_text()
+    core_eval_index = source.index("core_results = evaluate_core(orig_model")
+    disable_index = source.rindex(
+        "orig_model.set_kappa_swiglu_enabled(False)",
+        0,
+        core_eval_index,
+    )
+    restore_index = source.index(
+        "orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)",
+        core_eval_index,
+    )
+
+    assert disable_index < core_eval_index < restore_index
+
+
 def test_base_logging_reuses_last_chat_sft_kappa_metrics():
     snapshot_kappa_metrics = load_function_from_script("snapshot_kappa_metrics")
     overlay_metrics = load_function_from_script("overlay_last_chat_sft_kappa_metrics")

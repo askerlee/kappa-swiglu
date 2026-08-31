@@ -1777,9 +1777,10 @@ while True:
     is_last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     is_resume_step = resuming and step == args.resume_from_step
     is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
-    orig_model.set_kappa_swiglu_enabled(
+    kappa_swiglu_training_enabled = (
         is_chat_sft_step if args.use_kappa_swiglu_sft_only else True
     )
+    orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     refresh_compiled_training_model = False
     run_eager_training_step_after_core_eval = False
@@ -1977,11 +1978,13 @@ while True:
         and args.core_metric_every > 0
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.core_metric_every == 0))
     ):
+        orig_model.set_kappa_swiglu_enabled(False)
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
             max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
             core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
+        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         core_metric = core_results["core_metric"]
         print0(f"Step {step:05d} | CORE metric: {core_metric:.4f}")
         print0(f"Step {step:05d} | CORE metric (no boolq): {core_results['core_metric_no_boolq']:.4f}")
