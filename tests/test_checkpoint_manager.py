@@ -461,6 +461,31 @@ def test_infer_kappa_bias_detects_rank1_residual_checkpoint_layout():
     assert model_config_kwargs["kappa_bias_start_layer"] == 1
 
 
+def test_patch_missing_keys_initializes_newly_enabled_kappa_parameters_to_zero():
+    model_data = {}
+    config = GPTConfig(
+        n_layer=2,
+        n_exp=2,
+        n_embd=4,
+        moe_start_layer=1,
+        use_kappa_swiglu=True,
+        constant_kappa_bias_dense_layers=True,
+        total_ut_steps=2,
+    )
+
+    _patch_missing_keys(model_data, config)
+
+    dense_bias = model_data["transformer.h.0.mlp.kappa_bias"]
+    expert_bias = model_data["transformer.h.1.mlp.experts.kappa_bias"]
+    expert_scale = model_data["transformer.h.1.mlp.experts.kappa_scale"]
+    assert dense_bias.shape == (2, 16)
+    assert expert_bias.shape == (2, 2, 16)
+    assert expert_scale.shape == (2, 2, 16)
+    assert torch.count_nonzero(dense_bias) == 0
+    assert torch.count_nonzero(expert_bias) == 0
+    assert torch.count_nonzero(expert_scale) == 0
+
+
 def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
     fill_value = 0.4
     model_data = {

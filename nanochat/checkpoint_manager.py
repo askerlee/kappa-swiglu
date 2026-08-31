@@ -271,6 +271,13 @@ def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
     total_ut_steps = int(getattr(model_config, "total_ut_steps", 1) or 1)
+    granularity = getattr(model_config, "global_kappa_bias_granularity", "per-gate")
+    intermediate_size = 4 * model_config.n_embd
+    moe_layer_indices = set(get_moe_layer_indices(model_config))
+    uses_qwen3_moe = bool(getattr(model_config, "use_qwen3_moe_mlp", True))
+    uses_dense_kappa = bool(getattr(model_config, "use_qwen3_dense_mlp", True)) and bool(
+        getattr(model_config, "constant_kappa_bias_dense_layers", False)
+    )
     scalar_shape = (total_ut_steps, n_layer)
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
@@ -302,7 +309,7 @@ def _patch_missing_keys(model_data, model_config):
             ut_destination,
         )
     if model_config.n_exp > 1:
-        for layer_idx in get_moe_layer_indices(model_config):
+        for layer_idx in moe_layer_indices:
             gate_proj_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj"
             gate_proj_a_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_a"
             gate_proj_b_key = f"transformer.h.{layer_idx}.mlp.experts.gate_proj_b"
@@ -327,14 +334,51 @@ def _patch_missing_keys(model_data, model_config):
                         if residual_bias is not None:
                             kappa_bias = kappa_bias + residual_bias
                         model_data[kappa_bias_key] = kappa_bias
+                    elif uses_qwen3_moe and granularity != "global":
+                        if granularity == "per-gate":
+                            kappa_bias_shape = (model_config.n_exp, intermediate_size)
+                        elif granularity == "per-expert":
+                            kappa_bias_shape = (model_config.n_exp,)
+                        else:
+                            kappa_bias_shape = (1,)
+                        model_data[kappa_bias_key] = torch.zeros(total_ut_steps, *kappa_bias_shape)
                 else:
                     model_data.pop(kappa_bias_expert_key, None)
                     model_data.pop(kappa_bias_intermediate_key, None)
                     model_data.pop(kappa_bias_residual_key, None)
+                if (
+                    uses_qwen3_moe
+                    and
+                    granularity != "global"
+                    and getattr(model_config, "kappa_input", "router_probs") in {"top_logits", "router_probs"}
+                ):
+                    kappa_scale_key = f"transformer.h.{layer_idx}.mlp.experts.kappa_scale"
+                    if kappa_scale_key not in model_data:
+                        model_data[kappa_scale_key] = torch.zeros_like(model_data[kappa_bias_key])
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
                 model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)
                 log0(f"Patching missing {expert_bias_key} in model data to zeros")
+    if uses_dense_kappa:
+        for layer_idx in range(n_layer):
+            if layer_idx in moe_layer_indices or not _kappa_bias_enabled_for_layer(model_config, layer_idx):
+                continue
+            kappa_bias_key = f"transformer.h.{layer_idx}.mlp.kappa_bias"
+            if granularity != "global" and kappa_bias_key not in model_data:
+                kappa_bias_shape = (intermediate_size,) if granularity == "per-gate" else (1,)
+                model_data[kappa_bias_key] = torch.zeros(total_ut_steps, *kappa_bias_shape)
+    has_active_moe_kappa = uses_qwen3_moe and any(
+        _kappa_bias_enabled_for_layer(model_config, layer_idx) for layer_idx in moe_layer_indices
+    )
+    has_active_dense_kappa = uses_dense_kappa and any(
+        _kappa_bias_enabled_for_layer(model_config, layer_idx)
+        for layer_idx in range(n_layer)
+        if layer_idx not in moe_layer_indices
+    )
+    if granularity == "global" and (has_active_moe_kappa or has_active_dense_kappa):
+        model_data.setdefault("global_kappa_bias", torch.zeros(total_ut_steps, 1))
+        if has_active_moe_kappa and getattr(model_config, "kappa_input", "router_probs") in {"top_logits", "router_probs"}:
+            model_data.setdefault("global_kappa_scale", torch.zeros(total_ut_steps, 1))
     _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps)
 
 

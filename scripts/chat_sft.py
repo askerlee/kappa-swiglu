@@ -90,6 +90,8 @@ parser.add_argument("--activation-checkpointing", dest="activation_checkpointing
                     help="override activation checkpointing for each full transformer-stack pass")
 parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=None,
                     help="override storing transformer activations in pinned CPU memory")
+parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=None,
+                    help="enable kappa SwiGLU when the base model does not already enable it")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -237,6 +239,7 @@ if not use_dummy_wandb:
 refresh_kappa_bias_references = args.kappa_bias_l2_anchor == "initial"
 print0(f"expert kappa bias L2 anchor: {args.kappa_bias_l2_anchor}")
 sft_checkpoint_source = "sft" if args.eval_only else "base"
+use_kappa_swiglu = True if args.use_kappa_swiglu is None else args.use_kappa_swiglu
 model, tokenizer, meta = load_model(
     sft_checkpoint_source,
     device,
@@ -249,6 +252,7 @@ model, tokenizer, meta = load_model(
     loss_recompute_backward=args.loss_recompute_backward,
     activation_checkpointing=args.activation_checkpointing,
     activation_offload=args.activation_offload,
+    use_kappa_swiglu=use_kappa_swiglu,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 args.router_wg_delta = args.router_wg_delta or bool(
