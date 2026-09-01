@@ -209,6 +209,23 @@ def test_reshard_optimizer_state_dict_reshards_muon_group():
     assert torch.equal(loaded_state["second_momentum_buffer"], expected_second)
 
 
+def test_reshard_optimizer_state_dict_reshards_muonh_norms():
+    params = [torch.nn.Parameter(torch.zeros(2, 2)) for _ in range(2)]
+    optimizer = make_optimizer([
+        {"kind": "muonh", "params": params, "lr": 1e-2, "momentum": 0.95}
+    ])
+    saved_groups = [{"kind": "muonh", "params": [0, 1], "lr": 1e-2, "momentum": 0.95}]
+    p_norm = torch.tensor([[[2.0]], [[3.0]]])
+    shard = {
+        "state": {0: {"p_norm": p_norm.clone()}},
+        "param_groups": copy.deepcopy(saved_groups),
+    }
+
+    state_dict = reshard_optimizer_state_dict([shard], optimizer)
+
+    assert torch.equal(state_dict["state"][0]["p_norm"], p_norm)
+
+
 def test_reshard_optimizer_state_dict_reshards_aurora_group():
     params = [torch.nn.Parameter(torch.zeros(2, 2)) for _ in range(5)]
     optimizer = make_optimizer([

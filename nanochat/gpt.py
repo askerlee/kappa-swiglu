@@ -3176,10 +3176,11 @@ class GPT(nn.Module):
         param_groups.append(
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0)
         )  # higher beta1 for x0
-        if matrix_optimizer not in ('muon', 'aurora'):
+        if matrix_optimizer not in ('muon', 'muonh', 'aurora'):
             raise ValueError(f"Unsupported matrix_optimizer: {matrix_optimizer}")
 
         matrix_kind = matrix_optimizer
+        matrix_weight_decay = 0.0 if matrix_optimizer == 'muonh' else weight_decay
         matrix_lr_scaling = "match_rms_adamw" if muon_match_rms_adamw else "original"
         print0(f"{matrix_optimizer.capitalize()} LR scaling: {matrix_lr_scaling}")
         for shape in sorted({p.shape for p in dense_matrix_params}):
@@ -3187,7 +3188,7 @@ class GPT(nn.Module):
             group_param_names = [param_names[id(p)] for p in group_params]
             param_groups.append(dict(
                 kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=matrix_weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
@@ -3196,7 +3197,7 @@ class GPT(nn.Module):
             group_param_names = [param_names[id(p)] for p in group_params]
             param_groups.append(dict(
                 kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=weight_decay,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=matrix_weight_decay,
                 chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
@@ -3204,7 +3205,8 @@ class GPT(nn.Module):
             group_params = [p for p in router_wg_delta_params if p.shape == shape]
             group_param_names = [param_names[id(p)] for p in group_params]
             param_groups.append(dict(
-                kind=matrix_kind, name='router_wg_delta', params=group_params,
+                kind='muon' if matrix_kind == 'muonh' else matrix_kind,
+                name='router_wg_delta', params=group_params,
                 debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
                 nesterov=True, weight_decay=0, chunk_size=2,
@@ -3222,6 +3224,7 @@ class GPT(nn.Module):
             ))
         factory_map = {
             'muon': (DistMuonAdamW if ddp else MuonAdamW),
+            'muonh': (DistMuonAdamW if ddp else MuonAdamW),
             'aurora': (DistAuroraAdamW if ddp else AuroraAdamW),
         }
         Factory = factory_map[matrix_optimizer]

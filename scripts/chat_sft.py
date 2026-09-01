@@ -109,8 +109,8 @@ parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learnin
 # Since the SFT dataset is much smaller, we use a smaller learning rate for the residual and input-embedding scalars, 
 # but the matrix parameters have the same LR.
 parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate for x0_lambdas (resid_lambdas use 0.1x)")
-parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
-parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
+parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
+parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "muonh", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scaling factor for all types of learning rates, relative to the LR used during base model pretraining")
 parser.add_argument("--kappa-lr-max-scale",
                     dest="kappa_lr_max_scale", type=float, default=0.1,
@@ -261,15 +261,6 @@ args.router_wg_delta = args.router_wg_delta or bool(
 if args.router_wg_delta:
     model.setup_router_wg_delta()
 user_config["router_wg_delta"] = args.router_wg_delta
-user_config["router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
-if not use_dummy_wandb:
-    wandb_run.config.update(
-        {
-            "router_wg_delta": args.router_wg_delta,
-            "router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight,
-        },
-        allow_val_change=True,
-    )
 args.total_ut_steps = model.config.total_ut_steps
 args.ut_everypass_ntp = model.config.ut_everypass_ntp
 args.ut_detach = model.config.ut_detach
@@ -328,9 +319,19 @@ if matrix_optimizer_was_specified:
 else:
     args.matrix_optimizer = meta.get("user_config", {}).get("matrix_optimizer", "muon")
     print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")
+if args.matrix_optimizer == "muonh":
+    args.router_wg_delta_l2_loss_weight = 0.0
 user_config["matrix_optimizer"] = args.matrix_optimizer
+user_config["router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
 if not use_dummy_wandb:
-    wandb_run.config.update({"matrix_optimizer": args.matrix_optimizer}, allow_val_change=True)
+    wandb_run.config.update(
+        {
+            "matrix_optimizer": args.matrix_optimizer,
+            "router_wg_delta": args.router_wg_delta,
+            "router_wg_delta_l2_loss_weight": args.router_wg_delta_l2_loss_weight,
+        },
+        allow_val_change=True,
+    )
 if router_z_loss_weight_was_specified:
     model.config.router_z_loss_weight = args.router_z_loss_weight
     print0(f"Specified router_z_loss_weight: {args.router_z_loss_weight}")
@@ -1044,8 +1045,9 @@ while True:
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
-        if group['kind'] == 'muon':
+        if group['kind'] in ('muon', 'muonh'):
             group["momentum"] = muon_momentum
+        if group['kind'] == 'muon':
             group["weight_decay"] = muon_weight_decay
     orig_model.update_aux_free_load_balancing()
     optimizer.step()

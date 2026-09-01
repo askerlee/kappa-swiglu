@@ -216,6 +216,29 @@ def test_muon_chunk_size_one_updates_all_params():
         assert not torch.allclose(param, param_before)
 
 
+def test_muonh_updates_parameters_and_preserves_initial_norms():
+    torch.manual_seed(2)
+    params = [torch.nn.Parameter(torch.randn(3, 4)) for _ in range(3)]
+    initial_norms = torch.stack([param.detach().norm() for param in params])
+    for param in params:
+        param.grad = torch.randn_like(param)
+    before = [param.detach().clone() for param in params]
+
+    optimizer = MuonAdamW([
+        dict(
+            kind='muonh', params=params, lr=0.05, momentum=0.95, ns_steps=3,
+            beta2=0.95, weight_decay=123.0, chunk_size=2,
+        ),
+    ])
+    optimizer.step()
+
+    final_norms = torch.stack([param.detach().norm() for param in params])
+    assert all(not torch.allclose(param, old) for param, old in zip(params, before))
+    assert torch.allclose(final_norms, initial_norms, rtol=1e-6, atol=1e-6)
+    assert 'p_norm' in optimizer.state[params[0]]
+    assert 'p_norm' in optimizer.state[params[2]]
+
+
 def test_aurora_group_update_changes_all_params():
     param_a = torch.nn.Parameter(torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10)
     param_b = torch.nn.Parameter(-param_a.detach().clone())
@@ -474,6 +497,21 @@ def test_setup_optimizer_applies_moe_weight_decay_to_dense_gate_projection():
     assert other_muon_groups
     assert all(group['weight_decay'] == 0.2 for group in moe_muon_groups)
     assert all(group['weight_decay'] == 0.2 for group in other_muon_groups)
+
+
+def test_setup_optimizer_configures_muonh_without_weight_decay():
+    model = GPT(GPTConfig(n_layer=2, n_embd=8, n_head=2))
+
+    optimizer = model.setup_optimizer(
+        matrix_optimizer='muonh',
+        matrix_lr=0.01,
+        weight_decay=0.2,
+    )
+
+    matrix_groups = [group for group in optimizer.param_groups if group['kind'] == 'muonh']
+    assert matrix_groups
+    assert all(group['weight_decay'] == 0.0 for group in matrix_groups)
+    assert all(group['initial_weight_decay'] == 0.0 for group in matrix_groups)
 
 
 def test_setup_optimizer_includes_router_wg_delta_matrix():

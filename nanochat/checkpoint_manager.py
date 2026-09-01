@@ -679,13 +679,13 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
                     param_name=param_name,
                     ut_destination=ut_destination,
                 )
-        elif saved_kind == "muon":
+        elif saved_kind in ("muon", "muonh"):
             if not saved_param_ids:
                 continue
             state_param_id = saved_param_ids[0]
             shard_entries = _require_complete_shard_entries(
                 [shard_state_dict["state"].get(state_param_id) for shard_state_dict in shard_state_dicts],
-                f"Muon group {group_idx}",
+                f"{saved_kind.capitalize()} group {group_idx}",
             )
             if shard_entries is None:
                 continue

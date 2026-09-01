@@ -384,8 +384,8 @@ parser.add_argument("--max-auto-grad-accum-steps", type=int, default=64, help="c
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for Transformer layer weights in the Muon optimizer")
-parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters (Muon)")
-parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
+parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
+parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "muonh", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate for x0_lambdas (resid_lambdas use 0.1x)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
@@ -531,6 +531,8 @@ if args.resume_lr_warmup_steps < 0:
     raise ValueError("--resume-lr-warmup-steps must be >= 0")
 if args.use_aux_free_load_balancing:
     print("Disabling auxiliary router loss because --use-aux-free-load-balancing is enabled.")
+if args.matrix_optimizer == "muonh":
+    args.router_wg_delta_l2_loss_weight = 0.0
 
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
@@ -2303,7 +2305,7 @@ while True:
                 group["lr"] = group["initial_lr"] * lrm
             else:
                 group["lr"] = group["initial_lr"] * lrm
-            if group['kind'] == 'muon':
+            if group['kind'] in ('muon', 'muonh'):
                 group["momentum"] = muon_momentum
             group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
         orig_model.update_aux_free_load_balancing()

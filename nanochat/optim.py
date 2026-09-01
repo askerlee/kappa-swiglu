@@ -413,6 +413,37 @@ def muon_grad_update_fused(
     return g * final_scale.to(g.dtype)
 
 
+@torch.compile(dynamic=True, fullgraph=True)
+def muonh_step_fused(
+    stacked_grads: Tensor,
+    stacked_params: Tensor,
+    momentum_buffer: Tensor,
+    second_momentum_buffer: Tensor,
+    p_norm: Tensor,
+    momentum_t: Tensor,
+    lr_t: Tensor,
+    beta2_t: Tensor,
+    ns_steps: int,
+    red_dim: int,
+) -> None:
+    """Apply a Muon update on the hypersphere defined by each parameter's initial norm."""
+    update = muon_grad_update_fused(
+        stacked_grads,
+        momentum_buffer,
+        second_momentum_buffer,
+        momentum_t,
+        beta2_t,
+        ns_steps,
+        red_dim,
+    )
+    update_norm = update.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+    target_norm = p_norm.to(update_norm.dtype)
+    update = update * (target_norm / update_norm).to(update.dtype)
+    stacked_params.sub_(lr_t.to(stacked_params.dtype) * update.to(stacked_params.dtype))
+    new_norm = stacked_params.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+    stacked_params.mul_((target_norm / new_norm).to(stacked_params.dtype))
+
+
 def _get_muon_chunk_size(group: dict, num_params: int) -> int:
     """Return the bounded Muon stack size used for a single fused update."""
     configured = group.get("chunk_size")
@@ -449,7 +480,7 @@ class MuonAdamW(torch.optim.Optimizer):
     Arguments:
         param_groups: List of dicts, each containing:
             - 'params': List of parameters
-            - 'kind': 'adamw' or 'muon'
+            - 'kind': 'adamw', 'muon', or 'muonh'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
                         - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
                             Optional: 'match_rms_adamw' (bool) or 'adjust_lr_fn' ('original'|'match_rms_adamw'|None)
@@ -569,23 +600,28 @@ class MuonAdamW(torch.optim.Optimizer):
             second_momentum_buffer = state["second_momentum_buffer"]
             red_dim = -1 if shape[-2] >= shape[-1] else -2
 
-            adjust_lr_fn, muon_lr_scale_max = _resolve_matrix_adjust_lr(group)
-            self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
+            if group['kind'] == 'muonh':
+                self._muon_lr_t.fill_(group["lr"])
+            else:
+                adjust_lr_fn, muon_lr_scale_max = _resolve_matrix_adjust_lr(group)
+                self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
 
             stacked_grads = torch.stack([param.grad for param in chunk_params])
             stacked_params = torch.stack(chunk_params)
-            muon_step_fused(
-                stacked_grads,
-                stacked_params,
-                momentum_buffer,
-                second_momentum_buffer,
-                self._muon_momentum_t,
-                self._muon_lr_t,
-                self._muon_wd_t,
-                self._muon_beta2_t,
-                group["ns_steps"],
-                red_dim,
-            )
+            if group['kind'] == 'muonh':
+                if "p_norm" not in state:
+                    state["p_norm"] = stacked_params.float().norm(dim=(-2, -1), keepdim=True)
+                muonh_step_fused(
+                    stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
+                    state["p_norm"], self._muon_momentum_t, self._muon_lr_t,
+                    self._muon_beta2_t, group["ns_steps"], red_dim,
+                )
+            else:
+                muon_step_fused(
+                    stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
+                    self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t,
+                    self._muon_beta2_t, group["ns_steps"], red_dim,
+                )
             torch._foreach_copy_(chunk_params, list(stacked_params.unbind(0)))
 
     @torch.inference_mode()
@@ -593,7 +629,7 @@ class MuonAdamW(torch.optim.Optimizer):
         for group in self.param_groups:
             if group['kind'] == 'adamw':
                 self._step_adamw(group)
-            elif group['kind'] == 'muon':
+            elif group['kind'] in ('muon', 'muonh'):
                 self._step_muon(group)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
@@ -656,7 +692,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
     Arguments:
         param_groups: List of dicts, each containing:
             - 'params': List of parameters
-            - 'kind': 'adamw' or 'muon'
+            - 'kind': 'adamw', 'muon', or 'muonh'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
                         - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
                             Optional: 'match_rms_adamw' (bool) or 'adjust_lr_fn' ('original'|'match_rms_adamw'|None)
@@ -883,15 +919,30 @@ class DistMuonAdamW(torch.optim.Optimizer):
 
                 self._muon_momentum_t.fill_(group["momentum"])
                 self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
-                adjust_lr_fn, muon_lr_scale_max = _resolve_matrix_adjust_lr(group)
-                self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
+                if group['kind'] == 'muonh':
+                    self._muon_lr_t.fill_(group["lr"])
+                else:
+                    adjust_lr_fn, muon_lr_scale_max = _resolve_matrix_adjust_lr(group)
+                    self._muon_lr_t.fill_(group["lr"] * get_muon_lr_scale(shape, adjust_lr_fn, muon_lr_scale_max))
                 self._muon_wd_t.fill_(group["weight_decay"])
-                muon_step_fused(
-                    grad_chunk[:num_owned], updated_params[:num_owned],
-                    state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
-                    self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
-                    group["ns_steps"], red_dim,
-                )
+                if group['kind'] == 'muonh':
+                    if "p_norm" not in state:
+                        state["p_norm"] = updated_params[:num_owned].float().norm(
+                            dim=(-2, -1), keepdim=True
+                        )
+                    muonh_step_fused(
+                        grad_chunk[:num_owned], updated_params[:num_owned],
+                        state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
+                        state["p_norm"], self._muon_momentum_t, self._muon_lr_t,
+                        self._muon_beta2_t, group["ns_steps"], red_dim,
+                    )
+                else:
+                    muon_step_fused(
+                        grad_chunk[:num_owned], updated_params[:num_owned],
+                        state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
+                        self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
+                        group["ns_steps"], red_dim,
+                    )
 
             if num_owned < chunk_size:
                 updated_params[num_owned:].zero_()
@@ -920,7 +971,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
         for group in self.param_groups:
             if group['kind'] == 'adamw':
                 reduce_infos.append(self._reduce_adamw(group, world_size))
-            elif group['kind'] == 'muon':
+            elif group['kind'] in ('muon', 'muonh'):
                 reduce_infos.append(self._reduce_muon(group, world_size))
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
@@ -930,7 +981,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
         for group, info in zip(self.param_groups, reduce_infos):
             if group['kind'] == 'adamw':
                 self._compute_adamw(group, info, gather_list, rank, world_size)
-            elif group['kind'] == 'muon':
+            elif group['kind'] in ('muon', 'muonh'):
                 self._compute_muon(group, info, gather_list, rank)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")

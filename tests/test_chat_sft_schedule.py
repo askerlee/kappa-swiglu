@@ -98,6 +98,17 @@ def test_router_wg_delta_cli_applies_during_training_and_eval():
     assert 'group.get("name") == "router_wg_base"' not in source
 
 
+def test_muonh_disables_router_wg_delta_l2_after_optimizer_inheritance():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    inherit_index = source.index('print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")')
+    disable_index = source.index('if args.matrix_optimizer == "muonh":', inherit_index)
+    assignment_index = source.index('args.router_wg_delta_l2_loss_weight = 0.0', disable_index)
+    config_index = source.index('user_config["router_wg_delta_l2_loss_weight"]', assignment_index)
+
+    assert inherit_index < disable_index < assignment_index < config_index
+
+
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
     get_interval_throughput = load_function_from_script("get_interval_throughput")
 

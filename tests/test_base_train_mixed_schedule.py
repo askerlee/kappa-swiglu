@@ -70,6 +70,16 @@ def test_router_wg_delta_updates_only_on_mixed_chat_sft_steps():
     assert '"train/router_wg_delta_l2_loss_step"' in source
 
 
+def test_muonh_disables_router_wg_delta_l2_loss():
+    source = BASE_TRAIN_MIX.read_text()
+
+    disable_index = source.index('if args.matrix_optimizer == "muonh":')
+    assignment_index = source.index('args.router_wg_delta_l2_loss_weight = 0.0', disable_index)
+    config_index = source.index('user_config = vars(args).copy()', assignment_index)
+
+    assert disable_index < assignment_index < config_index
+
+
 def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
     source = BASE_TRAIN_MIX.read_text()
 
