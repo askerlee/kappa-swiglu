@@ -973,7 +973,7 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     kwargs = _override_kappa_bias_values(model_data, kwargs)
     kwargs = _override_kappa_scale_values(model_data, kwargs)
-    model_config_kwargs = meta_data["model_config"]
+    model_config_kwargs = meta_data["model_config"].copy()
     # Override model config with any kwargs provided whose values are not None
     model_config_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
     _patch_missing_config_keys(model_config_kwargs)

@@ -222,17 +222,6 @@ if args.model_step != -1:
 
 if args.model_save_tag:
     ckpt_prefix2 = ckpt_prefix2 + '-' + args.model_save_tag
-    
-wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
-
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
-if not use_dummy_wandb:
-    wandb.define_metric("step")
-    wandb.define_metric("tokens_seen")
-    wandb.define_metric("train/*", step_metric="step")
-    wandb.define_metric("val/*", step_metric="step")
-    wandb.define_metric("chat_eval/*", step_metric="step")
-    wandb.define_metric("inspect/*", step_metric="step")
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
@@ -255,6 +244,22 @@ model, tokenizer, meta = load_model(
     use_kappa_swiglu=use_kappa_swiglu,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
+checkpoint_used_kappa_swiglu = bool(
+    meta.get("model_config", {}).get("use_kappa_swiglu", False)
+)
+if args.use_kappa_swiglu is True and not checkpoint_used_kappa_swiglu:
+    ckpt_prefix2 += "-kappa"
+
+wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nano-moe-sft", name=wandb_run_name, config=user_config)
+if not use_dummy_wandb:
+    wandb.define_metric("step")
+    wandb.define_metric("tokens_seen")
+    wandb.define_metric("train/*", step_metric="step")
+    wandb.define_metric("val/*", step_metric="step")
+    wandb.define_metric("chat_eval/*", step_metric="step")
+    wandb.define_metric("inspect/*", step_metric="step")
+
 args.router_wg_delta = args.router_wg_delta or bool(
     getattr(model.config, "router_wg_delta", False)
 )

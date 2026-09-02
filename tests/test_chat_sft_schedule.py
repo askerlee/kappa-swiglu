@@ -8,6 +8,7 @@ from nanochat.common import cast_model_parameters
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_SFT = ROOT / "scripts" / "chat_sft.py"
+CHECKPOINT_MANAGER = ROOT / "nanochat" / "checkpoint_manager.py"
 
 
 def load_function_from_script(function_name):
@@ -67,6 +68,23 @@ def test_chat_sft_enables_kappa_swiglu_for_all_iterations():
     enable_index = source.index("model.set_kappa_swiglu_enabled(True)")
     compile_index = source.index("model = torch.compile(model, dynamic=False)")
     assert enable_index < compile_index
+
+
+def test_chat_sft_marks_signature_when_kappa_overrides_checkpoint():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+    checkpoint_manager_source = CHECKPOINT_MANAGER.read_text(encoding="utf-8")
+
+    load_index = source.index("model, tokenizer, meta = load_model(")
+    checkpoint_config_index = source.index(
+        'meta.get("model_config", {}).get("use_kappa_swiglu", False)',
+        load_index,
+    )
+    signature_index = source.index('ckpt_prefix2 += "-kappa"', checkpoint_config_index)
+    wandb_name_index = source.index("wandb_run_name = ckpt_prefix2", signature_index)
+
+    assert "if args.use_kappa_swiglu is True and not checkpoint_used_kappa_swiglu:" in source
+    assert load_index < checkpoint_config_index < signature_index < wandb_name_index
+    assert 'model_config_kwargs = meta_data["model_config"].copy()' in checkpoint_manager_source
 
 
 def test_chat_sft_inherits_checkpoint_train_capacity():
