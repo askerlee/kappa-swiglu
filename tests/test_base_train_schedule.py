@@ -2,6 +2,8 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_TRAIN = ROOT / "scripts" / "base_train.py"
@@ -49,6 +51,21 @@ def test_base_train_scalar_lr_defaults_to_x0_learning_rate():
 
         assert 'parser.add_argument("--scalar-lr", type=float, default=0.05' in source
         assert "scalar_lr=args.scalar_lr * batch_lr_scale" in source
+
+
+def test_base_train_logs_matching_kappa_gradient_correlation():
+    scale_grad = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    bias_grad = torch.tensor([[2.0, 4.0], [6.0, 8.0]])
+
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        gradient_correlation = load_function_from_script("gradient_correlation", script)
+        source = script.read_text()
+
+        assert gradient_correlation(scale_grad, bias_grad) == 1.0
+        assert gradient_correlation(scale_grad, -bias_grad) == -1.0
+        assert gradient_correlation(scale_grad, torch.ones_like(scale_grad)) is None
+        assert "losses[f'kappa_grad_correlation_{i}'] = kappa_grad_correlation" in source
+        assert 'f"inspect/kappa_grad_correlation_{i}"' in source
 
 
 def test_resolve_loss_chunk_tokens_limits_compiled_logits_to_32_mib():

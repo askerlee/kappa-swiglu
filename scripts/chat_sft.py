@@ -683,6 +683,21 @@ def scalar_loss_to_item(value):
         return value.detach().item()
     return float(value)
 
+def gradient_correlation(first_grad, second_grad):
+    if first_grad is None or second_grad is None or first_grad.shape != second_grad.shape:
+        return None
+    first_centered = first_grad.detach().reshape(-1).float()
+    second_centered = second_grad.detach().reshape(-1).float()
+    if first_centered.numel() < 2:
+        return None
+    first_centered = first_centered - first_centered.mean()
+    second_centered = second_centered - second_centered.mean()
+    denominator = first_centered.norm() * second_centered.norm()
+    if denominator.item() == 0 or not denominator.isfinite().item():
+        return None
+    correlation = first_centered.dot(second_centered) / denominator
+    return correlation.item() if correlation.isfinite().item() else None
+
 def collect_weight_grad_stats(model, losses, moe_layer_indices):
     def mean_by_sign(values, reduce_dims, sign):
         values = values.float()
@@ -728,6 +743,16 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             if exp_gate_grad_norm is not None:
                 exp_gate_grad_norms.append(exp_gate_grad_norm)
                 losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
+
+            if layer.mlp.experts.use_kappa_scale:
+                kappa_scale = layer.mlp.experts._get_kappa_scale_parameter()
+                kappa_bias = layer.mlp.experts._get_kappa_bias_parameter()
+                kappa_grad_correlation = gradient_correlation(
+                    None if kappa_scale is None else kappa_scale.grad,
+                    None if kappa_bias is None else kappa_bias.grad,
+                )
+                if kappa_grad_correlation is not None:
+                    losses[f'kappa_grad_correlation_{i}'] = kappa_grad_correlation
 
             # Compute router grad - router weight alignment.
             # Compute router weight alignment against expert projections.
@@ -1159,6 +1184,8 @@ while True:
                 log_data[f"inspect/kappa_bias_mean_{i}"] = losses[f'kappa_bias_mean_{i}']
             if f'kappa_bias_abs_mean_{i}' in losses:
                 log_data[f"inspect/kappa_bias_abs_mean_{i}"] = losses[f'kappa_bias_abs_mean_{i}']
+            if f'kappa_grad_correlation_{i}' in losses:
+                log_data[f"inspect/kappa_grad_correlation_{i}"] = losses[f'kappa_grad_correlation_{i}']
             if f'kappa_bias_mean_top_{i}' in losses:
                 log_data[f"inspect/kappa_bias_mean_top_{i}"] = losses[f'kappa_bias_mean_top_{i}']
             if f'kappa_bias_mean_bottom_{i}' in losses:

@@ -102,6 +102,24 @@ def test_chat_sft_scalar_lr_defaults_to_005_and_is_wired_to_optimizer():
     assert "scalar_lr=args.scalar_lr" in source
 
 
+def test_gradient_correlation_pairs_matching_kappa_gate_gradients():
+    gradient_correlation = load_function_from_script("gradient_correlation")
+
+    scale_grad = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    bias_grad = torch.tensor([[2.0, 4.0], [6.0, 8.0]])
+
+    assert gradient_correlation(scale_grad, bias_grad) == 1.0
+    assert gradient_correlation(scale_grad, -bias_grad) == -1.0
+    assert gradient_correlation(scale_grad, torch.ones_like(scale_grad)) is None
+
+
+def test_chat_sft_logs_kappa_gradient_correlation_per_layer():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert "losses[f'kappa_grad_correlation_{i}'] = kappa_grad_correlation" in source
+    assert 'log_data[f"inspect/kappa_grad_correlation_{i}"]' in source
+
+
 def test_router_wg_delta_cli_applies_during_training_and_eval():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
