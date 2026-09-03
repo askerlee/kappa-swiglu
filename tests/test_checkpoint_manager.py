@@ -503,6 +503,28 @@ def test_patch_missing_keys_initializes_newly_enabled_kappa_parameters_to_zero()
     assert torch.count_nonzero(expert_scale) == 0
 
 
+def test_patch_missing_keys_uses_loaded_checkpoint_device_for_new_kappa_parameters():
+    model_data = {"checkpoint_weight": torch.empty((), device="meta")}
+    config = GPTConfig(
+        n_layer=2,
+        n_exp=2,
+        n_embd=4,
+        moe_start_layer=1,
+        use_kappa_swiglu=True,
+        constant_kappa_bias_dense_layers=True,
+        total_ut_steps=2,
+    )
+
+    _patch_missing_keys(model_data, config)
+
+    patched_keys = (
+        "transformer.h.0.mlp.kappa_bias",
+        "transformer.h.1.mlp.experts.kappa_bias",
+        "transformer.h.1.mlp.experts.kappa_scale",
+    )
+    assert all(model_data[key].device.type == "meta" for key in patched_keys)
+
+
 def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable():
     fill_value = 0.4
     model_data = {

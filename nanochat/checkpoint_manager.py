@@ -269,6 +269,10 @@ def _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps):
 
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
+    checkpoint_device = next(
+        (value.device for value in model_data.values() if torch.is_tensor(value)),
+        torch.device("cpu"),
+    )
     n_layer = model_config.n_layer
     total_ut_steps = int(getattr(model_config, "total_ut_steps", 1) or 1)
     granularity = getattr(model_config, "global_kappa_bias_granularity", "per-gate")
@@ -281,7 +285,7 @@ def _patch_missing_keys(model_data, model_config):
     scalar_shape = (total_ut_steps, n_layer)
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
-        model_data["resid_lambdas"] = torch.ones(scalar_shape)
+        model_data["resid_lambdas"] = torch.ones(scalar_shape, device=checkpoint_device)
         log0(f"Patching missing resid_lambdas in model data to 1.0")
     else:
         model_data["resid_lambdas"] = _resize_ut_layer_scalars(
@@ -289,7 +293,7 @@ def _patch_missing_keys(model_data, model_config):
         )
     # x0_lambdas defaults to 0.0 (disabled)
     if "x0_lambdas" not in model_data:
-        model_data["x0_lambdas"] = torch.zeros(scalar_shape)
+        model_data["x0_lambdas"] = torch.zeros(scalar_shape, device=checkpoint_device)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
     else:
         model_data["x0_lambdas"] = _resize_ut_layer_scalars(
@@ -297,7 +301,7 @@ def _patch_missing_keys(model_data, model_config):
         )
     ut_destination = int(getattr(model_config, "ut_destination", 0)) % n_layer
     if "ut_source_lambdas" not in model_data:
-        ut_source_lambdas = torch.ones(total_ut_steps)
+        ut_source_lambdas = torch.ones(total_ut_steps, device=checkpoint_device)
         ut_source_lambdas[0] = 0.0
         model_data["ut_source_lambdas"] = ut_source_lambdas
         log0("Patching missing ut_source_lambdas in model data")
@@ -341,7 +345,9 @@ def _patch_missing_keys(model_data, model_config):
                             kappa_bias_shape = (model_config.n_exp,)
                         else:
                             kappa_bias_shape = (1,)
-                        model_data[kappa_bias_key] = torch.zeros(total_ut_steps, *kappa_bias_shape)
+                        model_data[kappa_bias_key] = torch.zeros(
+                            total_ut_steps, *kappa_bias_shape, device=checkpoint_device
+                        )
                 else:
                     model_data.pop(kappa_bias_expert_key, None)
                     model_data.pop(kappa_bias_intermediate_key, None)
@@ -357,7 +363,9 @@ def _patch_missing_keys(model_data, model_config):
                         model_data[kappa_scale_key] = torch.zeros_like(model_data[kappa_bias_key])
             expert_bias_key = f"transformer.h.{layer_idx}.mlp.router.expert_bias"
             if expert_bias_key not in model_data:
-                model_data[expert_bias_key] = torch.zeros(model_config.n_exp, dtype=torch.float32)
+                model_data[expert_bias_key] = torch.zeros(
+                    model_config.n_exp, dtype=torch.float32, device=checkpoint_device
+                )
                 log0(f"Patching missing {expert_bias_key} in model data to zeros")
     if uses_dense_kappa:
         for layer_idx in range(n_layer):
@@ -366,7 +374,9 @@ def _patch_missing_keys(model_data, model_config):
             kappa_bias_key = f"transformer.h.{layer_idx}.mlp.kappa_bias"
             if granularity != "global" and kappa_bias_key not in model_data:
                 kappa_bias_shape = (intermediate_size,) if granularity == "per-gate" else (1,)
-                model_data[kappa_bias_key] = torch.zeros(total_ut_steps, *kappa_bias_shape)
+                model_data[kappa_bias_key] = torch.zeros(
+                    total_ut_steps, *kappa_bias_shape, device=checkpoint_device
+                )
     has_active_moe_kappa = uses_qwen3_moe and any(
         _kappa_bias_enabled_for_layer(model_config, layer_idx) for layer_idx in moe_layer_indices
     )
@@ -376,9 +386,15 @@ def _patch_missing_keys(model_data, model_config):
         if layer_idx not in moe_layer_indices
     )
     if granularity == "global" and (has_active_moe_kappa or has_active_dense_kappa):
-        model_data.setdefault("global_kappa_bias", torch.zeros(total_ut_steps, 1))
+        model_data.setdefault(
+            "global_kappa_bias",
+            torch.zeros(total_ut_steps, 1, device=checkpoint_device),
+        )
         if has_active_moe_kappa and getattr(model_config, "kappa_input", "router_probs") in {"top_logits", "router_probs"}:
-            model_data.setdefault("global_kappa_scale", torch.zeros(total_ut_steps, 1))
+            model_data.setdefault(
+                "global_kappa_scale",
+                torch.zeros(total_ut_steps, 1, device=checkpoint_device),
+            )
     _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps)
 
 
