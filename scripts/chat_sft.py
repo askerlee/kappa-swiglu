@@ -92,6 +92,8 @@ parser.add_argument("--activation-offload", dest="activation_offload", type=str2
                     help="override storing transformer activations in pinned CPU memory")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=None,
                     help="enable kappa SwiGLU when the base model does not already enable it")
+parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs='?', const=True, default=None,
+                    help="override constant kappa bias for dense layers (default: inherit from base model)")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
@@ -242,6 +244,7 @@ model, tokenizer, meta = load_model(
     activation_checkpointing=args.activation_checkpointing,
     activation_offload=args.activation_offload,
     use_kappa_swiglu=use_kappa_swiglu,
+    constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
     refresh_kappa_bias_references=refresh_kappa_bias_references,
 )
 checkpoint_used_kappa_swiglu = bool(

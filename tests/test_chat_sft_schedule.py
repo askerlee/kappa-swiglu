@@ -63,8 +63,10 @@ def test_chat_sft_enables_kappa_swiglu_for_all_iterations():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
     assert 'parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs=\'?\', const=True, default=None' in source
+    assert 'parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs=\'?\', const=True, default=None' in source
     assert "use_kappa_swiglu = True if args.use_kappa_swiglu is None else args.use_kappa_swiglu" in source
     assert "use_kappa_swiglu=use_kappa_swiglu" in source
+    assert "constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers" in source
     enable_index = source.index("model.set_kappa_swiglu_enabled(True)")
     compile_index = source.index("model = torch.compile(model, dynamic=False)")
     assert enable_index < compile_index
