@@ -392,9 +392,9 @@ parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 fo
 parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
 parser.add_argument("--lr-schedule-restart-at-step", type=int, default=0, help="global training step at which to restart the LR schedule from scheduler step 0")
 parser.add_argument("--lr-base-scale", type=float, default=1.0, help="base scale for learning rate")
-parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
-parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
-parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
+parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of iterations for LR warmup")
+parser.add_argument("--warmdown-ratio", type=float, default=0.65, help="ratio of iterations for LR warmdown")
+parser.add_argument("--final-lr-frac", type=float, default=0.05, help="final LR as fraction of initial LR")
 parser.add_argument("--resume-from-step", type=int, default=-1, help="resume training from this step (-1 = disable)")
 parser.add_argument("--resume-lr-warmup-steps", type=int, default=0, help="linearly warm LR after resuming, then return to the absolute-step LR schedule")
 # Evaluation

@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+import pytest
 import torch
 
 from nanochat.common import cast_model_parameters
@@ -102,6 +103,28 @@ def test_chat_sft_scalar_lr_defaults_to_005_and_is_wired_to_optimizer():
 
     assert 'parser.add_argument("--scalar-lr", type=float, default=0.05' in source
     assert "scalar_lr=args.scalar_lr" in source
+
+
+def test_chat_sft_global_lr_schedule_defaults_and_wiring():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--warmup-ratio", type=float, default=0.01' in source
+    assert 'parser.add_argument("--warmdown-ratio", type=float, default=0.2' in source
+    assert 'parser.add_argument("--final-lr-frac", type=float, default=0.05' in source
+    assert "        args.warmup_ratio," in source
+    assert "        args.warmdown_ratio," in source
+    assert "        args.final_lr_frac," in source
+
+
+def test_chat_sft_global_lr_schedule_warms_holds_and_decays_to_floor():
+    get_lr_multiplier = load_function_from_script("get_lr_multiplier")
+
+    assert get_lr_multiplier(0.0, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.0)
+    assert get_lr_multiplier(0.005, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.1)
+    assert get_lr_multiplier(0.01, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.2)
+    assert get_lr_multiplier(0.8, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.2)
+    assert get_lr_multiplier(0.9, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.105)
+    assert get_lr_multiplier(1.0, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.01)
 
 
 def test_gradient_correlation_pairs_matching_kappa_gate_gradients():

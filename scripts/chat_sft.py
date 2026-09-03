@@ -114,6 +114,9 @@ parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
 parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "muonh", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scaling factor for all types of learning rates, relative to the LR used during base model pretraining")
+parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of SFT progress used for linear LR warmup")
+parser.add_argument("--warmdown-ratio", type=float, default=0.2, help="ratio of SFT progress used for linear LR warmdown")
+parser.add_argument("--final-lr-frac", type=float, default=0.05, help="final LR as a fraction of the peak SFT LR")
 parser.add_argument("--kappa-lr-max-scale",
                     dest="kappa_lr_max_scale", type=float, default=0.1,
                     help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
@@ -172,6 +175,14 @@ if args.ut_detach and not args.ut_everypass_ntp:
     args.ut_detach = False
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
+if not (0.0 <= args.warmup_ratio <= 1.0):
+    raise ValueError("--warmup-ratio must satisfy 0 <= ratio <= 1")
+if not (0.0 <= args.warmdown_ratio <= 1.0):
+    raise ValueError("--warmdown-ratio must satisfy 0 <= ratio <= 1")
+if args.warmup_ratio + args.warmdown_ratio > 1.0:
+    raise ValueError("--warmup-ratio + --warmdown-ratio must be <= 1")
+if not (0.0 <= args.final_lr_frac <= 1.0):
+    raise ValueError("--final-lr-frac must satisfy 0 <= fraction <= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
     raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
 if args.kappa_bias_lr_warmup_iterations < 0:
@@ -625,9 +636,15 @@ progress = 0 # will go from 0 to 1 over the course of the epoch
 chat_eval_task_names = ALL_CHAT_EVAL_TASKS if args.chat_eval_task_name is None else args.chat_eval_task_name.split('|')
 
 # Learning rate scheduler
-def get_lr_multiplier(progress, lr_base_scale=1.0):
-    # first 80% of training: no decay, then linearly ramp down to 0.
-    return lr_base_scale if progress < 0.8 else lr_base_scale * (1 - (progress - 0.8) / 0.2)
+def get_lr_multiplier(progress, lr_base_scale=1.0, warmup_ratio=0.01,
+                      warmdown_ratio=0.2, final_lr_frac=0.05):
+    progress = min(max(progress, 0.0), 1.0)
+    if warmup_ratio > 0.0 and progress < warmup_ratio:
+        return lr_base_scale * progress / warmup_ratio
+    if warmdown_ratio > 0.0 and progress > 1.0 - warmdown_ratio:
+        decay_progress = (progress - (1.0 - warmdown_ratio)) / warmdown_ratio
+        return lr_base_scale * (1.0 + decay_progress * (final_lr_frac - 1.0))
+    return lr_base_scale
 
 def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup_iterations=1000, nolearn_iterations=0):
     num_iterations = max(0, num_iterations)
@@ -1070,7 +1087,13 @@ while True:
         collect_weight_grad_stats(model, losses, moe_layer_indices)
 
     # step the optimizer
-    lrm = get_lr_multiplier(progress, args.lr_base_scale)
+    lrm = get_lr_multiplier(
+        progress,
+        args.lr_base_scale,
+        args.warmup_ratio,
+        args.warmdown_ratio,
+        args.final_lr_frac,
+    )
     muon_momentum = get_muon_momentum(step)
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
