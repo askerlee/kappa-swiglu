@@ -162,6 +162,7 @@ def test_router_wg_delta_cli_applies_during_training_and_eval():
 def test_muonh_disables_router_wg_delta_l2_after_optimizer_inheritance():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
+    assert 'choices=["muon", "muonh", "aurora"]' in source
     inherit_index = source.index('print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")')
     disable_index = source.index('if args.matrix_optimizer == "muonh":', inherit_index)
     assignment_index = source.index('args.router_wg_delta_l2_loss_weight = 0.0', disable_index)

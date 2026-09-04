@@ -112,7 +112,7 @@ parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learnin
 # but the matrix parameters have the same LR.
 parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate for x0_lambdas (resid_lambdas use 0.1x)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
-parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
+parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "muonh", "aurora"], help="matrix optimizer for 2D parameters")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scaling factor for all types of learning rates, relative to the LR used during base model pretraining")
 parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of SFT progress used for linear LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.2, help="ratio of SFT progress used for linear LR warmdown")
