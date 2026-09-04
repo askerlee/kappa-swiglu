@@ -98,6 +98,8 @@ parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 parser.add_argument("--train-mixture-repeats", type=int, default=4, help="expand the train mixture by N repeats; "
                     "tulu3 is not repeated; procedural tasks use fresh index ranges and SmolTalk grows its slice accordingly (default: 4)")
+parser.add_argument("--global-packing-buffer-size", type=int, default=200,
+                    help="total best-fit packing lookahead divided across all DDP ranks (default: 200)")
 parser.add_argument("--use-tulu3-sft-mixture", type=str2bool, nargs='?', const=True, default=True, help="include allenai/tulu-3-sft-mixture in the SFT train mixture")
 parser.add_argument("--tulu3-english-only", type=str2bool, nargs='?', const=True, default=False, help="filter Tulu 3 conversations to English only")
 parser.add_argument("--use-ultradata-sft-if", type=str2bool, nargs='?', const=True, default=True, help="include CJK-filtered openbmb/UltraData-SFT-2605 IF/no_think data in the SFT train mixture")
@@ -175,6 +177,8 @@ if args.ut_detach and not args.ut_everypass_ntp:
     args.ut_detach = False
 if args.train_mixture_repeats < 1:
     raise ValueError("--train-mixture-repeats must be >= 1")
+if args.global_packing_buffer_size < 1:
+    raise ValueError("--global-packing-buffer-size must be >= 1")
 if not (0.0 <= args.warmup_ratio <= 1.0):
     raise ValueError("--warmup-ratio must satisfy 0 <= ratio <= 1")
 if not (0.0 <= args.warmdown_ratio <= 1.0):
@@ -499,7 +503,23 @@ current_epoch = 1 # track epoch for logging
 train_seen_conversations = 0 # consumed + skipped conversations in train split
 train_skipped_conversations = 0 # conversations skipped for being malformed, exceeding row_capacity, or lacking supervised targets
 
-def sft_data_generator_bos_bestfit(split, buffer_size=100):
+def get_rank_packing_buffer_size(global_buffer_size, world_size, rank):
+    if global_buffer_size < world_size:
+        raise ValueError("global packing buffer size must be at least the DDP world size")
+    buffer_size, remainder = divmod(global_buffer_size, world_size)
+    return buffer_size + int(rank < remainder)
+
+rank_packing_buffer_size = get_rank_packing_buffer_size(
+    args.global_packing_buffer_size,
+    ddp_world_size,
+    ddp_rank,
+)
+print0(
+    f"Global packing buffer: {args.global_packing_buffer_size} conversations "
+    f"({rank_packing_buffer_size} on rank 0)"
+)
+
+def sft_data_generator_bos_bestfit(split, buffer_size=rank_packing_buffer_size):
     """
     BOS-aligned dataloader for SFT with bestfit-pad packing.
 

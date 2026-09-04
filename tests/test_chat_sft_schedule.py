@@ -188,6 +188,16 @@ def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
     assert mfu == 20.0
 
 
+def test_chat_sft_divides_global_packing_buffer_across_ranks():
+    get_rank_packing_buffer_size = load_function_from_script("get_rank_packing_buffer_size")
+
+    assert get_rank_packing_buffer_size(200, 1, 0) == 200
+    assert [get_rank_packing_buffer_size(200, 2, rank) for rank in range(2)] == [100, 100]
+    assert sum(get_rank_packing_buffer_size(200, 3, rank) for rank in range(3)) == 200
+    with pytest.raises(ValueError, match="at least the DDP world size"):
+        get_rank_packing_buffer_size(1, 2, 0)
+
+
 def test_chat_sft_logged_throughput_uses_interval_values_and_resets_window():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
