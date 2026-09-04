@@ -154,13 +154,16 @@ def test_chat_sft_continuation_inherits_shape_without_changing_total_batch_size(
         120,
         24,
         2048,
+        "muonh",
     )
 
-    assert argv[-4:] == [
+    assert argv[-6:] == [
         "--device-batch-size",
         "24",
         "--max-seq-len",
         "2048",
+        "--matrix-optimizer",
+        "muonh",
     ]
     assert "--total-batch-size" not in argv
 

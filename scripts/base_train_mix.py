@@ -165,6 +165,7 @@ def build_chat_sft_exec_argv(
     model_step,
     device_batch_size,
     max_seq_len,
+    matrix_optimizer,
     extra_args_text="",
 ):
     import shlex
@@ -185,6 +186,7 @@ def build_chat_sft_exec_argv(
     ]
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
+    argv.extend(["--matrix-optimizer", matrix_optimizer])
     return argv
 
 
@@ -2663,6 +2665,7 @@ if should_continue_to_chat_sft:
         step,
         args.device_batch_size,
         args.max_seq_len,
+        args.matrix_optimizer,
         args.continue_to_chat_sft_args,
     )
     sanitize_chat_sft_rendezvous_env()
