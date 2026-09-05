@@ -134,12 +134,12 @@ parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
     type=float,
-    default=1e-2,
+    default=0,
     help="L2 weight on kappa_bias values",
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
-parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
+parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
                     help="anchor expert kappa bias and scale L2 either around their loaded initial values or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
