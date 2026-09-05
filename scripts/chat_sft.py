@@ -120,10 +120,10 @@ parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of S
 parser.add_argument("--warmdown-ratio", type=float, default=0.2, help="ratio of SFT progress used for linear LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.05, help="final LR as a fraction of the peak SFT LR")
 parser.add_argument("--kappa-lr-max-scale",
-                    dest="kappa_lr_max_scale", type=float, default=0.1,
+                    dest="kappa_lr_max_scale", type=float, default=0.01,
                     help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-lr-final-scale",
-                    dest="kappa_lr_final_scale", type=float, default=0.05,
+                    dest="kappa_lr_final_scale", type=float, default=0.005,
                     help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-lr-max-scale")
 parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
                     dest="kappa_bias_delay_start_min_iterations", type=int, default=100,
