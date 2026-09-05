@@ -139,8 +139,8 @@ parser.add_argument(
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
-parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
-                    help="anchor expert kappa bias L2 either around the loaded initial value or around 0")
+parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="zero",
+                    help="anchor expert kappa bias and scale L2 either around their loaded initial values or around 0")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -242,8 +242,8 @@ if args.model_save_tag:
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
-refresh_kappa_bias_references = args.kappa_bias_l2_anchor == "initial"
-print0(f"expert kappa bias L2 anchor: {args.kappa_bias_l2_anchor}")
+refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"
+print0(f"expert kappa params L2 anchor: {args.kappa_params_l2_anchor}")
 sft_checkpoint_source = "sft" if args.eval_only else "base"
 use_kappa_swiglu = True if args.use_kappa_swiglu is None else args.use_kappa_swiglu
 model, tokenizer, meta = load_model(
@@ -260,7 +260,7 @@ model, tokenizer, meta = load_model(
     activation_offload=args.activation_offload,
     use_kappa_swiglu=use_kappa_swiglu,
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
-    refresh_kappa_bias_references=refresh_kappa_bias_references,
+    refresh_kappa_param_references=refresh_kappa_param_references,
 )
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)

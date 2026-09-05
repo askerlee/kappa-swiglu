@@ -43,7 +43,8 @@ class GPTConfig:
         kappa_bias_l2_ema_anchor_start: float = 0.4,
         kappa_bias_l2_ema_anchor_end: float = 0.8,
         kappa_bias_l2_ema_floor_frac: float = 0.8,
-        refresh_kappa_bias_references: bool = False,
+        refresh_kappa_param_references: bool = False,
+        refresh_kappa_bias_references: bool | None = None,
         use_noisy_top_k: bool = False,
         router_tie_noise_steps: int = 10,
         router_tie_noise_scale: float = 1e-6,
@@ -179,7 +180,9 @@ class GPTConfig:
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
         self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
-        self.refresh_kappa_bias_references = bool(refresh_kappa_bias_references)
+        self.refresh_kappa_param_references = bool(
+            refresh_kappa_param_references or refresh_kappa_bias_references
+        )
         self.use_noisy_top_k = use_noisy_top_k
         self.router_tie_noise_steps = int(router_tie_noise_steps)
         self.router_tie_noise_scale = float(router_tie_noise_scale)

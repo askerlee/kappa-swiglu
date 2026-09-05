@@ -1828,6 +1828,55 @@ def test_kappa_bias_l2_loss_is_mean_square():
     torch.testing.assert_close(loss, kappa_bias.square().mean())
 
 
+def test_kappa_param_l2_losses_use_snapshotted_initial_values_as_anchors():
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_kappa_swiglu=True,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        experts.kappa_bias.copy_(torch.tensor([[[0.5], [-0.25]]]))
+        experts.kappa_scale.copy_(torch.tensor([[[0.75], [0.25]]]))
+    initial_kappa_bias, initial_kappa_scale = experts.snapshot_kappa_param_references()
+    bias_delta = torch.linspace(
+        -0.4,
+        0.4,
+        initial_kappa_bias[0].numel(),
+    ).reshape_as(initial_kappa_bias[0])
+    scale_delta = torch.linspace(
+        -0.2,
+        0.2,
+        initial_kappa_scale[0].numel(),
+    ).reshape_as(initial_kappa_scale[0])
+
+    MANAGER.reset("kappa_bias_l2_loss")
+    MANAGER.reset("kappa_scale_l2_loss")
+    experts._accumulate_kappa_bias_l2_losses(initial_kappa_bias[0])
+    experts._accumulate_kappa_scale_l2_losses(initial_kappa_scale[0])
+    torch.testing.assert_close(
+        MANAGER.aggregate("kappa_bias_l2_loss"),
+        torch.tensor(0.0),
+    )
+    torch.testing.assert_close(
+        MANAGER.aggregate("kappa_scale_l2_loss"),
+        torch.tensor(0.0),
+    )
+
+    MANAGER.reset("kappa_bias_l2_loss")
+    MANAGER.reset("kappa_scale_l2_loss")
+    experts._accumulate_kappa_bias_l2_losses(initial_kappa_bias[0] + bias_delta)
+    experts._accumulate_kappa_scale_l2_losses(initial_kappa_scale[0] + scale_delta)
+    bias_loss = MANAGER.aggregate("kappa_bias_l2_loss")
+    scale_loss = MANAGER.aggregate("kappa_scale_l2_loss")
+    MANAGER.reset("kappa_bias_l2_loss")
+    MANAGER.reset("kappa_scale_l2_loss")
+
+    torch.testing.assert_close(bias_loss, bias_delta.square().mean())
+    torch.testing.assert_close(scale_loss, scale_delta.square().mean())
+
+
 def test_kappa_bias_l2_losses_are_reported_from_kappa_biases():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -2413,7 +2462,7 @@ def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric_in_slope_scaler_m
     assert 'kappa_slope_scale_abs_bottom5p_mean_1' in losses
 
 
-def test_kappa_bias_references_are_not_auto_refreshed_without_config_opt_in():
+def test_kappa_param_references_are_not_auto_refreshed_without_config_opt_in():
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -2434,10 +2483,12 @@ def test_kappa_bias_references_are_not_auto_refreshed_without_config_opt_in():
     model.init_weights()
 
     assert model.transformer.h[1].mlp.experts.initial_kappa_bias is None
+    assert model.transformer.h[1].mlp.experts.initial_kappa_scale is None
 
-    model.refresh_kappa_bias_references()
+    model.refresh_kappa_param_references()
 
     assert model.transformer.h[1].mlp.experts.initial_kappa_bias is not None
+    assert model.transformer.h[1].mlp.experts.initial_kappa_scale is not None
 
 
 def test_kappa_slope_scale_stats_default_to_zero_when_bias_disabled():
@@ -2478,7 +2529,7 @@ def test_kappa_slope_scale_stats_default_to_zero_when_bias_disabled():
     assert torch.isfinite(losses['kappa_slope_scale_abs_bottom5p_mean'])
 
 
-def test_kappa_bias_references_can_auto_refresh_when_config_enabled():
+def test_kappa_param_references_can_auto_refresh_when_config_enabled():
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -2493,13 +2544,14 @@ def test_kappa_bias_references_can_auto_refresh_when_config_enabled():
         use_aux_loss=False,
         use_router_z_loss=False,
         use_kappa_swiglu=True,
-        refresh_kappa_bias_references=True,
+        refresh_kappa_param_references=True,
         debug=False,
     )
     model = GPT(config)
     model.init_weights()
 
     assert model.transformer.h[1].mlp.experts.initial_kappa_bias is not None
+    assert model.transformer.h[1].mlp.experts.initial_kappa_scale is not None
 
 
 def test_dense_gate_projection_has_expected_shape():

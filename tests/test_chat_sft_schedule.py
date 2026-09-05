@@ -272,13 +272,13 @@ def test_final_checkpoint_is_saved_before_final_chat_eval():
     assert save_index < chat_eval_index
 
 
-def test_kappa_bias_l2_anchor_cli_defaults_to_initial_and_wires_load_behavior():
+def test_kappa_params_l2_anchor_cli_defaults_to_zero_and_wires_load_behavior():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'parser.add_argument("--kappa-bias-l2-anchor", type=str, choices=("initial", "zero"), default="zero"' in source
+    assert 'parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="zero"' in source
     assert '--use-kappa-swiglu-as-lr-scaler' not in source
-    assert 'refresh_kappa_bias_references = args.kappa_bias_l2_anchor == "initial"' in source
-    assert 'refresh_kappa_bias_references=refresh_kappa_bias_references' in source
+    assert 'refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"' in source
+    assert 'refresh_kappa_param_references=refresh_kappa_param_references' in source
 
 
 def test_matrix_optimizer_inherits_from_base_checkpoint_unless_explicitly_set():

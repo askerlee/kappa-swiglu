@@ -1594,6 +1594,7 @@ class Qwen3MLPExperts(nn.Module):
             persistent=False,
         )
         self.register_buffer("initial_kappa_bias", None, persistent=False)
+        self.register_buffer("initial_kappa_scale", None, persistent=False)
         self.c_fc   = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
@@ -1659,15 +1660,22 @@ class Qwen3MLPExperts(nn.Module):
         return self._shared_kappa_scale
 
     @torch.no_grad()
-    def snapshot_kappa_bias_reference(self):
+    def snapshot_kappa_param_references(self):
         if not self.use_kappa_swiglu:
             self.initial_kappa_bias = None
+            self.initial_kappa_scale = None
             return
         self.initial_kappa_bias = torch.stack([
             self._materialize_kappa_bias(current_ut)
             for current_ut in range(self.total_ut_steps)
         ]).detach().clone()
-        return self.initial_kappa_bias
+        self.initial_kappa_scale = None
+        if self.use_kappa_scale:
+            self.initial_kappa_scale = torch.stack([
+                self._materialize_kappa_scale(current_ut)
+                for current_ut in range(self.total_ut_steps)
+            ]).detach().clone()
+        return self.initial_kappa_bias, self.initial_kappa_scale
 
     '''
     Bias-enabled layers use a dense kappa_bias matrix parameter.
@@ -1929,7 +1937,10 @@ class Qwen3MLPExperts(nn.Module):
 
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, current_ut=0):
         kappa_bias = kappa_bias.float()
-        loss = kappa_bias.square().mean()
+        kappa_bias_l2_value = kappa_bias
+        if self.initial_kappa_bias is not None:
+            kappa_bias_l2_value = kappa_bias - self.initial_kappa_bias[current_ut].float()
+        loss = kappa_bias_l2_value.square().mean()
         ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
         if self.kappa_bias_ema_rms_reg_keeper is not None:
             ema_loss = self.kappa_bias_ema_rms_reg_keeper.loss(kappa_bias, current_ut=current_ut)
@@ -1942,7 +1953,10 @@ class Qwen3MLPExperts(nn.Module):
 
     def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None, current_ut=0):
         kappa_scale = kappa_scale.float()
-        loss = kappa_scale.square().mean()
+        kappa_scale_l2_value = kappa_scale
+        if self.initial_kappa_scale is not None:
+            kappa_scale_l2_value = kappa_scale - self.initial_kappa_scale[current_ut].float()
+        loss = kappa_scale_l2_value.square().mean()
         ema_loss = torch.zeros((), device=kappa_scale.device, dtype=torch.float32)
         if self.kappa_scale_ema_rms_reg_keeper is not None:
             ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(kappa_scale, current_ut=current_ut)
@@ -2704,16 +2718,16 @@ class GPT(nn.Module):
                     experts.router_confidence_gate_bias_grad_scale.fill_(grad_scale)
 
     @torch.no_grad()
-    def refresh_kappa_bias_references(self):
+    def refresh_kappa_param_references(self):
         for block in self.transformer.h:
             mlp = getattr(block, 'mlp', None)
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts):
-                    experts.snapshot_kappa_bias_reference()
+                    experts.snapshot_kappa_param_references()
 
-    def _should_refresh_kappa_bias_references(self):
-        return bool(getattr(self.config, 'refresh_kappa_bias_references', False))
+    def _should_refresh_kappa_param_references(self):
+        return bool(getattr(self.config, 'refresh_kappa_param_references', False))
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
         if strict:
@@ -2736,8 +2750,8 @@ class GPT(nn.Module):
                 elif name == 'ut_source_lambdas' and name not in state_dict:
                     state_dict[name] = param.clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
-        if self._should_refresh_kappa_bias_references():
-            self.refresh_kappa_bias_references()
+        if self._should_refresh_kappa_param_references():
+            self.refresh_kappa_param_references()
         return load_result
 
     @torch.no_grad()
@@ -2844,8 +2858,8 @@ class GPT(nn.Module):
             for ve in self.value_embeds.values():
                 ve.to(dtype=torch.bfloat16)
 
-        if self._should_refresh_kappa_bias_references():
-            self.refresh_kappa_bias_references()
+        if self._should_refresh_kappa_param_references():
+            self.refresh_kappa_param_references()
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         # TODO: bump base theta more? e.g. 100K is more common more recently
