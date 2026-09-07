@@ -265,6 +265,15 @@ model, tokenizer, meta = load_model(
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
 )
+if use_kappa_swiglu and not checkpoint_used_kappa_swiglu:
+    args.kappa_lr_max_scale *= 10
+    args.kappa_lr_final_scale *= 10
+    user_config["kappa_lr_max_scale"] = args.kappa_lr_max_scale
+    user_config["kappa_lr_final_scale"] = args.kappa_lr_final_scale
+    print0(
+        "Using 10x kappa LR scales because chat SFT enabled kappa SwiGLU: "
+        f"max={args.kappa_lr_max_scale}, final={args.kappa_lr_final_scale}"
+    )
 if args.use_kappa_swiglu is True and not checkpoint_used_kappa_swiglu:
     ckpt_prefix2 += "-kappa"
 

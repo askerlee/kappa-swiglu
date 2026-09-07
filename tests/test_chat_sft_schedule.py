@@ -90,6 +90,26 @@ def test_chat_sft_marks_signature_when_kappa_overrides_checkpoint():
     assert 'model_config_kwargs = meta_data["model_config"].copy()' in checkpoint_manager_source
 
 
+def test_chat_sft_uses_10x_kappa_lr_scales_when_enabling_kappa_for_checkpoint():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    checkpoint_config_index = source.index(
+        'meta.get("model_config", {}).get("use_kappa_swiglu", False)'
+    )
+    scale_condition_index = source.index(
+        "if use_kappa_swiglu and not checkpoint_used_kappa_swiglu:",
+        checkpoint_config_index,
+    )
+    max_scale_index = source.index("args.kappa_lr_max_scale *= 10", scale_condition_index)
+    final_scale_index = source.index("args.kappa_lr_final_scale *= 10", scale_condition_index)
+    optimizer_index = source.index("optimizer = model.setup_optimizer(", final_scale_index)
+
+    assert checkpoint_config_index < scale_condition_index < max_scale_index < optimizer_index
+    assert checkpoint_config_index < scale_condition_index < final_scale_index < optimizer_index
+    assert 'user_config["kappa_lr_max_scale"] = args.kappa_lr_max_scale' in source
+    assert 'user_config["kappa_lr_final_scale"] = args.kappa_lr_final_scale' in source
+
+
 def test_chat_sft_inherits_checkpoint_train_capacity():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
