@@ -285,7 +285,7 @@ parser.add_argument("--kappa-lr-final-scale",
 parser.add_argument("--kappa-delay-start-min-iterations",
                     dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
-parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.05,
+parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.5,
                     help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
