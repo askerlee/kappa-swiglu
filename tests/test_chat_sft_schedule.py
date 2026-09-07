@@ -110,6 +110,33 @@ def test_chat_sft_uses_10x_kappa_lr_scales_when_enabling_kappa_for_checkpoint():
     assert 'user_config["kappa_lr_final_scale"] = args.kappa_lr_final_scale' in source
 
 
+def test_chat_sft_defaults_kappa_l2_when_enabling_kappa_for_checkpoint():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+
+    explicit_check_index = source.index(
+        "kappa_l2_loss_weight_was_specified = "
+        "arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight')"
+    )
+    enable_condition_index = source.index(
+        "if use_kappa_swiglu and not checkpoint_used_kappa_swiglu:"
+    )
+    omitted_condition_index = source.index(
+        "if not kappa_l2_loss_weight_was_specified:",
+        enable_condition_index,
+    )
+    default_index = source.index(
+        "args.kappa_l2_loss_weight = 0.01",
+        omitted_condition_index,
+    )
+    wandb_index = source.index("wandb_run = DummyWandb()", default_index)
+
+    assert explicit_check_index < enable_condition_index < omitted_condition_index
+    assert omitted_condition_index < default_index < wandb_index
+    assert 'user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight' in source[
+        default_index:wandb_index
+    ]
+
+
 def test_chat_sft_inherits_checkpoint_train_capacity():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
