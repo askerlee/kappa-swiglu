@@ -32,11 +32,36 @@ def _detect_compute_dtype():
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
 
+def _fp32_parameter_names(model):
+    fp32_names = {
+        name
+        for name, parameter in model.named_parameters()
+        if parameter.is_floating_point()
+        and (
+            parameter.ndim <= 1
+            or "kappa" in name.lower()
+            or name.lower().endswith("bias")
+        )
+    }
+    for module_name, module in model.named_modules():
+        module_path = module_name.lower().split(".")
+        is_router = "router" in module.__class__.__name__.lower() or "router" in module_path
+        if not is_router:
+            continue
+        for parameter_name, parameter in module.named_parameters(recurse=False):
+            if parameter.is_floating_point():
+                full_name = f"{module_name}.{parameter_name}" if module_name else parameter_name
+                fp32_names.add(full_name)
+    return fp32_names
+
+
 def cast_model_parameters(model, dtype, embedding_dtype=None):
+    fp32_names = _fp32_parameter_names(model)
     with torch.no_grad():
-        for parameter in model.parameters():
-            if parameter.is_floating_point() and parameter.dtype != dtype:
-                parameter.data = parameter.data.to(dtype=dtype)
+        for name, parameter in model.named_parameters():
+            target_dtype = torch.float32 if name in fp32_names else dtype
+            if parameter.is_floating_point() and parameter.dtype != target_dtype:
+                parameter.data = parameter.data.to(dtype=target_dtype)
         if embedding_dtype is not None:
             model.transformer.wte.to(dtype=embedding_dtype)
             for value_embed in model.value_embeds.values():

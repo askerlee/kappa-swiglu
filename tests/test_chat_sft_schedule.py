@@ -24,14 +24,40 @@ def load_function_from_script(function_name):
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
 
 
-def test_chat_sft_casts_floating_parameters_without_casting_buffers():
+def test_chat_sft_keeps_sensitive_parameters_in_fp32_without_casting_buffers():
     module = torch.nn.Linear(4, 3)
     module.register_buffer("stats", torch.ones(2, dtype=torch.float32))
 
     cast_model_parameters(module, torch.bfloat16)
 
-    assert all(parameter.dtype == torch.bfloat16 for parameter in module.parameters())
+    assert module.weight.dtype == torch.bfloat16
+    assert module.bias.dtype == torch.float32
     assert module.stats.dtype == torch.float32
+
+
+def test_chat_sft_keeps_scalar_vector_and_router_parameters_in_fp32():
+    class Router(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(4, 3, bias=False)
+
+    module = torch.nn.Module()
+    module.projection = torch.nn.Linear(4, 3, bias=False)
+    module.norm = torch.nn.LayerNorm(4)
+    module.kappa = torch.nn.Parameter(torch.tensor(1.0))
+    module.kappa_per_gate = torch.nn.Parameter(torch.ones(2, 3, 4))
+    module.gate_proj_bias = torch.nn.Parameter(torch.ones(3, 4))
+    module.router = Router()
+
+    cast_model_parameters(module, torch.bfloat16)
+
+    assert module.projection.weight.dtype == torch.bfloat16
+    assert module.norm.weight.dtype == torch.float32
+    assert module.norm.bias.dtype == torch.float32
+    assert module.kappa.dtype == torch.float32
+    assert module.kappa_per_gate.dtype == torch.float32
+    assert module.gate_proj_bias.dtype == torch.float32
+    assert module.router.gate.weight.dtype == torch.float32
 
 
 def test_reference_parameter_storage_keeps_only_embeddings_in_bfloat16():
