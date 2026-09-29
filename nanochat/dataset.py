@@ -9,6 +9,7 @@ For details of how the dataset was prepared, see `repackage_data_reference.py`.
 
 import os
 import argparse
+import socket
 import time
 import requests
 import pyarrow.parquet as pq
@@ -57,6 +58,17 @@ def parquets_iter_batched(split, start=0, step=1):
             yield texts
 
 # -----------------------------------------------------------------------------
+def set_huggingface_dns(ip):
+    original_getaddrinfo = socket.getaddrinfo
+
+    def custom_getaddrinfo(host, port, *args, **kwargs):
+        if host == "huggingface.co":
+            host = ip
+        return original_getaddrinfo(host, port, *args, **kwargs)
+
+    socket.getaddrinfo = custom_getaddrinfo
+
+
 def download_single_file(index):
     """ Downloads a single file index, with some backoff """
 
@@ -157,6 +169,8 @@ if __name__ == "__main__":
         help="Comma-separated 1-based inclusive shard ranges, e.g. 1-100,250- or 5,9-12",
     )
     parser.add_argument("-w", "--num-workers", type=int, default=4, help="Number of parallel download workers (default: 4)")
+    parser.add_argument("--override-huggingface-dns", action="store_true", help="Resolve huggingface.co to --huggingface-ip in download workers")
+    parser.add_argument("--huggingface-ip", default="13.35.36.77", help="IP address to resolve huggingface.co to (default: 13.35.36.77)")
     args = parser.parse_args()
 
     if args.shards is not None:
@@ -168,7 +182,8 @@ if __name__ == "__main__":
     print(f"Downloading {len(ids_to_download)} shards using {args.num_workers} workers...")
     print(f"Target directory: {DATA_DIR}")
     print()
-    with Pool(processes=args.num_workers) as pool:
+    pool_kwargs = {"initializer": set_huggingface_dns, "initargs": (args.huggingface_ip,)} if args.override_huggingface_dns else {}
+    with Pool(processes=args.num_workers, **pool_kwargs) as pool:
         results = pool.map(download_single_file, ids_to_download)
 
     # Report results
