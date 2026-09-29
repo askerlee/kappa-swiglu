@@ -91,7 +91,7 @@ parser.add_argument("--activation-checkpointing", dest="activation_checkpointing
 parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=None,
                     help="override storing transformer activations in pinned CPU memory")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=None,
-                    help="enable kappa SwiGLU when the base model does not already enable it")
+                    help="override the base model's kappa SwiGLU setting (default: inherit)")
 parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs='?', const=True, default=None,
                     help="override constant kappa bias for dense layers (default: inherit from base model)")
 # Training horizon
@@ -246,7 +246,7 @@ if args.model_save_tag:
 refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"
 print0(f"expert kappa params L2 anchor: {args.kappa_params_l2_anchor}")
 sft_checkpoint_source = "sft" if args.eval_only else "base"
-use_kappa_swiglu = True if args.use_kappa_swiglu is None else args.use_kappa_swiglu
+use_kappa_swiglu = args.use_kappa_swiglu
 model, tokenizer, meta = load_model(
     sft_checkpoint_source,
     device,

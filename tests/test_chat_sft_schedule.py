@@ -91,12 +91,30 @@ def test_chat_sft_enables_kappa_swiglu_for_all_iterations():
 
     assert 'parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs=\'?\', const=True, default=None' in source
     assert 'parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs=\'?\', const=True, default=None' in source
-    assert "use_kappa_swiglu = True if args.use_kappa_swiglu is None else args.use_kappa_swiglu" in source
+    assert "use_kappa_swiglu = args.use_kappa_swiglu" in source
     assert "use_kappa_swiglu=use_kappa_swiglu" in source
     assert "constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers" in source
     enable_index = source.index("model.set_kappa_swiglu_enabled(True)")
     compile_index = source.index("model = torch.compile(model, dynamic=False)")
     assert enable_index < compile_index
+
+
+def test_chat_sft_kappa_override_inherits_when_omitted():
+    source = CHAT_SFT.read_text(encoding="utf-8")
+    module = ast.parse(source, filename=str(CHAT_SFT))
+    assignment = next(
+        node for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "use_kappa_swiglu" for target in node.targets)
+    )
+    value = compile(ast.Expression(assignment.value), filename=str(CHAT_SFT), mode="eval")
+
+    for cli_value in (None, True, False):
+        args = type("Args", (), {"use_kappa_swiglu": cli_value})()
+        override = eval(value, {"args": args})
+        for checkpoint_value in (True, False):
+            effective_value = checkpoint_value if override is None else override
+            assert effective_value == (checkpoint_value if cli_value is None else cli_value)
 
 
 def test_chat_sft_marks_signature_when_kappa_overrides_checkpoint():
