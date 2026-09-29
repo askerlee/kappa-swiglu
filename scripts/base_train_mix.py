@@ -277,9 +277,9 @@ parser.add_argument("--activation-checkpointing", dest="activation_checkpointing
                     help="checkpoint each full transformer-stack pass to reduce activation memory at the cost of recomputation")
 parser.add_argument("--activation-offload", dest="activation_offload", type=str2bool, nargs='?', const=True, default=False,
                     help="store transformer activations in pinned CPU memory instead of recomputing them")
-parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=4.0,
+parser.add_argument("--moe-kappa-slope-max-scale", type=float, default=3.0,
                     help="maximum slope scale used by MoE kappa_bias modulation")
-parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=3.0,
+parser.add_argument("--dense-kappa-slope-max-scale", type=float, default=2.0,
                     help="maximum slope scale used by dense kappa_bias modulation")
 parser.add_argument("--kappa-slope-max-scale-warmup-iteration-frac",
                     dest="kappa_slope_max_scale_warmup_iteration_frac", type=float, default=0.15,
