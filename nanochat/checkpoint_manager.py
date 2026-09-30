@@ -237,6 +237,8 @@ def _resize_ut_kappa_parameter(value, base_shape, total_ut_steps, name):
 
 
 def _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps):
+    if getattr(model_config, "separate_base_sft_kappa", False):
+        total_ut_steps = 2
     granularity = getattr(model_config, "global_kappa_bias_granularity", "per-gate")
     intermediate_size = 4 * model_config.n_embd
     moe_layer_indices = set(get_moe_layer_indices(model_config))
@@ -275,6 +277,7 @@ def _patch_missing_keys(model_data, model_config):
     )
     n_layer = model_config.n_layer
     total_ut_steps = int(getattr(model_config, "total_ut_steps", 1) or 1)
+    num_kappa_slots = 2 if getattr(model_config, "separate_base_sft_kappa", False) else total_ut_steps
     granularity = getattr(model_config, "global_kappa_bias_granularity", "per-gate")
     intermediate_size = 4 * model_config.n_embd
     moe_layer_indices = set(get_moe_layer_indices(model_config))
@@ -346,7 +349,7 @@ def _patch_missing_keys(model_data, model_config):
                         else:
                             kappa_bias_shape = (1,)
                         model_data[kappa_bias_key] = torch.zeros(
-                            total_ut_steps, *kappa_bias_shape, device=checkpoint_device
+                            num_kappa_slots, *kappa_bias_shape, device=checkpoint_device
                         )
                 else:
                     model_data.pop(kappa_bias_expert_key, None)
@@ -375,7 +378,7 @@ def _patch_missing_keys(model_data, model_config):
             if granularity != "global" and kappa_bias_key not in model_data:
                 kappa_bias_shape = (intermediate_size,) if granularity == "per-gate" else (1,)
                 model_data[kappa_bias_key] = torch.zeros(
-                    total_ut_steps, *kappa_bias_shape, device=checkpoint_device
+                    num_kappa_slots, *kappa_bias_shape, device=checkpoint_device
                 )
     has_active_moe_kappa = uses_qwen3_moe and any(
         _kappa_bias_enabled_for_layer(model_config, layer_idx) for layer_idx in moe_layer_indices
@@ -388,12 +391,12 @@ def _patch_missing_keys(model_data, model_config):
     if granularity == "global" and (has_active_moe_kappa or has_active_dense_kappa):
         model_data.setdefault(
             "global_kappa_bias",
-            torch.zeros(total_ut_steps, 1, device=checkpoint_device),
+            torch.zeros(num_kappa_slots, 1, device=checkpoint_device),
         )
         if has_active_moe_kappa and getattr(model_config, "kappa_input", "router_probs") in {"top_logits", "router_probs"}:
             model_data.setdefault(
                 "global_kappa_scale",
-                torch.zeros(total_ut_steps, 1, device=checkpoint_device),
+                torch.zeros(num_kappa_slots, 1, device=checkpoint_device),
             )
     _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps)
 
@@ -539,8 +542,9 @@ def _reshard_adamw_state(
     current_world_size,
     param_name=None,
     ut_destination=None,
+    replicated=False,
 ):
-    if param.numel() < 1024:
+    if param.numel() < 1024 or replicated:
         local_state = {}
         for key, value in shard_entries[0].items():
             resized_value = _resize_optimizer_ut_kappa_state(value, param, param_name)
@@ -694,6 +698,7 @@ def reshard_optimizer_state_dict(shard_state_dicts, optimizer, rank=0, saved_wor
                     current_world_size,
                     param_name=param_name,
                     ut_destination=ut_destination,
+                    replicated='active_kappa_slot' in current_group,
                 )
         elif saved_kind in ("muon", "muonh"):
             if not saved_param_ids:
@@ -1076,4 +1081,6 @@ def load_model(source, *args, **kwargs):
     }[source]
     base_dir = get_base_dir()
     checkpoints_dir = os.path.join(base_dir, model_dir)
-    return load_model_from_dir(checkpoints_dir, *args, **kwargs)
+    model, tokenizer, meta_data = load_model_from_dir(checkpoints_dir, *args, **kwargs)
+    model.set_kappa_training_phase(source != "base")
+    return model, tokenizer, meta_data

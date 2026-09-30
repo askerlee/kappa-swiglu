@@ -27,6 +27,7 @@ class GPTConfig:
         kappa_input: str = "router_probs",
         kappa_input_constant: float = 1.0,
         kappa_input_logit_norm_exponent: float = 0.5,
+        separate_base_sft_kappa: bool = False,
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
@@ -95,6 +96,7 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
+        self.separate_base_sft_kappa = bool(separate_base_sft_kappa)
         valid_kappa_inputs = {"top_logits", "router_probs", "constant"}
         if kappa_input not in valid_kappa_inputs:
             raise ValueError(

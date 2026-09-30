@@ -70,6 +70,44 @@ def adamw_grad_delta_fused(
     return (exp_avg / denom) * (-step_size)
 
 
+def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
+    state = optimizer.state[param]
+    if not state:
+        state['step'] = 0
+        state['slot_steps'] = [0, 0]
+        state['exp_avg'] = torch.zeros_like(param)
+        state['exp_avg_sq'] = torch.zeros_like(param)
+    slot = group['active_kappa_slot']
+    state['slot_steps'][slot] += 1
+    state['step'] += 1
+    active_param = param[slot].view(-1)
+    active_grad = grad[slot].view(-1)
+    exp_avg = state['exp_avg'][slot].view(-1)
+    exp_avg_sq = state['exp_avg_sq'][slot].view(-1)
+    if not (active_grad.isfinite().all() and active_param.isfinite().all()
+            and exp_avg.isfinite().all() and exp_avg_sq.isfinite().all()):
+        raise _build_adamw_nonfinite_error(
+            param_name, active_param.detach(), active_grad.detach(),
+            exp_avg.detach(), exp_avg_sq.detach(), active_param.detach(), phase='pre',
+        )
+    optimizer._adamw_step_t.fill_(state['slot_steps'][slot])
+    optimizer._adamw_lr_t.fill_(group['lr'])
+    optimizer._adamw_beta1_t.fill_(group['betas'][0])
+    optimizer._adamw_beta2_t.fill_(group['betas'][1])
+    optimizer._adamw_eps_t.fill_(group['eps'])
+    optimizer._adamw_wd_t.fill_(group['weight_decay'])
+    adamw_step_fused(
+        active_param, active_grad, exp_avg, exp_avg_sq,
+        optimizer._adamw_step_t, optimizer._adamw_lr_t, optimizer._adamw_beta1_t,
+        optimizer._adamw_beta2_t, optimizer._adamw_eps_t, optimizer._adamw_wd_t,
+    )
+    if not active_param.isfinite().all():
+        raise _build_adamw_nonfinite_error(
+            param_name, active_param.detach(), active_grad.detach(),
+            exp_avg.detach(), exp_avg_sq.detach(), active_param.detach(), phase='post',
+        )
+
+
 def _use_bf16_matmuls(tensor: Tensor) -> bool:
     """Use bf16 matrix multiplies only where they are fast and well supported."""
     return tensor.is_cuda and COMPUTE_DTYPE == torch.bfloat16
@@ -513,6 +551,9 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad
             param_name = group_param_names[idx] if idx < len(group_param_names) else None
+            if 'active_kappa_slot' in group:
+                _step_kappa_slot_adamw(self, group, p, grad, param_name)
+                continue
             state = self.state[p]
 
             # State init
@@ -720,7 +761,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
             grad = p.grad
             if grad is None:
                 grad = torch.zeros_like(p)
-            if p.numel() < 1024:
+            if p.numel() < 1024 or 'active_kappa_slot' in group:
                 # Small params: all_reduce (no scatter/gather needed)
                 future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
                 param_infos[p] = dict(
@@ -807,6 +848,10 @@ class DistMuonAdamW(torch.optim.Optimizer):
             pinfo = param_infos[p]
             pinfo['future'].wait()
             param_name = pinfo.get('debug_param_name')
+            if 'active_kappa_slot' in group:
+                if p.grad is not None:
+                    _step_kappa_slot_adamw(self, group, p, pinfo['grad_slice'], param_name)
+                continue
             state = self.state[p]
 
             # For small params, operate on full param; for large, operate on slice
@@ -1014,6 +1059,9 @@ class AuroraAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad
             param_name = group_param_names[idx] if idx < len(group_param_names) else None
+            if 'active_kappa_slot' in group:
+                _step_kappa_slot_adamw(self, group, p, grad, param_name)
+                continue
             state = self.state[p]
 
             if not state:
@@ -1145,7 +1193,7 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             grad = p.grad
             if grad is None:
                 grad = torch.zeros_like(p)
-            if p.numel() < 1024:
+            if p.numel() < 1024 or 'active_kappa_slot' in group:
                 future = dist.all_reduce(grad, op=dist.ReduceOp.AVG, async_op=True).get_future()
                 param_infos[p] = dict(
                     future=future,
@@ -1230,6 +1278,10 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             pinfo = param_infos[p]
             pinfo['future'].wait()
             param_name = pinfo.get('debug_param_name')
+            if 'active_kappa_slot' in group:
+                if p.grad is not None:
+                    _step_kappa_slot_adamw(self, group, p, pinfo['grad_slice'], param_name)
+                continue
             state = self.state[p]
 
             if pinfo['is_small']:

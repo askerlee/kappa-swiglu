@@ -1966,16 +1966,16 @@ def test_kappa_bias_ema_target_keeper_tracks_ut_passes_independently():
         total_ut_steps=2,
     )
 
-    keeper.update(torch.full((4,), 2.0), step=0, current_ut=0)
-    keeper.update(torch.full((4,), 4.0), step=0, current_ut=1)
+    keeper.update(torch.full((4,), 2.0), step=0, kappa_slot=0)
+    keeper.update(torch.full((4,), 4.0), step=0, kappa_slot=1)
 
     torch.testing.assert_close(keeper.ema_rms, torch.tensor([2.0, 4.0]))
     torch.testing.assert_close(
-        keeper.loss(torch.full((4,), 1.0), current_ut=0),
+        keeper.loss(torch.full((4,), 1.0), kappa_slot=0),
         torch.tensor((1.6 - 1.0) ** 2),
     )
     torch.testing.assert_close(
-        keeper.loss(torch.full((4,), 1.0), current_ut=1),
+        keeper.loss(torch.full((4,), 1.0), kappa_slot=1),
         torch.tensor((3.2 - 1.0) ** 2),
     )
 
@@ -2595,8 +2595,8 @@ def test_kappa_bias_selects_and_backprops_only_the_current_ut_pass():
         experts.kappa_bias.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
         experts.kappa_scale.copy_(torch.tensor([[5.0, 6.0], [7.0, 8.0]]))
 
-    materialized_bias = experts._materialize_kappa_bias(current_ut=1)
-    materialized_scale = experts._materialize_kappa_scale(current_ut=1)
+    materialized_bias = experts._materialize_kappa_bias(kappa_slot=1)
+    materialized_scale = experts._materialize_kappa_scale(kappa_slot=1)
     torch.testing.assert_close(materialized_bias[0], torch.full((16,), 3.0))
     torch.testing.assert_close(materialized_bias[1], torch.full((16,), 4.0))
     torch.testing.assert_close(materialized_scale[0], torch.full((16,), 7.0))
@@ -2622,7 +2622,7 @@ def test_dense_kappa_bias_selects_only_the_current_ut_pass():
     with torch.no_grad():
         mlp.kappa_bias.copy_(torch.tensor([[1.0], [2.0]]))
 
-    materialized = mlp._materialize_kappa_bias(current_ut=1)
+    materialized = mlp._materialize_kappa_bias(kappa_slot=1)
     torch.testing.assert_close(materialized, torch.full((16,), 2.0))
 
     materialized.sum().backward()

@@ -90,6 +90,15 @@ def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
     assert "is_chat_sft_step if args.use_kappa_swiglu_sft_only else True" in source
 
 
+def test_separate_kappa_routes_mixed_training_and_base_evaluation():
+    source = BASE_TRAIN_MIX.read_text()
+    assert 'parser.add_argument("--separate-base-sft-kappa"' in source
+    assert 'separate_base_sft_kappa=args.separate_base_sft_kappa' in source
+    assert 'orig_model.set_kappa_training_phase(is_chat_sft_step)' in source
+    assert 'orig_model.set_kappa_training_phase(False)' in source
+    assert 'group["active_kappa_slot"] = int(is_chat_sft_step)' in source
+
+
 def test_core_eval_temporarily_disables_kappa_swiglu():
     source = BASE_TRAIN_MIX.read_text()
     core_eval_index = source.index("core_results = evaluate_core(orig_model")

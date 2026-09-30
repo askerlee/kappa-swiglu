@@ -1,9 +1,141 @@
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
-from nanochat.gpt import _chunked_cross_entropy, _get_loss_chunk_tokens, SoftcapInPlace
+from nanochat.gpt import GPT, _UTLossAccum, _chunked_cross_entropy, _get_loss_chunk_tokens, SoftcapInPlace
+
+
+def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
+        n_exp=2, moe_start_layer=1, total_ut_steps=3,
+        use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+        separate_base_sft_kappa=True, kappa_bias_ema_rms_reg=True,
+    )
+    model = GPT(config)
+    model.init_weights()
+    dense = model.transformer.h[0].mlp
+    experts = model.transformer.h[1].mlp.experts
+    inputs = torch.randn(2, 2, 16)
+    for module in (dense, experts):
+        assert module.kappa_bias.shape[0] == 2
+        assert module.kappa_bias_ema_rms_reg_keeper.ema_rms.shape == (2,)
+        with torch.no_grad():
+            module.kappa_bias[0].fill_(-0.4)
+            module.kappa_bias[1].fill_(0.4)
+            if module is dense:
+                module.c_proj.weight.fill_(0.1)
+            else:
+                module.c_proj.fill_(0.1)
+    assert experts.kappa_scale.shape[0] == 2
+    for is_sft in (False, True):
+        model.set_kappa_training_phase(is_sft)
+        model.zero_grad(set_to_none=True)
+        for module in (dense, experts):
+            outputs = []
+            for current_ut in range(3):
+                accum = _UTLossAccum(inputs, 2, 2)
+                if module is dense:
+                    output = module(inputs, loss_accum=accum, current_ut=current_ut)
+                else:
+                    output = module(inputs, torch.ones(2, 2), loss_accum=accum, current_ut=current_ut)
+                outputs.append(output)
+            for output in outputs[1:]:
+                torch.testing.assert_close(output, outputs[0])
+            outputs[0].sum().backward()
+            inactive_slot = 1 - int(is_sft)
+            assert module.kappa_bias.grad[inactive_slot].count_nonzero() == 0
+            assert module.kappa_bias.grad[int(is_sft)].count_nonzero() > 0
+
+
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+def test_separate_kappa_eval_cache_and_reference_slots(granularity):
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
+        n_exp=2, moe_start_layer=1, total_ut_steps=3,
+        use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+        separate_base_sft_kappa=True, global_kappa_bias_granularity=granularity,
+        kappa_bias_ema_rms_reg=True, refresh_kappa_param_references=True,
+    )
+    model = GPT(config)
+    model.init_weights()
+    dense = model.transformer.h[0].mlp
+    experts = model.transformer.h[1].mlp.experts
+    for module in (dense, experts):
+        bias = module._get_kappa_bias_parameter()
+        assert bias.shape[0] == 2
+        with torch.no_grad():
+            bias[0].fill_(-0.5)
+            bias[1].fill_(0.5)
+        assert module.kappa_scale_ema_rms_reg_keeper.ema_rms.shape == (2,)
+    model.refresh_kappa_param_references()
+    assert experts.initial_kappa_bias.shape[0] == 2
+    assert experts.initial_kappa_scale.shape[0] == 2
+    inputs = torch.ones(2, 2, 64)
+    model.eval()
+    outputs = []
+    for is_sft in (False, True, False):
+        model.set_kappa_training_phase(is_sft)
+        with torch.no_grad():
+            dense_output = dense._materialize_kappa_slope_scales_for_eval(torch.float32, inputs.device, int(is_sft))
+            expert_output = experts._apply_kappa_slope_scaled_activation_inference(
+                inputs, torch.ones(2, 2), kappa_slot=int(is_sft),
+            )
+        outputs.append((dense_output.clone(), expert_output.clone()))
+    for module_index in (0, 1):
+        torch.testing.assert_close(outputs[0][module_index], outputs[2][module_index])
+        assert not torch.allclose(outputs[0][module_index], outputs[1][module_index])
+    restored = GPT(GPTConfig(**vars(config)))
+    restored.init_weights()
+    restored.load_state_dict(model.state_dict())
+    assert restored.transformer.h[1].mlp.experts._get_kappa_bias_parameter().shape[0] == 2
+
+
+def test_default_kappa_layout_remains_per_ut_pass():
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=16, n_exp=2, moe_start_layer=1,
+        total_ut_steps=3, use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+    )
+    model = GPT(config)
+    assert model.transformer.h[0].mlp.kappa_bias.shape[0] == 3
+    assert model.transformer.h[1].mlp.experts.kappa_bias.shape[0] == 3
+
+
+@pytest.mark.parametrize('checkpointed', [False, True])
+def test_task_kappa_full_model_training_preserves_other_task(checkpointed):
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=32, vocab_size=32, sequence_len=8,
+        n_exp=2, moe_start_layer=1, total_ut_steps=3,
+        use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+        separate_base_sft_kappa=True, activation_checkpointing=checkpointed,
+    )
+    model = GPT(config)
+    model.init_weights()
+    with torch.no_grad():
+        model.transformer.h[0].mlp.c_proj.weight.fill_(0.1)
+        model.transformer.h[1].mlp.experts.c_proj.fill_(0.1)
+    optimizer = model.setup_optimizer(embedding_lr=0.001, matrix_lr=0.001)
+    group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_params')
+    group['lr'] = 0.001
+    inputs = torch.randint(0, 32, (2, 4))
+    for is_sft in (False, True):
+        slot = int(is_sft)
+        model.set_kappa_training_phase(is_sft)
+        group['active_kappa_slot'] = slot
+        before = [param[1 - slot].detach().clone() for param in group['params']]
+        loss, _ = model(inputs, inputs)
+        assert loss.isfinite()
+        loss.backward()
+        for param in group['params']:
+            assert param.grad[1 - slot].count_nonzero() == 0
+        optimizer.step()
+        model.zero_grad(set_to_none=True)
+        for param, inactive_before in zip(group['params'], before):
+            torch.testing.assert_close(param[1 - slot], inactive_before, rtol=0, atol=0)
+    for param in group['params']:
+        assert optimizer.state[param]['slot_steps'] == [1, 1]
 
 
 def _full_softcapped_cross_entropy(hidden_states, targets, lm_head, vocab_size, softcap, reduction):

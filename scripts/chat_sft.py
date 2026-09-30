@@ -263,6 +263,7 @@ model, tokenizer, meta = load_model(
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
     refresh_kappa_param_references=refresh_kappa_param_references,
 )
+model.set_kappa_training_phase(True)
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
 )

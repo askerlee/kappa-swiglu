@@ -242,6 +242,8 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
+                    help="allocate base/SFT kappa slots shared across UT passes; base training uses slot 0")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
@@ -283,7 +285,7 @@ parser.add_argument("--kappa-lr-final-scale",
 parser.add_argument("--kappa-delay-start-min-iterations",
                     dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
-parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.5,
+parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.2,
                     help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
@@ -387,6 +389,8 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
+if args.separate_base_sft_kappa:
+    args.use_kappa_swiglu = True
 
 ut_edge_offset = args.depth // 6
 if args.ut_source is None:
@@ -630,6 +634,7 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_kappa_swiglu=args.use_kappa_swiglu,
+        separate_base_sft_kappa=args.separate_base_sft_kappa,
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
         kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,

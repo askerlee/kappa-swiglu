@@ -7,10 +7,60 @@ import torch
 
 from nanochat.checkpoint_manager import _infer_kappa_bias, _infer_use_qwen3_dense_mlp, _migrate_optimizer_param_group_names, _override_kappa_bias_values, _override_kappa_scale_values, _patch_missing_config_keys, _patch_missing_keys, delete_old_checkpoints, inspect_optimizer_shards, load_optimizer_state_dict, reshard_optimizer_state_dict, save_checkpoint, snapshot_checkpoint_file_sizes, validate_checkpoint_file_sizes
 from nanochat.configuration_nanomoe_gpt import GPTConfig
+from nanochat import checkpoint_manager
 
 
 def make_optimizer(param_groups):
     return SimpleNamespace(param_groups=param_groups)
+
+
+@pytest.mark.parametrize('total_ut_steps', [1, 3])
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+def test_task_kappa_checkpoint_keeps_two_slots_when_loop_count_changes(total_ut_steps, granularity):
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=16, vocab_size=32, n_exp=2,
+        moe_start_layer=1, total_ut_steps=total_ut_steps,
+        use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+        separate_base_sft_kappa=True, global_kappa_bias_granularity=granularity,
+    )
+    model_data = {}
+    _patch_missing_keys(model_data, config)
+    kappa_keys = [key for key in model_data if 'kappa_' in key]
+    assert kappa_keys
+    for key in kappa_keys:
+        assert model_data[key].shape[0] == 2
+        model_data[key][1].fill_(0.7)
+    _patch_missing_keys(model_data, config)
+    for key in kappa_keys:
+        assert model_data[key].shape[0] == 2
+        torch.testing.assert_close(model_data[key][1], torch.full_like(model_data[key][1], 0.7))
+    assert model_data['resid_lambdas'].shape[0] == total_ut_steps
+
+
+def test_task_kappa_optimizer_state_stays_replicated_when_world_size_changes():
+    param = torch.nn.Parameter(torch.zeros(2, 1024))
+    optimizer = make_optimizer([
+        {'kind': 'adamw', 'params': [param], 'active_kappa_slot': 0},
+    ])
+    groups = [{'kind': 'adamw', 'params': [0], 'active_kappa_slot': 0}]
+    shard = make_adamw_shard(groups, 0, torch.ones_like(param), torch.ones_like(param))
+    shard['state'][0]['slot_steps'] = [5, 2]
+    result = reshard_optimizer_state_dict(
+        [shard, copy.deepcopy(shard)], optimizer, rank=3,
+        saved_world_size=2, current_world_size=4,
+    )
+    assert result['state'][0]['slot_steps'] == [5, 2]
+    torch.testing.assert_close(result['state'][0]['exp_avg'], torch.ones_like(param))
+
+
+@pytest.mark.parametrize('source,expected_slot', [('base', 0), ('sft', 1), ('rl', 1)])
+def test_load_model_selects_kappa_task_from_checkpoint_source(monkeypatch, source, expected_slot):
+    selected_phases = []
+    model = SimpleNamespace(set_kappa_training_phase=selected_phases.append)
+    monkeypatch.setattr(checkpoint_manager, 'get_base_dir', lambda: '/unused')
+    monkeypatch.setattr(checkpoint_manager, 'load_model_from_dir', lambda *args, **kwargs: (model, None, {}))
+    checkpoint_manager.load_model(source)
+    assert selected_phases == [bool(expected_slot)]
 
 
 def make_adamw_shard(param_groups, param_id, exp_avg, exp_avg_sq, step=7):
