@@ -264,7 +264,7 @@ def test_router_returns_selected_top_k_router_scores():
     MANAGER._selected_scores_size = 0
 
 
-def test_kappa_router_softmax_modulates_temperature_and_receives_gradient():
+def test_router_uses_unscaled_softmax_and_receives_gradient():
     config = GPTConfig(
         n_exp=3,
         moe_top_k=2,
@@ -272,75 +272,21 @@ def test_kappa_router_softmax_modulates_temperature_and_receives_gradient():
         eval_capacity=100.0,
         use_aux_loss=False,
         use_router_z_loss=False,
-        use_kappa_router_softmax=True,
-        router_kappa_slope_max_scale=4.0,
     )
     router = Router(config).eval()
     with torch.no_grad():
         router.w_g.weight.copy_(torch.tensor([[2.0, 0.0], [1.0, 0.0], [-1.0, 0.0]]))
-        target_slope = torch.tensor(2.0)
-        router.router_softmax_kappa.copy_(
-            torch.atanh(torch.log(target_slope) / math.log(config.router_kappa_slope_max_scale))
-        )
     x = torch.tensor([[[1.0, 0.0]]])
 
     _, router_probs, _, top_k_indices, _ = router(x)
 
     assert torch.equal(top_k_indices, torch.tensor([[0, 1]]))
-    expected_probs = F.softmax(torch.tensor([[2.0, 1.0]]) * target_slope, dim=-1)
+    expected_probs = F.softmax(torch.tensor([[2.0, 1.0]]), dim=-1)
     torch.testing.assert_close(router_probs, expected_probs)
 
     router_probs.square().sum().backward()
-    assert router.router_softmax_kappa.grad is not None
-    assert router.router_softmax_kappa.grad.abs() > 0
-
-
-def test_kappa_router_softmax_l2_loss_is_mean_square():
-    config = GPTConfig(
-        n_exp=2,
-        moe_top_k=2,
-        n_embd=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-        use_kappa_router_softmax=True,
-    )
-    router = Router(config)
-    with torch.no_grad():
-        router.router_softmax_kappa.fill_(2.0)
-    MANAGER.reset("router_softmax_kappa_l2_loss")
-
-    router(torch.randn(1, 2, config.n_embd))
-    loss = MANAGER.aggregate("router_softmax_kappa_l2_loss")
-
-    MANAGER.reset("router_softmax_kappa_l2_loss")
-    torch.testing.assert_close(loss, torch.tensor(4.0))
-    loss.backward()
-    torch.testing.assert_close(router.router_softmax_kappa.grad, torch.tensor(4.0))
-
-def test_router_softmax_kappa_stats_report_top_and_bottom_five_percent():
-    config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=4,
-        moe_start_layer=0,
-        num_moe_layers=-1,
-        n_exp=2,
-        moe_top_k=2,
-        n_embd=32,
-        n_head=4,
-        use_kappa_router_softmax=True,
-        debug=False,
-    )
-    model = GPT(config)
-    values = (-2.0, -1.0, 1.0, 3.0)
-    with torch.no_grad():
-        for block, value in zip(model.transformer.h, values):
-            block.mlp.router.router_softmax_kappa.fill_(value)
-
-    top_mean, bottom_mean = model.compute_router_softmax_kappa_stats()
-
-    torch.testing.assert_close(top_mean, torch.tensor(3.0))
-    torch.testing.assert_close(bottom_mean, torch.tensor(-2.0))
+    assert router.w_g.weight.grad is not None
+    assert router.w_g.weight.grad.abs().sum() > 0
 
 
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
@@ -1437,7 +1383,6 @@ def test_gpt_total_ut_steps_averages_repeated_manager_losses():
     loss_names = (
         "aux_loss",
         "router_z_loss",
-        "router_softmax_kappa_l2_loss",
         "kappa_bias_l2_loss",
         "kappa_scale_l2_loss",
         "kappa_bias_ema_rms_reg_loss",

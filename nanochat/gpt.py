@@ -42,7 +42,6 @@ from nanochat.flash_attention import flash_attn
 _UT_LOSS_NAMES = (
     "aux_loss",
     "router_z_loss",
-    "router_softmax_kappa_l2_loss",
     "kappa_bias_l2_loss",
     "kappa_scale_l2_loss",
     "kappa_bias_ema_rms_reg_loss",
@@ -671,16 +670,6 @@ class Router(nn.Module):
         self.use_router_z_loss      = config.use_router_z_loss
         self.z_loss_demean_logits = config.z_loss_demean_logits
         self.z_loss_penalize_mean_logits = config.z_loss_penalize_mean_logits
-        self.use_kappa_router_softmax = bool(
-            getattr(config, 'use_kappa_router_softmax', False)
-        )
-        self.router_kappa_slope_max_scale = float(
-            getattr(config, 'router_kappa_slope_max_scale', 3.0)
-        )
-        if self.use_kappa_router_softmax:
-            self.router_softmax_kappa = nn.Parameter(torch.zeros((), dtype=torch.float32))
-        else:
-            self.register_parameter('router_softmax_kappa', None)
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
@@ -727,24 +716,6 @@ class Router(nn.Module):
         if not self.w_g_delta_enabled:
             return self.w_g.weight
         return self.w_g.weight + self.w_g_delta
-
-    def _modulate_logits(self, logits):
-        if not self.use_kappa_router_softmax:
-            return logits
-        max_scale = torch.as_tensor(
-            self.router_kappa_slope_max_scale, device=logits.device, dtype=torch.float32
-        )
-        slope = torch.exp(torch.log(max_scale) * torch.tanh(self.router_softmax_kappa))
-        return logits * slope.to(dtype=logits.dtype)
-
-    def _accumulate_kappa_l2_loss(self, loss_accum=None):
-        if not self.use_kappa_router_softmax:
-            return
-        loss = self.router_softmax_kappa.float().square()
-        if loss_accum is not None:
-            loss_accum.add("router_softmax_kappa_l2_loss", loss)
-        else:
-            MANAGER.add("router_softmax_kappa_l2_loss", loss)
 
     def set_aux_free_load_balancing(self, enabled, bias_update_speed=None):
         self.use_aux_free_load_balancing = bool(enabled)
@@ -843,9 +814,7 @@ class Router(nn.Module):
                 noise = F.softplus(self.w_noise(x_flat))
                 noise *= torch.randn_like(noise)
             logits = logits_wg if noise is None else logits_wg + noise
-            logits_for_router = self._modulate_logits(logits)
-            if self.training:
-                self._accumulate_kappa_l2_loss(loss_accum=loss_accum)
+            logits_for_router = logits
 
             # 2. COMPUTE LOSSES (if training)
             # -------------------------------
@@ -870,8 +839,7 @@ class Router(nn.Module):
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
                             logits_wg, x_flat, router_weight, input_alpha_t
                         )
-                        logits_for_z_loss_raw = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
-                        logits_for_z_loss = self._modulate_logits(logits_for_z_loss_raw)
+                        logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
                     router_z_loss_per_token = compute_z_loss(
                         logits_for_z_loss.view(B, T, -1),
@@ -2619,7 +2587,6 @@ class GPT(nn.Module):
         device = self.transformer.wte.weight.device
         losses = {}
         for name in (
-            'router_softmax_kappa_l2_loss',
             'kappa_bias_l2_loss',
             'kappa_scale_l2_loss',
             'kappa_bias_ema_rms_reg_loss',
@@ -2628,21 +2595,6 @@ class GPT(nn.Module):
             value = self._aggregate_loop_averaged_loss(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
         return losses
-
-    def compute_router_softmax_kappa_stats(self):
-        kappas = [
-            block.mlp.router.router_softmax_kappa.detach().float()
-            for block in self.transformer.h
-            if isinstance(block.mlp, MOELayer) and block.mlp.router.use_kappa_router_softmax
-        ]
-        if not kappas:
-            zero = self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
-            return zero, zero
-        kappas = torch.stack(kappas)
-        return (
-            _mean_extreme_percentile(kappas, fraction=0.05, largest=True),
-            _mean_extreme_percentile(kappas, fraction=0.05, largest=False),
-        )
 
     def _update_kappa_ema_rms_targets(self):
         for block in self.transformer.h:
@@ -3099,7 +3051,6 @@ class GPT(nn.Module):
                     or name.startswith('mlp.kappa_bias')
                     or name.startswith('mlp.experts.kappa_scale')
                     or name.startswith('mlp.kappa_scale')
-                    or name == 'mlp.router.router_softmax_kappa'
                 ):
                     append_param(kappa_params, param, full_name)
                 elif name == 'mlp.router.w_g_delta':
@@ -3444,9 +3395,6 @@ class GPT(nn.Module):
                    'aux_loss': 0,
                    'router_z_loss': 0,
                    'router_wg_delta_l2_loss': 0,
-                   'router_softmax_kappa_l2_loss': 0,
-                   'router_softmax_kappa_top5p_mean': 0,
-                   'router_softmax_kappa_bottom5p_mean': 0,
                    'kappa_bias_l2_loss': 0,
                    'kappa_scale_l2_loss': 0,
                    'kappa_bias_ema_rms_reg_loss': 0,
@@ -3465,11 +3413,6 @@ class GPT(nn.Module):
                    'expert_utilities': None,
                    'selected_scores': None,
                  }
-
-        (
-            losses['router_softmax_kappa_top5p_mean'],
-            losses['router_softmax_kappa_bottom5p_mean'],
-        ) = self.compute_router_softmax_kappa_stats()
 
         # If MANAGER.collect_load_balancing_stats is False, these will return None
         expert_utilities = MANAGER.aggregate("expert_utilities")
@@ -3695,7 +3638,6 @@ class GPT(nn.Module):
                 losses.update({
                     name: checkpoint_loss_totals[_UT_LOSS_NAMES.index(name)] / self.total_ut_steps
                     for name in (
-                        'router_softmax_kappa_l2_loss',
                         'kappa_bias_l2_loss',
                         'kappa_scale_l2_loss',
                         'kappa_bias_ema_rms_reg_loss',

@@ -259,8 +259,6 @@ parser.add_argument("--use-aux-free-load-balancing", type=str2bool, nargs='?', c
 parser.add_argument("--aux-loss-weight", type=float, default=AUX_LOSS_WEIGHT_DEFAULT, help="final weight for the Switch-style router auxiliary load-balancing loss after the initial 500-step anneal")
 parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, help="initial aux loss weight scale factor; the anneal starts from --aux-loss-weight * this value")
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
-parser.add_argument("--use-kappa-router-softmax", type=str2bool, nargs='?', const=True, default=False,
-                    help="learn a bounded per-layer slope for router softmax")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', const=True, default=False,
@@ -673,7 +671,6 @@ def build_model_meta(depth):
         use_aux_loss=not args.use_aux_free_load_balancing,
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
-        use_kappa_router_softmax=args.use_kappa_router_softmax,
         use_kappa_swiglu=args.use_kappa_swiglu,
         kappa_input=args.kappa_input,
         kappa_input_constant=args.kappa_input_constant,
@@ -2158,9 +2155,6 @@ while True:
             'aux_loss': 0.0,
             'router_z_loss': 0.0,
             'router_wg_delta_l2_loss': 0.0,
-            'router_softmax_kappa_l2_loss': 0.0,
-            'router_softmax_kappa_top5p_mean': 0.0,
-            'router_softmax_kappa_bottom5p_mean': 0.0,
             'kappa_bias_l2_loss': 0.0,
             'kappa_scale_l2_loss': 0.0,
             'kappa_bias_ema_rms_reg_loss': 0.0,
@@ -2235,9 +2229,6 @@ while True:
                 router_wg_delta_l2_loss = micro_losses["router_wg_delta_l2_loss"]
                 if is_chat_sft_step:
                     loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss
-            router_softmax_kappa_l2_loss = micro_losses.get("router_softmax_kappa_l2_loss")
-            if router_softmax_kappa_l2_loss is None:
-                router_softmax_kappa_l2_loss = 0.0
             kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
             if kappa_bias_l2_loss is None:
                 kappa_bias_l2_loss = 0.0
@@ -2250,7 +2241,6 @@ while True:
             kappa_scale_ema_rms_reg_loss = micro_losses.get("kappa_scale_ema_rms_reg_loss")
             if kappa_scale_ema_rms_reg_loss is None:
                 kappa_scale_ema_rms_reg_loss = 0.0
-            loss = loss + kappa_bias_l2_loss_weight * router_softmax_kappa_l2_loss
             loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
             loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
             loss = loss + kappa_bias_l2_loss_weight * kappa_bias_ema_rms_reg_loss
@@ -2409,9 +2399,6 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/router_wg_delta_l2_loss_step": losses['router_wg_delta_l2_loss'],
-            "train/router_softmax_kappa_l2_loss_step": losses['router_softmax_kappa_l2_loss'],
-            "train/router_softmax_kappa_top5p_mean_step": scalar_loss_to_item(losses['router_softmax_kappa_top5p_mean']),
-            "train/router_softmax_kappa_bottom5p_mean_step": scalar_loss_to_item(losses['router_softmax_kappa_bottom5p_mean']),
             "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
             "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
             "train/kappa_bias_ema_rms_reg_loss_step": losses['kappa_bias_ema_rms_reg_loss'],
@@ -2448,7 +2435,6 @@ while True:
             log_data["train/loss_step"] = debiased_smooth_loss
         log_data["train/aux_loss_weight"] = aux_loss_weight
         log_data["train/router_wg_delta_l2_loss_weight"] = args.router_wg_delta_l2_loss_weight
-        log_data["train/router_softmax_kappa_l2_loss_weight"] = kappa_bias_l2_loss_weight
         log_data["train/kappa_bias_l2_loss_weight"] = kappa_bias_l2_loss_weight
         log_data["train/kappa_scale_l2_loss_weight"] = kappa_scale_l2_loss_weight
         log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale
