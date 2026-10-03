@@ -141,3 +141,31 @@ def test_kappa_single_pass_and_global_pairs(tmp_path: Path, capsys):
 def test_kappa_correlation_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="shapes must match"):
         MODULE.calculate_kappa_correlation(torch.ones(2, 3), torch.ones(3, 2))
+
+
+def test_kappa_ratio_mean(tmp_path: Path, capsys):
+    assert MODULE.calculate_kappa_ratio_mean(
+        torch.tensor([2.0, -6.0, 100.0]), torch.tensor([2.0, 3.0, 0.0])
+    ) == -0.5
+    assert math.isnan(MODULE.calculate_kappa_ratio_mean(torch.ones(2), torch.zeros(2)))
+    with pytest.raises(ValueError, match="shapes must match"):
+        MODULE.calculate_kappa_ratio_mean(torch.ones(2, 3), torch.ones(3, 2))
+
+    path = tmp_path / "ratios.pt"
+    torch.save({
+        "resid_lambdas": torch.ones(2, 2),
+        "transformer.h.0.mlp.experts.kappa_bias": torch.tensor([[2.0, 12.0], [1.0, 3.0]]),
+        "transformer.h.0.mlp.experts.kappa_scale": torch.tensor([[2.0, 4.0], [0.0, 0.0]]),
+        "transformer.h.1.mlp.experts.kappa_bias": torch.tensor([[16.0], [-6.0]]),
+        "transformer.h.1.mlp.experts.kappa_scale": torch.tensor([[2.0], [3.0]]),
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    output = capsys.readouterr().out
+    assert "layer=0 pass=0: pearson=1.0000 ratio_mean=2.0000" in output
+    assert "layer=0 pass=1: pearson=nan ratio_mean=nan" in output
+    assert "layer=1 pass=0: pearson=nan ratio_mean=8.0000" in output
+    overall_lines = [line for line in output.splitlines() if "overall pass=" in line]
+    assert "overall pass=0:" in overall_lines[0]
+    assert "ratio_mean=4.0000" in overall_lines[0]
+    assert "overall pass=1:" in overall_lines[1]
+    assert "ratio_mean=-2.0000" in overall_lines[1]
