@@ -32,6 +32,7 @@ class GPTConfig:
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
         global_kappa_bias_granularity: str = "per-gate",
+        kappa_bias_from_scale: bool = False,
         kappa_bias_start_layer: int = 0,
         log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
@@ -131,6 +132,9 @@ class GPTConfig:
                 f"{sorted(valid_kappa_bias_granularities)}, got {global_kappa_bias_granularity!r}"
             )
         self.global_kappa_bias_granularity = global_kappa_bias_granularity
+        self.kappa_bias_from_scale = bool(kappa_bias_from_scale)
+        if self.kappa_bias_from_scale and kappa_input == "constant":
+            raise ValueError("kappa_bias_from_scale requires kappa_input='router_probs' or 'top_logits'")
         self.kappa_bias_start_layer = int(kappa_bias_start_layer)
         if self.kappa_bias_start_layer < 0:
             raise ValueError(

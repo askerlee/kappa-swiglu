@@ -80,17 +80,23 @@ def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
     slot = group['active_kappa_slot']
     state['slot_steps'][slot] += 1
     state['step'] += 1
-    active_param = param[slot].view(-1)
-    active_grad = grad[slot].view(-1)
-    exp_avg = state['exp_avg'][slot].view(-1)
-    exp_avg_sq = state['exp_avg_sq'][slot].view(-1)
+    if param.ndim == 0:
+        active_param = param.view(-1)
+        active_grad = grad.view(-1)
+        exp_avg = state['exp_avg'].view(-1)
+        exp_avg_sq = state['exp_avg_sq'].view(-1)
+    else:
+        active_param = param[slot].view(-1)
+        active_grad = grad[slot].view(-1)
+        exp_avg = state['exp_avg'][slot].view(-1)
+        exp_avg_sq = state['exp_avg_sq'][slot].view(-1)
     if not (active_grad.isfinite().all() and active_param.isfinite().all()
             and exp_avg.isfinite().all() and exp_avg_sq.isfinite().all()):
         raise _build_adamw_nonfinite_error(
             param_name, active_param.detach(), active_grad.detach(),
             exp_avg.detach(), exp_avg_sq.detach(), active_param.detach(), phase='pre',
         )
-    optimizer._adamw_step_t.fill_(state['slot_steps'][slot])
+    optimizer._adamw_step_t.fill_(state['step'] if param.ndim == 0 else state['slot_steps'][slot])
     optimizer._adamw_lr_t.fill_(group['lr'])
     optimizer._adamw_beta1_t.fill_(group['betas'][0])
     optimizer._adamw_beta2_t.fill_(group['betas'][1])

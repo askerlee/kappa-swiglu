@@ -270,6 +270,8 @@ parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_
 parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
+parser.add_argument("--kappa-bias-from-scale", type=str2bool, nargs='?', const=True, default=False,
+                    help="derive MoE kappa_bias as a learned scalar alpha per layer times kappa_scale (alpha starts at zero and is shared across UT/task slots)")
 parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
                     help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
 parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
@@ -642,6 +644,7 @@ def build_model_meta(depth):
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
         global_kappa_bias_granularity=args.global_kappa_granularity,
+        kappa_bias_from_scale=args.kappa_bias_from_scale,
         kappa_bias_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
         kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg,

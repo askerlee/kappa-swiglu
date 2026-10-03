@@ -145,6 +145,48 @@ def test_kappa_bias_can_rescale_kappa_slope_from_router_probs():
     actual = experts(x, selected_router_scores=router_probs)
     torch.testing.assert_close(actual, expected)
 
+@pytest.mark.parametrize("granularity", ["per-gate", "per-expert", "per-layer", "global"])
+@pytest.mark.parametrize("separate_base_sft_kappa", [False, True])
+def test_kappa_bias_from_scale_materialization_gradients_and_eval_cache(granularity, separate_base_sft_kappa):
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        kappa_bias_from_scale=True, global_kappa_bias_granularity=granularity,
+        total_ut_steps=3, separate_base_sft_kappa=separate_base_sft_kappa,
+    )
+    experts = Qwen3MLPExperts(config, layer_idx=1)
+    if granularity == "global":
+        experts.bind_shared_kappa_scale(torch.nn.Parameter(torch.ones(experts.num_kappa_slots, 1)))
+    scale = experts._get_kappa_scale_parameter()
+    assert experts.kappa_bias is None
+    assert experts.kappa_bias_alpha.shape == torch.Size([])
+    assert experts.kappa_bias_alpha.item() == 0.0
+    assert "kappa_bias" not in experts.state_dict()
+    with torch.no_grad():
+        experts.kappa_bias_alpha.fill_(2.0)
+        scale.fill_(3.0)
+    for slot in range(experts.num_kappa_slots):
+        bias = experts._materialize_kappa_bias(slot)
+        torch.testing.assert_close(bias, 2.0 * experts._materialize_kappa_scale(slot))
+    bias.sum().backward()
+    torch.testing.assert_close(experts.kappa_bias_alpha.grad, torch.tensor(3.0 * bias.numel()))
+    assert scale.grad[-1].abs().sum() > 0
+    experts.eval()
+    with torch.no_grad():
+        cached = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
+        torch.testing.assert_close(cached, torch.full_like(cached, 6.0))
+        experts.kappa_bias_alpha.fill_(4.0)
+        updated = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
+        torch.testing.assert_close(updated, torch.full_like(updated, 12.0))
+        scale.fill_(5.0)
+        updated = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
+        torch.testing.assert_close(updated, torch.full_like(updated, 20.0))
+
+
+def test_kappa_bias_from_scale_rejects_constant_input():
+    with pytest.raises(ValueError, match="kappa_bias_from_scale"):
+        GPTConfig(kappa_bias_from_scale=True, kappa_input="constant")
+
+
 def test_gate_activation_stats_match_logged_formulas():
     torch.manual_seed(0)
     config = GPTConfig(

@@ -775,6 +775,35 @@ def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
     assert kappa_bias_group['lr_scale_warmup_iterations'] == 1000
 
 
+def test_kappa_bias_from_scale_shared_alpha_optimizer_updates_both_phases():
+    config = GPTConfig(
+        n_layer=2, moe_start_layer=1, n_exp=2, n_embd=8, n_head=2,
+        use_kappa_swiglu=True, kappa_bias_from_scale=True, separate_base_sft_kappa=True,
+    )
+    model = GPT(config)
+    model.init_weights()
+    optimizer = model.setup_optimizer(embedding_lr=0.01, matrix_lr=0.01)
+    group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_params')
+    kappa_params = {
+        param for name, param in model.named_parameters()
+        if 'kappa_bias' in name or 'kappa_scale' in name
+    }
+    assert set(group['params']) == kappa_params
+    assert group['kind'] == 'adamw'
+    group['lr'] = 0.01
+    experts = model.transformer.h[1].mlp.experts
+    alpha = experts.kappa_bias_alpha
+    for slot in (0, 1):
+        optimizer.zero_grad(set_to_none=True)
+        group['active_kappa_slot'] = slot
+        alpha.grad = torch.ones_like(alpha)
+        previous = alpha.detach().clone()
+        optimizer.step()
+        assert alpha.item() < previous.item()
+    assert optimizer.state[alpha]['step'] == 2
+    assert optimizer.state[alpha]['slot_steps'] == [1, 1]
+
+
 def test_kappa_bias_lr_schedule_warms_then_decays_to_final_scale():
     schedule = load_base_train_function("get_linear_lr_scale")
 
