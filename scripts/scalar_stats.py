@@ -56,6 +56,33 @@ def calculate_statistics(value: torch.Tensor) -> dict[str, float]:
     }
 
 
+def calculate_kappa_correlation(bias: torch.Tensor, scale: torch.Tensor) -> float:
+    if bias.shape != scale.shape:
+        raise ValueError(
+            f"kappa_bias and kappa_scale shapes must match: "
+            f"{tuple(bias.shape)} != {tuple(scale.shape)}"
+        )
+    calculate_statistics(bias)
+    calculate_statistics(scale)
+    paired_values = torch.stack([
+        bias.detach().reshape(-1).to(dtype=torch.float64),
+        scale.detach().reshape(-1).to(dtype=torch.float64),
+    ])
+    if paired_values.size(1) < 2 or (paired_values.std(dim=1, unbiased=False) == 0).any():
+        return float("nan")
+    return torch.corrcoef(paired_values)[0, 1].item()
+
+
+def calculate_kappa_dimension_stds(value: torch.Tensor) -> dict[str, list[float]]:
+    if value.ndim != 3:
+        return {}
+    values = value.detach().to(dtype=torch.float64)
+    return {
+        "std_dim2_mean": values.std(dim=1, unbiased=False).mean(dim=1).tolist(),
+        "std_dim3_mean": values.std(dim=2, unbiased=False).mean(dim=1).tolist(),
+    }
+
+
 def load_scalars(checkpoint_path: Path) -> dict[str, torch.Tensor]:
     state_dict = load_state_dict(checkpoint_path)
     lambdas = {}
@@ -193,15 +220,45 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
     print("Per-layer kappa statistics:")
     for name, layer, key, value in tensors:
         layer_label = "global" if layer is None else str(layer)
-        pass_values = value if total_ut_steps > 1 else value.unsqueeze(0)
+        pass_values = value if total_ut_steps > 1 or value.ndim == 3 else value.unsqueeze(0)
+        dimension_stds = calculate_kappa_dimension_stds(value)
         for pass_idx, pass_value in enumerate(pass_values):
             stats = calculate_statistics(pass_value)
+            dimension_label = "".join(
+                f" {label}={stds[pass_idx]:.2f}"
+                for label, stds in dimension_stds.items()
+            )
             print(
                 f"  {name} layer={layer_label} pass={pass_idx}: "
                 f"mean={stats['mean']:.2f} std={stats['std']:.2f} "
                 f"max={stats['max']:.2f} min={stats['min']:.2f} "
-                f"abs_max={stats['abs_max']:.2f} key={key}"
+                f"abs_max={stats['abs_max']:.2f}{dimension_label} key={key}"
             )
+    tensors_by_key = {key: value for _, _, key, value in tensors}
+    paired_passes = {}
+    for name, layer, key, bias in tensors:
+        if name != "kappa_bias":
+            continue
+        scale = tensors_by_key.get(key.removesuffix("kappa_bias") + "kappa_scale")
+        if scale is None:
+            continue
+        if bias.shape != scale.shape:
+            raise ValueError(f"Mismatched kappa_bias/kappa_scale shapes for {key}")
+        layer_label = "global" if layer is None else str(layer)
+        bias_passes = bias if total_ut_steps > 1 or bias.ndim == 3 else bias.unsqueeze(0)
+        scale_passes = scale if total_ut_steps > 1 or scale.ndim == 3 else scale.unsqueeze(0)
+        for pass_idx, (pass_bias, pass_scale) in enumerate(zip(bias_passes, scale_passes)):
+            correlation = calculate_kappa_correlation(pass_bias, pass_scale)
+            print(
+                f"  kappa_bias/kappa_scale layer={layer_label} pass={pass_idx}: "
+                f"pearson={correlation:.4f}"
+            )
+            paired_passes.setdefault(pass_idx, []).append((pass_bias, pass_scale))
+    for pass_idx, pairs in sorted(paired_passes.items()):
+        bias = torch.cat([pair[0].reshape(-1) for pair in pairs])
+        scale = torch.cat([pair[1].reshape(-1) for pair in pairs])
+        correlation = calculate_kappa_correlation(bias, scale)
+        print(f"  kappa_bias/kappa_scale overall pass={pass_idx}: pearson={correlation:.4f}")
 
 
 def build_parser() -> argparse.ArgumentParser:

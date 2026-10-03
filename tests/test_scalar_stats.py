@@ -1,8 +1,10 @@
 import importlib.util
+import math
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 
@@ -76,3 +78,66 @@ def test_checkpoint_statistics_and_multi_checkpoint_cli(tmp_path: Path):
     assert "resid [-2.00, 0.00, 4.00]" in result.stdout
     assert "x0    [-1.00, 1.00]" in result.stdout
     assert "source [0.00, 0.50, 1.00]" in result.stdout
+
+
+def test_kappa_dimension_stds_and_correlations(tmp_path: Path, capsys):
+    bias = torch.tensor([[[0.0, 2.0], [4.0, 6.0]], [[0.0, 4.0], [8.0, 12.0]]])
+    scale = -2 * bias + 1
+    assert MODULE.calculate_kappa_dimension_stds(bias) == {
+        "std_dim2_mean": [2.0, 4.0],
+        "std_dim3_mean": [1.0, 2.0],
+    }
+    assert MODULE.calculate_kappa_dimension_stds(scale) == {
+        "std_dim2_mean": [4.0, 8.0],
+        "std_dim3_mean": [2.0, 4.0],
+    }
+    assert MODULE.calculate_kappa_dimension_stds(bias[0]) == {}
+    assert math.isclose(MODULE.calculate_kappa_correlation(bias, scale), -1.0)
+    assert math.isnan(MODULE.calculate_kappa_correlation(bias, torch.ones_like(bias)))
+    assert math.isnan(MODULE.calculate_kappa_correlation(torch.ones(1), torch.ones(1)))
+
+    path = tmp_path / "kappa.pt"
+    torch.save({
+        "resid_lambdas": torch.ones(2, 2),
+        "transformer.h.1.mlp.experts.kappa_scale": scale,
+        "transformer.h.0.mlp.experts.kappa_bias": bias + 100,
+        "transformer.h.1.mlp.experts.kappa_bias": bias,
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    output = capsys.readouterr().out
+    assert "std_dim2_mean=2.00 std_dim3_mean=1.00" in output
+    assert "std_dim2_mean=8.00 std_dim3_mean=4.00" in output
+    assert "kappa_bias/kappa_scale layer=1 pass=0: pearson=-1.0000" in output
+    assert "kappa_bias/kappa_scale layer=1 pass=1: pearson=-1.0000" in output
+    assert "kappa_bias/kappa_scale overall pass=0: pearson=-1.0000" in output
+    assert "kappa_bias/kappa_scale layer=0" not in output
+
+
+def test_kappa_single_pass_and_global_pairs(tmp_path: Path, capsys):
+    path = tmp_path / "single_pass.pt"
+    bias = torch.tensor([[[0.0, 2.0], [4.0, 6.0]]])
+    torch.save({
+        "resid_lambdas": torch.ones(1, 1),
+        "transformer.h.0.mlp.experts.kappa_bias": bias,
+        "transformer.h.0.mlp.experts.kappa_scale": bias * 2,
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    output = capsys.readouterr().out
+    assert "std_dim2_mean=2.00 std_dim3_mean=1.00" in output
+    assert "kappa_bias/kappa_scale layer=0 pass=0: pearson=1.0000" in output
+
+    torch.save({
+        "resid_lambdas": torch.ones(2, 1),
+        "global_kappa_bias": torch.tensor([[1.0], [2.0]]),
+        "global_kappa_scale": torch.tensor([[3.0], [4.0]]),
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    output = capsys.readouterr().out
+    assert "kappa_bias/kappa_scale layer=global pass=0: pearson=nan" in output
+    assert "kappa_bias/kappa_scale layer=global pass=1: pearson=nan" in output
+    assert "std_dim2_mean" not in output
+
+
+def test_kappa_correlation_rejects_mismatched_shapes():
+    with pytest.raises(ValueError, match="shapes must match"):
+        MODULE.calculate_kappa_correlation(torch.ones(2, 3), torch.ones(3, 2))

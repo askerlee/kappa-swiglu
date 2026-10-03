@@ -2509,7 +2509,7 @@ class GPT(nn.Module):
         """
         super().__init__()
         self.config = config
-        self.kappa_phase = 0
+        self.kappa_phase = 0    # By default, the kappa phase is 0, i.e., pretraining.
         self.total_ut_steps = int(getattr(config, 'total_ut_steps', 1) or 1)
         self.ut_source = int(getattr(config, 'ut_source', -1)) % config.n_layer
         self.ut_destination = int(getattr(config, 'ut_destination', 0)) % config.n_layer
