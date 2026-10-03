@@ -105,6 +105,30 @@ def calculate_kappa_shared_alpha(bias: torch.Tensor, scale: torch.Tensor) -> flo
     return ((scale_values * bias_values).sum() / scale_squared_sum).item()
 
 
+def calculate_kappa_shared_affine(
+    bias: torch.Tensor, scale: torch.Tensor
+) -> tuple[float, float]:
+    """Fit shared slope/intercept; constant scales use slope zero and mean bias."""
+    if bias.shape != scale.shape:
+        raise ValueError(
+            f"kappa_bias and kappa_scale shapes must match: "
+            f"{tuple(bias.shape)} != {tuple(scale.shape)}"
+        )
+    calculate_statistics(bias)
+    calculate_statistics(scale)
+    bias_values = bias.detach().to(dtype=torch.float64)
+    scale_values = scale.detach().to(dtype=torch.float64)
+    bias_mean = bias_values.mean()
+    scale_mean = scale_values.mean()
+    centered_scale = scale_values - scale_mean
+    scale_squared_sum = centered_scale.square().sum()
+    if scale_squared_sum == 0:
+        return 0.0, bias_mean.item()
+    alpha = (centered_scale * (bias_values - bias_mean)).sum() / scale_squared_sum
+    intercept = bias_mean - alpha * scale_mean
+    return alpha.item(), intercept.item()
+
+
 def calculate_kappa_residual_abs_mean(
     bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float
 ) -> float:
@@ -112,7 +136,7 @@ def calculate_kappa_residual_abs_mean(
 
 
 def calculate_kappa_residual_statistics(
-    bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float
+    bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float, intercept: float = 0.0
 ) -> dict[str, float]:
     if bias.shape != scale.shape:
         raise ValueError(
@@ -123,7 +147,7 @@ def calculate_kappa_residual_statistics(
     calculate_statistics(scale)
     bias_values = bias.detach().to(dtype=torch.float64)
     scale_values = scale.detach().to(dtype=torch.float64)
-    residual = bias_values - ratio_mean * scale_values
+    residual = bias_values - ratio_mean * scale_values - intercept
     abs_mean = residual.abs().mean().item()
     bias_abs_mean = bias_values.abs().mean().item()
     return {
@@ -308,6 +332,7 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
         bias_passes = bias if total_ut_steps > 1 or bias.ndim == 3 else bias.unsqueeze(0)
         scale_passes = scale if total_ut_steps > 1 or scale.ndim == 3 else scale.unsqueeze(0)
         shared_alpha = calculate_kappa_shared_alpha(bias, scale)
+        affine_alpha, affine_intercept = calculate_kappa_shared_affine(bias, scale)
         for pass_idx, (pass_bias, pass_scale) in enumerate(zip(bias_passes, scale_passes)):
             correlation = calculate_kappa_correlation(pass_bias, pass_scale)
             ratio_mean = calculate_kappa_ratio_mean(pass_bias, pass_scale)
@@ -317,6 +342,9 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
             shared_residual_stats = calculate_kappa_residual_statistics(
                 pass_bias, pass_scale, shared_alpha
             )
+            affine_residual_stats = calculate_kappa_residual_statistics(
+                pass_bias, pass_scale, affine_alpha, affine_intercept
+            )
             print(
                 f"  kappa_bias/kappa_scale layer={layer_label} pass={pass_idx}: "
                 f"pearson={correlation:.4f} ratio_mean={ratio_mean:.4f} "
@@ -325,7 +353,12 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
                 f"shared_alpha={shared_alpha:.4f} "
                 f"shared_residual_abs_mean={shared_residual_stats['abs_mean']:.4f} "
                 f"shared_residual_std={shared_residual_stats['std']:.4f} "
-                f"shared_residual_rel_mae={shared_residual_stats['relative_abs_mean']:.4f}"
+                f"shared_residual_rel_mae={shared_residual_stats['relative_abs_mean']:.4f} "
+                f"shared_affine_alpha={affine_alpha:.4f} "
+                f"shared_affine_intercept={affine_intercept:.4f} "
+                f"shared_affine_residual_abs_mean={affine_residual_stats['abs_mean']:.4f} "
+                f"shared_affine_residual_std={affine_residual_stats['std']:.4f} "
+                f"shared_affine_residual_rel_mae={affine_residual_stats['relative_abs_mean']:.4f}"
             )
             paired_passes.setdefault(pass_idx, []).append((pass_bias, pass_scale))
     for pass_idx, pairs in sorted(paired_passes.items()):

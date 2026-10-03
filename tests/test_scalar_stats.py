@@ -243,3 +243,59 @@ def test_kappa_shared_alpha_edge_cases():
     statistics = MODULE.calculate_kappa_residual_statistics(torch.zeros(2), torch.ones(2), 0.0)
     assert statistics["abs_mean"] == 0.0
     assert math.isnan(statistics["relative_abs_mean"])
+
+
+def test_kappa_shared_affine_across_passes(tmp_path: Path, capsys):
+    scale = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    bias = 2 * scale + 3
+    assert MODULE.calculate_kappa_shared_affine(bias, scale) == pytest.approx((2.0, 3.0))
+    statistics = MODULE.calculate_kappa_residual_statistics(bias, scale, 2.0, 3.0)
+    assert statistics == {"abs_mean": 0.0, "std": 0.0, "relative_abs_mean": 0.0}
+
+    path = tmp_path / "shared_affine.pt"
+    torch.save({
+        "resid_lambdas": torch.ones(2, 1),
+        "transformer.h.0.mlp.experts.kappa_bias": bias,
+        "transformer.h.0.mlp.experts.kappa_scale": scale,
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    layer_lines = [
+        line for line in capsys.readouterr().out.splitlines()
+        if "kappa_bias/kappa_scale layer=" in line
+    ]
+    assert len(layer_lines) == 2
+    for line in layer_lines:
+        assert "shared_affine_alpha=2.0000 shared_affine_intercept=3.0000" in line
+        assert "shared_affine_residual_abs_mean=0.0000 shared_affine_residual_std=0.0000 shared_affine_residual_rel_mae=0.0000" in line
+
+    bias = torch.tensor([[5.0, 7.0], [11.0, 15.0]], dtype=torch.float64)
+    design = torch.stack((scale.reshape(-1).double(), torch.ones(4).double()), dim=1)
+    expected = torch.linalg.lstsq(design, bias.reshape(-1)).solution
+    alpha, intercept = MODULE.calculate_kappa_shared_affine(bias, scale)
+    assert (alpha, intercept) == pytest.approx(expected.tolist())
+    for pass_bias, pass_scale in zip(bias, scale):
+        residual = pass_bias - alpha * pass_scale.double() - intercept
+        statistics = MODULE.calculate_kappa_residual_statistics(
+            pass_bias, pass_scale, alpha, intercept
+        )
+        assert statistics["abs_mean"] == pytest.approx(residual.abs().mean().item())
+        assert statistics["std"] == pytest.approx(residual.std(unbiased=False).item())
+        assert statistics["relative_abs_mean"] == pytest.approx(
+            (residual.abs().mean() / pass_bias.abs().mean()).item()
+        )
+
+
+@pytest.mark.parametrize("scale", [[0.0, 0.0], [2.0, 2.0], [2.0]])
+def test_kappa_shared_affine_constant_scale(scale):
+    scale = torch.tensor(scale)
+    bias = torch.arange(1, scale.numel() + 1, dtype=torch.float64)
+    alpha, intercept = MODULE.calculate_kappa_shared_affine(bias, scale)
+    assert alpha == 0.0
+    assert intercept == bias.mean().item()
+    statistics = MODULE.calculate_kappa_residual_statistics(bias, scale, alpha, intercept)
+    assert statistics["std"] == pytest.approx(bias.std(unbiased=False).item())
+
+
+def test_kappa_shared_affine_rejects_mismatched_shapes():
+    with pytest.raises(ValueError, match="shapes must match"):
+        MODULE.calculate_kappa_shared_affine(torch.ones(2, 3), torch.ones(3, 2))
