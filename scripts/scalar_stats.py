@@ -89,6 +89,22 @@ def calculate_kappa_ratio_mean(bias: torch.Tensor, scale: torch.Tensor) -> float
     return (bias_values[nonzero_scale] / scale_values[nonzero_scale]).mean().item()
 
 
+def calculate_kappa_shared_alpha(bias: torch.Tensor, scale: torch.Tensor) -> float:
+    if bias.shape != scale.shape:
+        raise ValueError(
+            f"kappa_bias and kappa_scale shapes must match: "
+            f"{tuple(bias.shape)} != {tuple(scale.shape)}"
+        )
+    calculate_statistics(bias)
+    calculate_statistics(scale)
+    bias_values = bias.detach().to(dtype=torch.float64)
+    scale_values = scale.detach().to(dtype=torch.float64)
+    scale_squared_sum = scale_values.square().sum()
+    if scale_squared_sum == 0:
+        return float("nan")
+    return ((scale_values * bias_values).sum() / scale_squared_sum).item()
+
+
 def calculate_kappa_residual_abs_mean(
     bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float
 ) -> float:
@@ -108,9 +124,12 @@ def calculate_kappa_residual_statistics(
     bias_values = bias.detach().to(dtype=torch.float64)
     scale_values = scale.detach().to(dtype=torch.float64)
     residual = bias_values - ratio_mean * scale_values
+    abs_mean = residual.abs().mean().item()
+    bias_abs_mean = bias_values.abs().mean().item()
     return {
-        "abs_mean": residual.abs().mean().item(),
+        "abs_mean": abs_mean,
         "std": residual.std(unbiased=False).item(),
+        "relative_abs_mean": abs_mean / bias_abs_mean if bias_abs_mean != 0 else float("nan"),
     }
 
 
@@ -288,17 +307,25 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
         layer_label = "global" if layer is None else str(layer)
         bias_passes = bias if total_ut_steps > 1 or bias.ndim == 3 else bias.unsqueeze(0)
         scale_passes = scale if total_ut_steps > 1 or scale.ndim == 3 else scale.unsqueeze(0)
+        shared_alpha = calculate_kappa_shared_alpha(bias, scale)
         for pass_idx, (pass_bias, pass_scale) in enumerate(zip(bias_passes, scale_passes)):
             correlation = calculate_kappa_correlation(pass_bias, pass_scale)
             ratio_mean = calculate_kappa_ratio_mean(pass_bias, pass_scale)
             residual_stats = calculate_kappa_residual_statistics(
                 pass_bias, pass_scale, ratio_mean
             )
+            shared_residual_stats = calculate_kappa_residual_statistics(
+                pass_bias, pass_scale, shared_alpha
+            )
             print(
                 f"  kappa_bias/kappa_scale layer={layer_label} pass={pass_idx}: "
                 f"pearson={correlation:.4f} ratio_mean={ratio_mean:.4f} "
                 f"residual_abs_mean={residual_stats['abs_mean']:.4f} "
-                f"residual_std={residual_stats['std']:.4f}"
+                f"residual_std={residual_stats['std']:.4f} "
+                f"shared_alpha={shared_alpha:.4f} "
+                f"shared_residual_abs_mean={shared_residual_stats['abs_mean']:.4f} "
+                f"shared_residual_std={shared_residual_stats['std']:.4f} "
+                f"shared_residual_rel_mae={shared_residual_stats['relative_abs_mean']:.4f}"
             )
             paired_passes.setdefault(pass_idx, []).append((pass_bias, pass_scale))
     for pass_idx, pairs in sorted(paired_passes.items()):

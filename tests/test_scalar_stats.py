@@ -205,3 +205,41 @@ def test_kappa_residual_abs_mean(bias, scale, expected, expected_std):
 def test_kappa_residual_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="shapes must match"):
         MODULE.calculate_kappa_residual_abs_mean(torch.ones(2, 3), torch.ones(3, 2), 1.0)
+
+
+def test_kappa_shared_alpha_across_passes(tmp_path: Path, capsys):
+    bias = torch.tensor([[1.0, 2.0], [3.0, 6.0]])
+    scale = torch.tensor([[1.0, 2.0], [1.0, 2.0]])
+    assert MODULE.calculate_kappa_shared_alpha(bias, scale) == 2.0
+    assert MODULE.calculate_kappa_shared_alpha(
+        torch.tensor([2.0, 12.0]), torch.tensor([2.0, 4.0])
+    ) == pytest.approx(2.6)
+
+    path = tmp_path / "shared_alpha.pt"
+    torch.save({
+        "resid_lambdas": torch.ones(2, 2),
+        "transformer.h.0.mlp.experts.kappa_bias": bias,
+        "transformer.h.0.mlp.experts.kappa_scale": scale,
+        "transformer.h.1.mlp.experts.kappa_bias": 4 * scale,
+        "transformer.h.1.mlp.experts.kappa_scale": scale,
+    }, path)
+    MODULE.print_per_layer_kappa_statistics(path)
+    output = capsys.readouterr().out
+    layer_lines = [line for line in output.splitlines() if "kappa_bias/kappa_scale layer=" in line]
+    assert len(layer_lines) == 4
+    assert "shared_alpha=2.0000 shared_residual_abs_mean=1.5000 shared_residual_std=0.5000 shared_residual_rel_mae=1.0000" in layer_lines[0]
+    assert "shared_alpha=2.0000 shared_residual_abs_mean=1.5000 shared_residual_std=0.5000 shared_residual_rel_mae=0.3333" in layer_lines[1]
+    for line in layer_lines[2:]:
+        assert "shared_alpha=4.0000 shared_residual_abs_mean=0.0000 shared_residual_std=0.0000 shared_residual_rel_mae=0.0000" in line
+
+
+def test_kappa_shared_alpha_edge_cases():
+    assert math.isnan(MODULE.calculate_kappa_shared_alpha(torch.ones(2), torch.zeros(2)))
+    assert MODULE.calculate_kappa_shared_alpha(
+        torch.tensor([-2.0, 100.0]), torch.tensor([1.0, 0.0])
+    ) == -2.0
+    with pytest.raises(ValueError, match="shapes must match"):
+        MODULE.calculate_kappa_shared_alpha(torch.ones(2, 3), torch.ones(3, 2))
+    statistics = MODULE.calculate_kappa_residual_statistics(torch.zeros(2), torch.ones(2), 0.0)
+    assert statistics["abs_mean"] == 0.0
+    assert math.isnan(statistics["relative_abs_mean"])
