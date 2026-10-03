@@ -161,36 +161,45 @@ def test_kappa_ratio_mean(tmp_path: Path, capsys):
     }, path)
     MODULE.print_per_layer_kappa_statistics(path)
     output = capsys.readouterr().out
-    assert "layer=0 pass=0: pearson=1.0000 ratio_mean=2.0000 residual_abs_mean=3.0000" in output
-    assert "layer=0 pass=1: pearson=nan ratio_mean=nan residual_abs_mean=nan" in output
-    assert "layer=1 pass=0: pearson=nan ratio_mean=8.0000 residual_abs_mean=0.0000" in output
+    assert "layer=0 pass=0: pearson=1.0000 ratio_mean=2.0000 residual_abs_mean=3.0000 residual_std=3.0000" in output
+    assert "layer=0 pass=1: pearson=nan ratio_mean=nan residual_abs_mean=nan residual_std=nan" in output
+    assert "layer=1 pass=0: pearson=nan ratio_mean=8.0000 residual_abs_mean=0.0000 residual_std=0.0000" in output
     overall_lines = [line for line in output.splitlines() if "overall pass=" in line]
     assert "overall pass=0:" in overall_lines[0]
     assert "ratio_mean=4.0000" in overall_lines[0]
     assert "residual_abs_mean=6.0000" in overall_lines[0]
+    assert "residual_std=6.1824" in overall_lines[0]
     assert "overall pass=1:" in overall_lines[1]
     assert "ratio_mean=-2.0000" in overall_lines[1]
     assert "residual_abs_mean=1.3333" in overall_lines[1]
+    assert "residual_std=1.2472" in overall_lines[1]
 
 
 @pytest.mark.parametrize(
-    "bias, scale, expected",
+    "bias, scale, expected, expected_std",
     [
-        ([2.0, -4.0, 0.0], [1.0, -2.0, 0.0], 0.0),
-        ([2.0, 12.0], [2.0, 4.0], 3.0),
-        ([2.0, -6.0, 100.0], [2.0, 3.0, 0.0], 215 / 6),
-        ([1.0, 2.0], [0.0, 0.0], float("nan")),
+        ([2.0, -4.0, 0.0], [1.0, -2.0, 0.0], 0.0, 0.0),
+        ([2.0, 12.0], [2.0, 4.0], 3.0, 3.0),
+        ([2.0, -6.0, 100.0], [2.0, 3.0, 0.0], 215 / 6,
+         math.sqrt(10029.25 / 3 - (98.5 / 3) ** 2)),
+        ([1.0, 2.0], [0.0, 0.0], float("nan"), float("nan")),
+        ([6.0], [2.0], 0.0, 0.0),
     ],
 )
-def test_kappa_residual_abs_mean(bias, scale, expected):
+def test_kappa_residual_abs_mean(bias, scale, expected, expected_std):
     bias = torch.tensor(bias)
     scale = torch.tensor(scale)
     ratio_mean = MODULE.calculate_kappa_ratio_mean(bias, scale)
     residual = MODULE.calculate_kappa_residual_abs_mean(bias, scale, ratio_mean)
+    statistics = MODULE.calculate_kappa_residual_statistics(bias, scale, ratio_mean)
     if math.isnan(expected):
         assert math.isnan(residual)
+        assert math.isnan(statistics["abs_mean"])
+        assert math.isnan(statistics["std"])
     else:
         assert residual == pytest.approx(expected)
+        assert statistics["abs_mean"] == pytest.approx(expected)
+        assert statistics["std"] == pytest.approx(expected_std)
 
 
 def test_kappa_residual_rejects_mismatched_shapes():

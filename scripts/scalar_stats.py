@@ -92,6 +92,12 @@ def calculate_kappa_ratio_mean(bias: torch.Tensor, scale: torch.Tensor) -> float
 def calculate_kappa_residual_abs_mean(
     bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float
 ) -> float:
+    return calculate_kappa_residual_statistics(bias, scale, ratio_mean)["abs_mean"]
+
+
+def calculate_kappa_residual_statistics(
+    bias: torch.Tensor, scale: torch.Tensor, ratio_mean: float
+) -> dict[str, float]:
     if bias.shape != scale.shape:
         raise ValueError(
             f"kappa_bias and kappa_scale shapes must match: "
@@ -101,7 +107,11 @@ def calculate_kappa_residual_abs_mean(
     calculate_statistics(scale)
     bias_values = bias.detach().to(dtype=torch.float64)
     scale_values = scale.detach().to(dtype=torch.float64)
-    return (bias_values - ratio_mean * scale_values).abs().mean().item()
+    residual = bias_values - ratio_mean * scale_values
+    return {
+        "abs_mean": residual.abs().mean().item(),
+        "std": residual.std(unbiased=False).item(),
+    }
 
 
 def calculate_kappa_dimension_stds(value: torch.Tensor) -> dict[str, list[float]]:
@@ -281,13 +291,14 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
         for pass_idx, (pass_bias, pass_scale) in enumerate(zip(bias_passes, scale_passes)):
             correlation = calculate_kappa_correlation(pass_bias, pass_scale)
             ratio_mean = calculate_kappa_ratio_mean(pass_bias, pass_scale)
-            residual_abs_mean = calculate_kappa_residual_abs_mean(
+            residual_stats = calculate_kappa_residual_statistics(
                 pass_bias, pass_scale, ratio_mean
             )
             print(
                 f"  kappa_bias/kappa_scale layer={layer_label} pass={pass_idx}: "
                 f"pearson={correlation:.4f} ratio_mean={ratio_mean:.4f} "
-                f"residual_abs_mean={residual_abs_mean:.4f}"
+                f"residual_abs_mean={residual_stats['abs_mean']:.4f} "
+                f"residual_std={residual_stats['std']:.4f}"
             )
             paired_passes.setdefault(pass_idx, []).append((pass_bias, pass_scale))
     for pass_idx, pairs in sorted(paired_passes.items()):
@@ -295,11 +306,12 @@ def print_per_layer_kappa_statistics(checkpoint_path: Path) -> None:
         scale = torch.cat([pair[1].reshape(-1) for pair in pairs])
         correlation = calculate_kappa_correlation(bias, scale)
         ratio_mean = calculate_kappa_ratio_mean(bias, scale)
-        residual_abs_mean = calculate_kappa_residual_abs_mean(bias, scale, ratio_mean)
+        residual_stats = calculate_kappa_residual_statistics(bias, scale, ratio_mean)
         print(
             f"  kappa_bias/kappa_scale overall pass={pass_idx}: "
             f"pearson={correlation:.4f} ratio_mean={ratio_mean:.4f} "
-            f"residual_abs_mean={residual_abs_mean:.4f}"
+            f"residual_abs_mean={residual_stats['abs_mean']:.4f} "
+            f"residual_std={residual_stats['std']:.4f}"
         )
 
 
