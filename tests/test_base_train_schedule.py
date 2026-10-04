@@ -90,7 +90,7 @@ def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
                     "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
                 }
                 exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
-                assert args.kappa_l2_loss_weight == (0.002 if independent_router and not argv else expected)
+                assert args.kappa_l2_loss_weight == (0.0001 if independent_router and not argv else expected)
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():
