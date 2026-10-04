@@ -1124,6 +1124,10 @@ while True:
     for group in optimizer.param_groups:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
+        elif group.get("name") == "kappa_router":
+            group["lr"] = group["initial_lr"] * lrm * float(
+                step >= group.get("kappa_param_delay_start_iterations", 0)
+            )
         else:
             group["lr"] = group["initial_lr"] * lrm
         if group['kind'] in ('muon', 'muonh'):

@@ -289,12 +289,12 @@ parser.add_argument("--kappa-lr-final-scale",
 parser.add_argument("--kappa-delay-start-min-iterations",
                     dest="kappa_delay_start_min_iterations", type=int, default=200,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
-parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.2,
+parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_start_iteration_frac", type=float, default=0.1,
                     help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
-                    help="L2 weight on kappa_bias and kappa_scale values (with --kappa-bias-from-scale, the omitted default is 0.002 and derived kappa_bias is not regularized)")
+                    help="L2 weight on kappa_bias and kappa_scale values (with --kappa-bias-from-scale, derived kappa_bias is not regularized and the omitted default is 0.002 unless --independent-kappa-router is enabled)")
 parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs='?', const=True, default=False,
                     help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
 parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99,
@@ -393,7 +393,7 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
-if args.kappa_bias_from_scale and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
+if args.kappa_bias_from_scale and not args.independent_kappa_router and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
     args.kappa_l2_loss_weight = 0.002
 if args.separate_base_sft_kappa:
     args.use_kappa_swiglu = True
@@ -1974,6 +1974,10 @@ while True:
                 if resume_kappa_lr_scale == 0.0:
                     for param in group["params"]:
                         param.grad = None
+            elif group.get("name") == "kappa_router":
+                group["lr"] = group["initial_lr"] * lrm * float(
+                    step >= group.get("kappa_param_delay_start_iterations", 0)
+                )
             else:
                 group["lr"] = group["initial_lr"] * lrm
             if group['kind'] in ('muon', 'muonh'):

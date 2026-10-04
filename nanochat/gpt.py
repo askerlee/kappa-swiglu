@@ -1971,12 +1971,16 @@ class Qwen3MLPExperts(nn.Module):
             MANAGER.add("kappa_bias_l2_loss", loss)
             MANAGER.add("kappa_bias_ema_rms_reg_loss", ema_loss)
 
-    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None, kappa_slot=0):
+    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None, kappa_slot=0, valid_score_mask=None):
         kappa_scale = kappa_scale.float()
         kappa_scale_l2_value = kappa_scale
         if self.initial_kappa_scale is not None:
             kappa_scale_l2_value = kappa_scale - self.initial_kappa_scale[kappa_slot].float()
-        loss = kappa_scale_l2_value.square().mean()
+        if valid_score_mask is None:
+            loss = kappa_scale_l2_value.square().mean()
+        else:
+            loss = kappa_scale_l2_value.masked_fill(~valid_score_mask, 0.0).square().sum()
+            loss = loss / valid_score_mask.sum().clamp_min(1)
         ema_loss = torch.zeros((), device=kappa_scale.device, dtype=torch.float32)
         if self.kappa_scale_ema_rms_reg_keeper is not None:
             ema_loss = self.kappa_scale_ema_rms_reg_keeper.loss(kappa_scale, kappa_slot=kappa_slot)
@@ -2165,7 +2169,12 @@ class Qwen3MLPExperts(nn.Module):
                     kappa_slot,
                 )
             kappa_scale = None
-            if self.training and self.use_kappa_scale_param:
+            if self.training and self.independent_kappa_router:
+                self._accumulate_kappa_scale_l2_losses(
+                    selected_router_scores, loss_accum=loss_accum,
+                    kappa_slot=kappa_slot, valid_score_mask=valid_score_mask,
+                )
+            elif self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
                 self._accumulate_kappa_scale_l2_losses(
                     kappa_scale, loss_accum=loss_accum, kappa_slot=kappa_slot
@@ -3143,7 +3152,7 @@ class GPT(nn.Module):
                     or name.startswith('mlp.kappa_scale')
                 ):
                     append_param(kappa_params, param, full_name)
-                elif name == 'mlp.kappa_router.weight' and getattr(self.config, 'separate_base_sft_kappa', False):
+                elif name == 'mlp.kappa_router.weight':
                     append_param(kappa_router_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
@@ -3255,11 +3264,14 @@ class GPT(nn.Module):
             param_groups.append(dict(
                 kind=matrix_kind, name='kappa_router', params=group_params,
                 debug_param_names=[param_names[id(p)] for p in group_params],
-                active_kappa_slot=self.kappa_phase, lr=matrix_lr,
+                lr=matrix_lr,
+                kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
                 nesterov=True, weight_decay=matrix_weight_decay, chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
+            if getattr(self.config, 'separate_base_sft_kappa', False):
+                param_groups[-1]['active_kappa_slot'] = self.kappa_phase
         factory_map = {
             'muon': (DistMuonAdamW if ddp else MuonAdamW),
             'muonh': (DistMuonAdamW if ddp else MuonAdamW),

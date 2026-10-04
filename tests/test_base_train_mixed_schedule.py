@@ -73,7 +73,7 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
-def test_kappa_delay_freezes_lr_without_delaying_slope_scale_warmup():
+def test_kappa_delay_freezes_lr_and_delays_slope_scale_warmup():
     get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
     get_kappa_slope_max_scale.__globals__["math"] = math
     get_kappa_bias_lr_scale = load_function_from_script("get_kappa_bias_lr_scale")
@@ -90,8 +90,11 @@ def test_kappa_delay_freezes_lr_without_delaying_slope_scale_warmup():
     assert get_kappa_bias_lr_scale(optimizer, 10, 100) == 0.0
     assert get_kappa_bias_lr_scale(optimizer, 19, 100) == 0.0
     assert get_kappa_bias_lr_scale(optimizer, 25, 100) == 0.5
-    assert get_kappa_slope_max_scale(3.0, 5, 100) == 2.0
-    assert get_kappa_slope_max_scale(3.0, 10, 100) == 3.0
+    for target in (3.0, 2.0):
+        for step in (0, 5, 19, 20):
+            assert get_kappa_slope_max_scale(target, step, 100, delay_iterations=20) == 1.0
+        assert get_kappa_slope_max_scale(target, 25, 100, delay_iterations=20) == (1.0 + target) / 2
+        assert get_kappa_slope_max_scale(target, 30, 100, delay_iterations=20) == target
 
     tree = ast.parse(BASE_TRAIN_MIX.read_text())
     slope_calls = [
@@ -102,8 +105,13 @@ def test_kappa_delay_freezes_lr_without_delaying_slope_scale_warmup():
     ]
     assert len(slope_calls) == 2
     assert all(
-        keyword.arg != "delay_iterations"
-        for call in slope_calls for keyword in call.keywords
+        any(
+            keyword.arg == "delay_iterations"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "kappa_param_delay_start_iterations"
+            for keyword in call.keywords
+        )
+        for call in slope_calls
     )
 
 

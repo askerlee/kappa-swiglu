@@ -68,6 +68,40 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
             torch.testing.assert_close(changed_eval, raw_gate * torch.sigmoid(raw_gate * changed_slope))
 
 
+@pytest.mark.parametrize('derived_bias', [False, True])
+@pytest.mark.parametrize('empty_mask', [False, True])
+@pytest.mark.parametrize('use_loss_accum', [False, True])
+def test_independent_kappa_router_scale_l2_uses_valid_live_logits(
+    monkeypatch, derived_bias, empty_mask, use_loss_accum,
+):
+    manager = MOEManager()
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        independent_kappa_router=True, kappa_bias_from_scale=derived_bias,
+    )
+    experts = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        for parameter in experts.parameters():
+            parameter.zero_()
+    logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]], requires_grad=True)
+    mask = torch.tensor([[True, True, False], [True, False, False]])
+    if empty_mask:
+        mask.zero_()
+    accum = MOEManager() if use_loss_accum else manager
+    experts(
+        torch.zeros(2, 3, 4), selected_router_scores=logits,
+        valid_score_mask=mask, loss_accum=accum if use_loss_accum else None,
+    )
+    scale_loss = accum.aggregate('kappa_scale_l2_loss')
+    expected_loss = torch.tensor(0.0 if empty_mask else 13.0 / 3.0)
+    torch.testing.assert_close(scale_loss, expected_loss)
+    scale_loss.backward()
+    expected_gradient = 2 * logits.detach().masked_fill(~mask, 0.0) / mask.sum().clamp_min(1)
+    torch.testing.assert_close(logits.grad, expected_gradient)
+    assert experts.kappa_scale is None
+
+
 def test_independent_kappa_router_materialized_scale_cache():
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True,
@@ -140,7 +174,8 @@ def test_independent_kappa_router_scales_only_latent_gradients(
 
 @pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
 def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_input):
-    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    manager = MOEManager()
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
     torch.manual_seed(42)
     config = GPTConfig(
         n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
@@ -168,6 +203,7 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     latent = torch.randn(1, 8, 4, requires_grad=True)
     valid_mask = torch.tensor([[True, True, True, True, True, True, False, False]])
     output = layer(latent, valid_token_mask=valid_mask)
+    scale_loss = manager.aggregate('kappa_scale_l2_loss')
     reference_output = reference(latent, valid_token_mask=valid_mask)
     torch.testing.assert_close(output, reference_output)
     cached = layer.experts._materialize_kappa_scale()
@@ -181,6 +217,19 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     assert valid_assignments.sum() < valid_mask.sum() * config.moe_top_k
     assert not cached.requires_grad
     assert output[:, -2:].count_nonzero() == 0
+    expected_logits = F.linear(
+        scale_grad(latent.reshape(-1, 4), 0.1), layer.kappa_router.weight,
+    ).gather(-1, indices)
+    expected_scale_loss = expected_logits[valid_assignments].square().mean()
+    torch.testing.assert_close(scale_loss, expected_scale_loss)
+    actual_scale_grad = torch.autograd.grad(
+        scale_loss, layer.kappa_router.weight, retain_graph=True,
+    )[0]
+    expected_scale_grad = torch.autograd.grad(
+        expected_scale_loss, layer.kappa_router.weight,
+    )[0]
+    torch.testing.assert_close(actual_scale_grad, expected_scale_grad)
+    assert actual_scale_grad.abs().sum() > 0
     output.square().sum().backward()
     reference_output.square().sum().backward()
     torch.testing.assert_close(layer.router.w_g.weight.grad, reference.router.w_g.weight.grad)
@@ -242,6 +291,50 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
     torch.testing.assert_close(reloaded.transformer.h[0].mlp.kappa_router.weight, predictor)
     optimizer = model.setup_optimizer()
     assert any(predictor is param for group in optimizer.param_groups for param in group['params'])
+
+
+@pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
+@pytest.mark.parametrize('matrix_optimizer', ['muon', 'muonh', 'aurora'])
+def test_kappa_router_delay_keeps_weights_fixed_and_accumulates_optimizer_state(
+    separate_base_sft_kappa, matrix_optimizer,
+):
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        independent_kappa_router=True, separate_base_sft_kappa=separate_base_sft_kappa,
+    )
+    model = GPT(config)
+    model.init_weights()
+    predictor = model.transformer.h[0].mlp.kappa_router.weight
+    optimizer = model.setup_optimizer(
+        matrix_optimizer=matrix_optimizer, matrix_lr=0.01,
+        weight_decay=0.1, kappa_param_delay_start_iterations=20,
+    )
+    group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_router')
+    assert group['params'] == [predictor]
+    assert group['kappa_param_delay_start_iterations'] == 20
+    assert ('active_kappa_slot' in group) == separate_base_sft_kappa
+    before = predictor.detach().clone()
+    for _ in range(2):
+        predictor.grad = torch.ones_like(predictor)
+        group['lr'] = 0.0
+        optimizer.step()
+        torch.testing.assert_close(predictor, before, rtol=0, atol=0)
+    state = optimizer.state[predictor]
+    if separate_base_sft_kappa:
+        state = state['slot_states'][0]
+    assert any(
+        isinstance(value, torch.Tensor) and value.count_nonzero() > 0
+        for value in state.values()
+    )
+    assert predictor.grad is not None
+    group['lr'] = group['initial_lr']
+    optimizer.step()
+    assert not torch.equal(predictor, before)
+    if separate_base_sft_kappa:
+        torch.testing.assert_close(
+            predictor[config.n_exp:], before[config.n_exp:], rtol=0, atol=0,
+        )
 
 
 @pytest.mark.parametrize('is_sft', [False, True])

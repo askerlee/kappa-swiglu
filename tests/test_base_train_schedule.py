@@ -22,6 +22,32 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
+def test_kappa_router_lr_delay_is_applied_in_all_training_scripts():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX, ROOT / "scripts" / "chat_sft.py"):
+        module = ast.parse(script.read_text(), filename=str(script))
+        router_branch = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(child, ast.Constant) and child.value == "kappa_router"
+                for child in ast.walk(node.test)
+            )
+        )
+        branch_module = ast.Module(body=[router_branch], type_ignores=[])
+        parameter = torch.nn.Parameter(torch.ones(2, 2))
+        parameter.grad = torch.ones_like(parameter)
+        group = {
+            "name": "kappa_router", "initial_lr": 0.01,
+            "kappa_param_delay_start_iterations": 20, "params": [parameter],
+        }
+        for step, expected_lr in ((0, 0.0), (19, 0.0), (20, 0.005), (21, 0.005)):
+            exec(compile(branch_module, filename=str(script), mode="exec"), {
+                "group": group, "step": step, "lrm": 0.5,
+            })
+            assert group["lr"] == expected_lr
+            assert parameter.grad is not None
+
+
 def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
     cases = [
         (False, [], 0.01, 0.01),
@@ -51,15 +77,20 @@ def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
             )
         )
         adjustment_module = ast.Module(body=[adjustment], type_ignores=[])
-        for enabled, argv, weight, expected in cases:
-            args = SimpleNamespace(kappa_bias_from_scale=enabled, kappa_l2_loss_weight=weight)
-            namespace = {
-                "args": args,
-                "sys": SimpleNamespace(argv=[str(script), *argv]),
-                "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
-            }
-            exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
-            assert args.kappa_l2_loss_weight == expected
+        for independent_router in (False, True):
+            for enabled, argv, weight, expected in cases:
+                args = SimpleNamespace(
+                    kappa_bias_from_scale=enabled,
+                    independent_kappa_router=independent_router,
+                    kappa_l2_loss_weight=weight,
+                )
+                namespace = {
+                    "args": args,
+                    "sys": SimpleNamespace(argv=[str(script), *argv]),
+                    "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
+                }
+                exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
+                assert args.kappa_l2_loss_weight == (weight if independent_router else expected)
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():

@@ -519,7 +519,8 @@ def muonh_step_fused(
     update = update * (target_norm / update_norm).to(update.dtype)
     stacked_params.sub_(lr_t.to(stacked_params.dtype) * update.to(stacked_params.dtype))
     new_norm = stacked_params.float().norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
-    stacked_params.mul_((target_norm / new_norm).to(stacked_params.dtype))
+    norm_scale = torch.where(lr_t == 0, 1.0, target_norm / new_norm)
+    stacked_params.mul_(norm_scale.to(stacked_params.dtype))
 
 
 def _get_muon_chunk_size(group: dict, num_params: int) -> int:
