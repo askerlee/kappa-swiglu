@@ -114,6 +114,40 @@ def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
         )
 
 
+def _step_kappa_slot_matrix(optimizer, group, distributed=False):
+    slot = group['active_kappa_slot']
+    active_params = []
+    active_names = []
+    param_names = group.get('debug_param_names', [])
+    for index, param in enumerate(group['params']):
+        grad = param.grad
+        if distributed:
+            has_grad = torch.tensor(int(grad is not None), device=param.device)
+            dist.all_reduce(has_grad, op=dist.ReduceOp.MAX)
+            if not has_grad.item():
+                continue
+            grad = torch.zeros_like(param) if grad is None else grad
+            dist.all_reduce(grad, op=dist.ReduceOp.AVG)
+        elif grad is None:
+            continue
+        active_param = param.view(2, param.size(0) // 2, param.size(1))[slot]
+        active_param.grad = grad.view(2, param.size(0) // 2, param.size(1))[slot]
+        state = optimizer.state[param]
+        slot_states = state.setdefault('slot_states', [{}, {}])
+        optimizer.state[active_param] = slot_states[slot]
+        active_params.append(active_param)
+        active_names.append(param_names[index] if index < len(param_names) else None)
+    active_group = dict(group, params=active_params, debug_param_names=active_names)
+    try:
+        if group['kind'] == 'aurora':
+            AuroraAdamW._step_aurora(optimizer, active_group)
+        else:
+            MuonAdamW._step_muon(optimizer, active_group)
+    finally:
+        for active_param in active_params:
+            del optimizer.state[active_param]
+
+
 def _use_bf16_matmuls(tensor: Tensor) -> bool:
     """Use bf16 matrix multiplies only where they are fast and well supported."""
     return tensor.is_cuda and COMPUTE_DTYPE == torch.bfloat16
@@ -677,7 +711,10 @@ class MuonAdamW(torch.optim.Optimizer):
             if group['kind'] == 'adamw':
                 self._step_adamw(group)
             elif group['kind'] in ('muon', 'muonh'):
-                self._step_muon(group)
+                if 'active_kappa_slot' in group:
+                    _step_kappa_slot_matrix(self, group)
+                else:
+                    self._step_muon(group)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 
@@ -1023,13 +1060,19 @@ class DistMuonAdamW(torch.optim.Optimizer):
             if group['kind'] == 'adamw':
                 reduce_infos.append(self._reduce_adamw(group, world_size))
             elif group['kind'] in ('muon', 'muonh'):
-                reduce_infos.append(self._reduce_muon(group, world_size))
+                if 'active_kappa_slot' in group:
+                    _step_kappa_slot_matrix(self, group, distributed=True)
+                    reduce_infos.append(None)
+                else:
+                    reduce_infos.append(self._reduce_muon(group, world_size))
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 
         # Phase 2: wait for reduces, compute updates, launch gathers
         gather_list: list[dict] = []
         for group, info in zip(self.param_groups, reduce_infos):
+            if info is None:
+                continue
             if group['kind'] == 'adamw':
                 self._compute_adamw(group, info, gather_list, rank, world_size)
             elif group['kind'] in ('muon', 'muonh'):
@@ -1170,7 +1213,10 @@ class AuroraAdamW(torch.optim.Optimizer):
             if group['kind'] == 'adamw':
                 self._step_adamw(group)
             elif group['kind'] == 'aurora':
-                self._step_aurora(group)
+                if 'active_kappa_slot' in group:
+                    _step_kappa_slot_matrix(self, group)
+                else:
+                    self._step_aurora(group)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 
@@ -1443,12 +1489,18 @@ class DistAuroraAdamW(torch.optim.Optimizer):
             if group['kind'] == 'adamw':
                 reduce_infos.append(self._reduce_adamw(group, world_size))
             elif group['kind'] == 'aurora':
-                reduce_infos.append(self._reduce_aurora(group, world_size))
+                if 'active_kappa_slot' in group:
+                    _step_kappa_slot_matrix(self, group, distributed=True)
+                    reduce_infos.append(None)
+                else:
+                    reduce_infos.append(self._reduce_aurora(group, world_size))
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
 
         gather_list: list[dict] = []
         for group, info in zip(self.param_groups, reduce_infos):
+            if info is None:
+                continue
             if group['kind'] == 'adamw':
                 self._compute_adamw(group, info, gather_list, rank, world_size)
             elif group['kind'] == 'aurora':

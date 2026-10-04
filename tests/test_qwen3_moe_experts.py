@@ -12,17 +12,25 @@ from nanochat.manager import MOEManager
 
 @pytest.mark.parametrize('exponent', [0.0, 0.5, 1.0])
 @pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
-def test_independent_kappa_router_scales_only_latent_gradients(exponent, kappa_input):
+@pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
+@pytest.mark.parametrize('is_sft', [False, True])
+def test_independent_kappa_router_scales_only_latent_gradients(
+    exponent, kappa_input, separate_base_sft_kappa, is_sft,
+):
     config = GPTConfig(
         n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
         independent_kappa_router=True, kappa_input_logit_norm_exponent=exponent,
+        separate_base_sft_kappa=separate_base_sft_kappa,
     )
     layer = MOELayer(config, layer_idx=0)
+    layer.experts.kappa_phase = int(is_sft)
+    kappa_slot = int(is_sft) if separate_base_sft_kappa else 0
+    predictor_weights = layer.kappa_router.weight.view(layer.num_kappa_router_slots, 3, 4)
     reference_config = deepcopy(config)
     reference_config.independent_kappa_router = False
     reference = MOELayer(reference_config, layer_idx=0)
     with torch.no_grad():
-        reference.router.w_g.weight.copy_(layer.kappa_router.weight)
+        reference.router.w_g.weight.copy_(predictor_weights[kappa_slot])
     latent = torch.randn(2, 4, requires_grad=True)
     reference_latent = latent.detach().clone().requires_grad_(True)
     indices = torch.tensor([[2, 0], [1, 2]])
@@ -36,7 +44,10 @@ def test_independent_kappa_router_scales_only_latent_gradients(exponent, kappa_i
     scores.square().sum().backward()
     reference_scores.square().sum().backward()
     torch.testing.assert_close(latent.grad, 0.1 * reference_latent.grad)
-    torch.testing.assert_close(layer.kappa_router.weight.grad, reference.router.w_g.weight.grad)
+    predictor_grads = layer.kappa_router.weight.grad.view_as(predictor_weights)
+    torch.testing.assert_close(predictor_grads[kappa_slot], reference.router.w_g.weight.grad)
+    if separate_base_sft_kappa:
+        assert predictor_grads[1 - kappa_slot].count_nonzero() == 0
     assert layer.router.w_g.weight.grad is None
 
 
@@ -83,28 +94,41 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
         )
 
 
-def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips():
+@pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
+@pytest.mark.parametrize('has_predictor', [False, True])
+def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
+    separate_base_sft_kappa, has_predictor,
+):
     config = GPTConfig(
         n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
         kappa_input='top_logits',
+        separate_base_sft_kappa=separate_base_sft_kappa,
+        independent_kappa_router=has_predictor,
     )
     legacy = GPT(config)
     legacy.init_weights()
     with torch.no_grad():
         legacy.transformer.h[0].mlp.router.w_g.weight.normal_()
+    state_dict = legacy.state_dict()
+    predictor_key = 'transformer.h.0.mlp.kappa_router.weight'
+    expected_weight = legacy.transformer.h[0].mlp.router.w_g.weight
+    if has_predictor:
+        state_dict[predictor_key] = state_dict[predictor_key][:config.n_exp].clone()
+        expected_weight = state_dict[predictor_key]
     new_config = deepcopy(config)
     new_config.independent_kappa_router = True
     with torch.device('meta'):
         model = GPT(new_config)
     model.to_empty(device='cpu')
     model.init_weights()
-    model.load_state_dict(legacy.state_dict(), strict=True, assign=True)
+    model.load_state_dict(state_dict, strict=True, assign=True)
     predictor = model.transformer.h[0].mlp.kappa_router.weight
-    torch.testing.assert_close(predictor, legacy.transformer.h[0].mlp.router.w_g.weight)
+    for slot_weight in predictor.view(-1, config.n_exp, config.n_embd):
+        torch.testing.assert_close(slot_weight, expected_weight)
     assert predictor.data_ptr() != model.transformer.h[0].mlp.router.w_g.weight.data_ptr()
     with torch.no_grad():
-        predictor.add_(0.2)
+        predictor[:config.n_exp].add_(0.2)
     reloaded = GPT(new_config)
     reloaded.load_state_dict(model.state_dict())
     torch.testing.assert_close(reloaded.transformer.h[0].mlp.kappa_router.weight, predictor)
@@ -112,7 +136,9 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips():
     assert any(predictor is param for group in optimizer.param_groups for param in group['params'])
 
 
-def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch):
+@pytest.mark.parametrize('is_sft', [False, True])
+@pytest.mark.parametrize('matrix_optimizer', ['muon', 'muonh', 'aurora'])
+def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch, is_sft, matrix_optimizer):
     monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
     torch.manual_seed(42)
     config = GPTConfig(
@@ -123,6 +149,7 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch)
     )
     reference = GPT(config)
     reference.init_weights()
+    reference.set_kappa_training_phase(is_sft)
     with torch.no_grad():
         experts = reference.transformer.h[0].mlp.experts
         experts.kappa_scale.fill_(0.3)
@@ -131,6 +158,7 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch)
     checkpoint_config.activation_checkpointing = True
     checkpoint_model = GPT(checkpoint_config)
     checkpoint_model.load_state_dict(reference.state_dict())
+    checkpoint_model.set_kappa_training_phase(is_sft)
     tokens = torch.randint(0, 64, (2, 5))
     targets = torch.randint(0, 64, (2, 5))
     reference_loss, _ = reference(tokens, targets)
@@ -145,6 +173,18 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch)
         if param.grad is not None:
             torch.testing.assert_close(param.grad, checkpoint_param.grad, rtol=1e-5, atol=1e-6)
     assert reference.transformer.h[0].mlp.kappa_router.weight.grad.abs().sum() > 0
+    predictor_grads = reference.transformer.h[0].mlp.kappa_router.weight.grad.view(2, 3, 32)
+    assert predictor_grads[1 - int(is_sft)].count_nonzero() == 0
+    predictor = reference.transformer.h[0].mlp.kappa_router.weight
+    optimizer = reference.setup_optimizer(matrix_optimizer=matrix_optimizer, matrix_lr=0.01, weight_decay=0.1)
+    predictor_group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_router')
+    assert predictor_group['kind'] == matrix_optimizer
+    assert predictor_group['lr'] == 0.01
+    assert predictor_group['active_kappa_slot'] == int(is_sft)
+    before = predictor.detach().clone().view(2, 3, 32)
+    optimizer.step()
+    torch.testing.assert_close(predictor.view(2, 3, 32)[1 - int(is_sft)], before[1 - int(is_sft)], rtol=0, atol=0)
+    assert not torch.equal(predictor.view(2, 3, 32)[int(is_sft)], before[int(is_sft)])
 
 
 def test_dense_gate_projection_is_applied_before_fc_gating():

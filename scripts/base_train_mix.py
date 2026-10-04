@@ -2299,9 +2299,9 @@ while True:
         lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
         muon_momentum = get_muon_momentum(step)
         for group in optimizer.param_groups:
+            if "active_kappa_slot" in group:
+                group["active_kappa_slot"] = int(is_chat_sft_step)
             if group.get("name") == "kappa_params" and group['kind'] == 'adamw':
-                if args.separate_base_sft_kappa:
-                    group["active_kappa_slot"] = int(is_chat_sft_step)
                 resume_kappa_lr_scale = get_resume_kappa_lr_scale(
                     step, args.resume_from_step, args.resume_lr_warmup_steps
                 )

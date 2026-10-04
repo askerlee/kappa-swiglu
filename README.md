@@ -134,11 +134,18 @@ back to the input latent is multiplied by 0.1; expert and routing paths are
 unchanged. The predictor uses the MoE matrix optimizer and matrix learning
 rate, not the kappa bias/scale learning-rate schedule.
 
+With `--separate-base-sft-kappa`, one predictor projection stores two weight
+sets as stacked rows, reshaped to `(2, n_exp, n_embd)`. Base steps select
+slot 0 and SFT steps select slot 1; all UT passes use the selected phase.
+Each slot has independent matrix-optimizer state, and inactive weights and
+state remain unchanged. Without this option, the predictor remains shared.
+
 Chat SFT inherits this mode from the checkpoint. Add
 `--independent-kappa-router` to enable it on an existing kappa checkpoint;
 missing predictor weights are copied from its router weights,
-preserving deterministic initial
-conditioning. Fresh pretraining initializes the predictor uniformly like
+preserving deterministic initial conditioning. In separate-phase mode,
+missing or older single-set predictor weights are copied into both slots.
+Fresh pretraining initializes the predictor uniformly like
 other input projections. Predictor weights and the mode are saved for evaluation.
 
 ## Notes

@@ -94,6 +94,58 @@ def test_distributed_kappa_slots_use_replicated_state_and_skip_missing_grad(opti
     assert optimizer.state[param]['slot_steps'] == [2, 1]
 
 
+@pytest.mark.parametrize('optimizer_class,kind', [
+    (MuonAdamW, 'muon'), (MuonAdamW, 'muonh'), (AuroraAdamW, 'aurora'),
+    (DistMuonAdamW, 'muon'), (DistMuonAdamW, 'muonh'), (DistAuroraAdamW, 'aurora'),
+])
+def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimizer_class, kind, monkeypatch):
+    monkeypatch.setattr(optim_module.dist, 'get_rank', lambda: 0)
+    monkeypatch.setattr(optim_module.dist, 'get_world_size', lambda: 2)
+    monkeypatch.setattr(optim_module.dist, 'all_reduce', lambda *args, **kwargs: None)
+    torch.manual_seed(42)
+    param = torch.nn.Parameter(torch.randn(6, 4))
+    group = dict(kind=kind, params=[param], lr=0.01, momentum=0.95, beta2=0.95,
+                 weight_decay=0.1, ns_steps=5, pp_iterations=2, pp_beta=0.5,
+                 nesterov=True, chunk_size=2, active_kappa_slot=0)
+    optimizer = optimizer_class([group])
+    reference_params = [torch.nn.Parameter(weight.clone()) for weight in param.detach().view(2, 3, 4)]
+    reference_class = AuroraAdamW if kind == 'aurora' else MuonAdamW
+    reference_group = {name: value for name, value in group.items() if name != 'active_kappa_slot'}
+    reference_optimizers = [reference_class([dict(reference_group, params=[weight])]) for weight in reference_params]
+    for slot in (0, 1, 0):
+        optimizer.param_groups[0]['active_kappa_slot'] = slot
+        inactive_before = param.detach().view(2, 3, 4)[1 - slot].clone()
+        slot_states = optimizer.state.get(param, {}).get('slot_states', [{}, {}])
+        inactive_state_before = {name: value.clone() for name, value in slot_states[1 - slot].items()}
+        grad = torch.randn(3, 4)
+        param.grad = torch.zeros_like(param)
+        param.grad.view(2, 3, 4)[slot].copy_(grad)
+        reference_params[slot].grad = grad.clone()
+        optimizer.step()
+        reference_optimizers[slot].step()
+        torch.testing.assert_close(param.view(2, 3, 4)[slot], reference_params[slot])
+        torch.testing.assert_close(param.view(2, 3, 4)[1 - slot], inactive_before, rtol=0, atol=0)
+        for name, value in inactive_state_before.items():
+            torch.testing.assert_close(optimizer.state[param]['slot_states'][1 - slot][name], value, rtol=0, atol=0)
+    assert len(optimizer.state) == 1
+    restored_param = torch.nn.Parameter(param.detach().clone())
+    restored = optimizer_class([dict(group, params=[restored_param])])
+    restored.load_state_dict(optimizer.state_dict())
+    restored.param_groups[0]['active_kappa_slot'] = 1
+    grad = torch.randn(3, 4)
+    restored_param.grad = torch.zeros_like(restored_param)
+    restored_param.grad.view(2, 3, 4)[1].copy_(grad)
+    reference_params[1].grad = grad.clone()
+    restored.step()
+    reference_optimizers[1].step()
+    torch.testing.assert_close(restored_param.view(2, 3, 4)[1], reference_params[1])
+    torch.testing.assert_close(restored_param.view(2, 3, 4)[0], param.view(2, 3, 4)[0], rtol=0, atol=0)
+    restored_param.grad = None
+    before = restored_param.detach().clone()
+    restored.step()
+    torch.testing.assert_close(restored_param, before, rtol=0, atol=0)
+
+
 def test_adamw_step_updates_parameter_and_state():
     param = torch.nn.Parameter(torch.tensor([0.5, -1.0, 1.5], dtype=torch.float32))
     grad = torch.tensor([0.2, -0.4, 0.6], dtype=torch.float32)

@@ -2170,8 +2170,9 @@ class MOELayer(nn.Module):
             getattr(config, 'kappa_input_logit_norm_exponent', 0.0)
         )
         self.top_logit_norm_eps = float(getattr(config, 'top_logit_norm_eps', 1e-4))
+        self.num_kappa_router_slots = 2 if getattr(config, 'separate_base_sft_kappa', False) else 1
         self.kappa_router = (
-            nn.Linear(config.n_embd, config.n_exp, bias=False)
+            nn.Linear(config.n_embd, self.num_kappa_router_slots * config.n_exp, bias=False)
             if getattr(config, 'independent_kappa_router', False)
             and self.use_qwen3_moe_mlp and self.experts.use_kappa_swiglu
             else None
@@ -2324,8 +2325,11 @@ class MOELayer(nn.Module):
         if self.kappa_router is not None:
             if x_flat is None or top_k_indices is None:
                 raise RuntimeError("Independent kappa routing requires inputs and selected expert indices")
-            conditioning_weight = self.kappa_router.weight
-            kappa_logits = self.kappa_router(scale_grad(x_flat, 0.1))
+            kappa_slot = self.experts.kappa_phase if self.num_kappa_router_slots == 2 else 0
+            conditioning_weight = self.kappa_router.weight.view(
+                self.num_kappa_router_slots, self.n_exp, -1
+            )[kappa_slot]
+            kappa_logits = F.linear(scale_grad(x_flat, 0.1), conditioning_weight)
             top_k_scores = kappa_logits.gather(-1, top_k_indices)
             if self.kappa_input == 'router_probs':
                 router_probs = F.softmax(top_k_scores, dim=-1)
@@ -2734,9 +2738,14 @@ class GPT(nn.Module):
                     state_dict[name] = param.clone()
                 elif name == 'ut_source_lambdas' and name not in state_dict:
                     state_dict[name] = param.clone()
-                elif name.endswith('.mlp.kappa_router.weight') and name not in state_dict:
+                elif name.endswith('.mlp.kappa_router.weight'):
                     router_key = name.replace('.kappa_router.weight', '.router.w_g.weight')
-                    router_weight = state_dict[router_key]
+                    router_weight = state_dict.get(name, state_dict[router_key])
+                    if (
+                        getattr(self.config, 'separate_base_sft_kappa', False)
+                        and router_weight.shape == (param.size(0) // 2, param.size(1))
+                    ):
+                        router_weight = router_weight.repeat(2, 1)
                     state_dict[name] = router_weight.detach().clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         if self._should_refresh_kappa_param_references():
@@ -3039,6 +3048,7 @@ class GPT(nn.Module):
         moe_matrix_params = []
         moe_nonmatrix_params = []
         kappa_params = []
+        kappa_router_params = []
         seen_param_ids = set()
         param_names = {}
 
@@ -3069,6 +3079,8 @@ class GPT(nn.Module):
                     or name.startswith('mlp.kappa_scale')
                 ):
                     append_param(kappa_params, param, full_name)
+                elif name == 'mlp.kappa_router.weight' and getattr(self.config, 'separate_base_sft_kappa', False):
+                    append_param(kappa_router_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
                 else:
@@ -3092,7 +3104,7 @@ class GPT(nn.Module):
         assert len(list(self.parameters())) == (
             len(dense_matrix_params) + len(dense_nonmatrix_params) +
             len(moe_matrix_params) + len(moe_nonmatrix_params) +
-            len(kappa_params) +
+            len(kappa_params) + len(kappa_router_params) +
             len(embedding_params) + len(lm_head_params) + len(value_embeds_params) +
             len(resid_params) + len(x0_params)
         )
@@ -3172,6 +3184,16 @@ class GPT(nn.Module):
                 kind=matrix_kind, params=group_params, debug_param_names=group_param_names, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5, nesterov=True, weight_decay=matrix_weight_decay,
                 chunk_size=2,
+                match_rms_adamw=muon_match_rms_adamw,
+            ))
+        for shape in sorted({p.shape for p in kappa_router_params}):
+            group_params = [p for p in kappa_router_params if p.shape == shape]
+            param_groups.append(dict(
+                kind=matrix_kind, name='kappa_router', params=group_params,
+                debug_param_names=[param_names[id(p)] for p in group_params],
+                active_kappa_slot=self.kappa_phase, lr=matrix_lr,
+                momentum=0.95, ns_steps=5, beta2=0.95, pp_iterations=2, pp_beta=0.5,
+                nesterov=True, weight_decay=matrix_weight_decay, chunk_size=2,
                 match_rms_adamw=muon_match_rms_adamw,
             ))
         factory_map = {
