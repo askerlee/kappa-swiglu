@@ -1,4 +1,5 @@
 import ast
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,61 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, 10) is True
     assert should_use_chat_sft_step(20, 10) is True
     assert should_use_chat_sft_step(10, -1) is False
+
+
+def test_kappa_delay_freezes_lr_without_delaying_slope_scale_warmup():
+    get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
+    get_kappa_slope_max_scale.__globals__["math"] = math
+    get_kappa_bias_lr_scale = load_function_from_script("get_kappa_bias_lr_scale")
+    get_kappa_bias_lr_scale.__globals__["get_linear_lr_scale"] = load_function_from_script(
+        "get_linear_lr_scale"
+    )
+    optimizer = SimpleNamespace(param_groups=[{
+        "name": "kappa_params",
+        "kind": "adamw",
+        "kappa_param_delay_start_iterations": 20,
+        "lr_scale_warmup_iterations": 10,
+    }])
+
+    assert get_kappa_bias_lr_scale(optimizer, 10, 100) == 0.0
+    assert get_kappa_bias_lr_scale(optimizer, 19, 100) == 0.0
+    assert get_kappa_bias_lr_scale(optimizer, 25, 100) == 0.5
+    assert get_kappa_slope_max_scale(3.0, 5, 100) == 2.0
+    assert get_kappa_slope_max_scale(3.0, 10, 100) == 3.0
+
+    tree = ast.parse(BASE_TRAIN_MIX.read_text())
+    slope_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "get_kappa_slope_max_scale"
+    ]
+    assert len(slope_calls) == 2
+    assert all(
+        keyword.arg != "delay_iterations"
+        for call in slope_calls for keyword in call.keywords
+    )
+
+
+def test_zero_kappa_lr_preserves_parameters_and_accumulates_adamw_moments():
+    from nanochat.optim import adamw_step_fused
+
+    parameter = torch.tensor([1.0, 2.0])
+    original_parameter = parameter.clone()
+    gradient = torch.tensor([2.0, -3.0])
+    exp_avg = torch.zeros_like(parameter)
+    exp_avg_sq = torch.zeros_like(parameter)
+    for step in (1, 2):
+        adamw_step_fused.__wrapped__(
+            parameter, gradient, exp_avg, exp_avg_sq,
+            torch.tensor(float(step)), torch.tensor(0.0),
+            torch.tensor(0.8), torch.tensor(0.95),
+            torch.tensor(1e-10), torch.tensor(0.1),
+        )
+
+    torch.testing.assert_close(parameter, original_parameter, rtol=0, atol=0)
+    torch.testing.assert_close(exp_avg, gradient * (1 - 0.8 ** 2))
+    torch.testing.assert_close(exp_avg_sq, gradient.square() * (1 - 0.95 ** 2))
 
 
 def test_get_task_mixture_source_resolves_shuffled_index():

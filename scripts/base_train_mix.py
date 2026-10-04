@@ -948,16 +948,16 @@ orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)
 if args.total_ut_steps > 1:
     print0(f"Loops = {args.total_ut_steps}")
 
-kappa_bias_delay_start_iterations = max(
+kappa_param_delay_start_iterations = max(
     args.kappa_delay_start_min_iterations,
     math.ceil(num_iterations * args.kappa_delay_start_iteration_frac),
 )
-user_config["effective_kappa_delay_start_iterations"] = kappa_bias_delay_start_iterations
+user_config["effective_kappa_delay_start_iterations"] = kappa_param_delay_start_iterations
 print0(
     "Using kappa_bias LR delay start iterations: "
     f"max({args.kappa_delay_start_min_iterations}, "
     f"ceil({num_iterations} * {args.kappa_delay_start_iteration_frac:.6f})) "
-    f"= {kappa_bias_delay_start_iterations}"
+    f"= {kappa_param_delay_start_iterations}"
 )
 
 # -----------------------------------------------------------------------------
@@ -1017,7 +1017,7 @@ optimizer = model.setup_optimizer(
     muon_match_rms_adamw=args.muon_match_rms_adamw,
     kappa_lr_final_scale=args.kappa_lr_final_scale,
     kappa_lr_max_scale=args.kappa_lr_max_scale,
-    kappa_bias_delay_start_iterations=kappa_bias_delay_start_iterations,
+    kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
     kappa_bias_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
 )
 
@@ -1377,7 +1377,7 @@ def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
                 num_iterations,
                 end_scale=group.get("lr_scale_end", 1.0),
                 max_scale=group.get("lr_scale_max", 1.0),
-                nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
+                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
                 warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
             )
     return 1.0
@@ -1837,14 +1837,12 @@ while True:
         step,
         total_iterations=num_iterations,
         warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac,
-        delay_iterations=kappa_bias_delay_start_iterations,
     )
     dense_kappa_slope_max_scale = get_kappa_slope_max_scale(
         args.dense_kappa_slope_max_scale,
         step,
         total_iterations=num_iterations,
         warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac,
-        delay_iterations=kappa_bias_delay_start_iterations,
     )
     orig_model.set_kappa_slope_max_scales(
         moe_kappa_slope_max_scale=moe_kappa_slope_max_scale,

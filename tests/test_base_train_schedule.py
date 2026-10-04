@@ -370,7 +370,7 @@ def test_kappa_slope_max_scale_anneal_cli_is_wired_into_step_updates():
     assert 'moe_kappa_slope_max_scale = get_kappa_slope_max_scale(' in source
     assert 'dense_kappa_slope_max_scale = get_kappa_slope_max_scale(' in source
     assert 'warmup_iteration_frac=args.kappa_slope_max_scale_warmup_iteration_frac' in source
-    assert 'delay_iterations=kappa_bias_delay_start_iterations' in source
+    assert 'delay_iterations=kappa_param_delay_start_iterations' in source
     assert 'orig_model.set_kappa_slope_max_scales(' in source
     assert 'log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale' in source
     assert 'log_data["train/dense_kappa_slope_max_scale"] = dense_kappa_slope_max_scale' in source

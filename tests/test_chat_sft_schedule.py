@@ -310,7 +310,7 @@ def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
 def test_kappa_bias_lr_schedule_wires_delay_and_warmup_cli_args():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0)' in source
+    assert 'nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0)' in source
     assert 'warmup_iterations=group.get("lr_scale_warmup_iterations", 1000)' in source
 
 

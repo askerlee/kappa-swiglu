@@ -433,7 +433,7 @@ if not args.eval_only:
         muon_match_rms_adamw=args.muon_match_rms_adamw,
         kappa_lr_final_scale=args.kappa_lr_final_scale,
         kappa_lr_max_scale=args.kappa_lr_max_scale,
-        kappa_bias_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
+        kappa_param_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
         kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
     )
     # Override the initial learning rate as a fraction of the base learning rate
@@ -706,7 +706,7 @@ def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
                 num_iterations,
                 end_scale=group.get("lr_scale_end", 1.0),
                 max_scale=group.get("lr_scale_max", 1.0),
-                nolearn_iterations=group.get("lr_scale_nolearn_iterations", 0),
+                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
                 warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
             )
     return 1.0

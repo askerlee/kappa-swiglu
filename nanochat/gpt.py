@@ -3037,7 +3037,7 @@ class GPT(nn.Module):
                         matrix_optimizer='aurora',
                         kappa_lr_final_scale=1.0,
                         kappa_lr_max_scale=1.0,
-                        kappa_bias_delay_start_iterations=0,
+                        kappa_param_delay_start_iterations=0,
                         kappa_bias_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
@@ -3137,7 +3137,7 @@ class GPT(nn.Module):
                 base_lr=embedding_lr * dmodel_lr_scale,
                 lr_scale_end=kappa_lr_final_scale,
                 lr_scale_max=kappa_lr_max_scale,
-                lr_scale_nolearn_iterations=kappa_bias_delay_start_iterations,
+                kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
                 lr_scale_warmup_iterations=kappa_bias_lr_warmup_iterations,
                 betas=adam_betas,
                 eps=1e-10,
