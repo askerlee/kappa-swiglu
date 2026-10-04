@@ -394,7 +394,7 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 
 args = parser.parse_args()
 if (args.kappa_bias_from_scale or args.independent_kappa_router) and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
-    args.kappa_l2_loss_weight = 0.0001 if args.independent_kappa_router else 0.002
+    args.kappa_l2_loss_weight = 0.001 if args.independent_kappa_router else 0.002
 if args.separate_base_sft_kappa:
     args.use_kappa_swiglu = True
 
