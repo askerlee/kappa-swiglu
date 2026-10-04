@@ -22,10 +22,10 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_kappa_bias_from_scale_halves_only_implicit_default_l2_weight():
+def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
     cases = [
         (False, [], 0.01, 0.01),
-        (True, [], 0.01, 0.005),
+        (True, [], 0.01, 0.002),
         (True, ["--kappa-l2-loss-weight", "0.01"], 0.01, 0.01),
         (True, ["--kappa-l2-loss-weight=0.01"], 0.01, 0.01),
         (True, ["--kappa-l2-loss-weight", "0.02"], 0.02, 0.02),
