@@ -138,6 +138,8 @@ class GPTConfig:
             )
         self.global_kappa_bias_granularity = global_kappa_bias_granularity
         self.kappa_bias_from_scale = bool(kappa_bias_from_scale)
+        if self.independent_kappa_router and self.kappa_bias_from_scale:
+            raise ValueError("independent_kappa_router and kappa_bias_from_scale are mutually exclusive")
         if self.kappa_bias_from_scale and kappa_input == "constant":
             raise ValueError("kappa_bias_from_scale requires kappa_input='router_probs' or 'top_logits'")
         self.kappa_bias_start_layer = int(kappa_bias_start_layer)
