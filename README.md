@@ -122,12 +122,18 @@ switching an existing mixed-training recipe to the new parameter layout.
 ## Independent Kappa Router
 
 Add `--use-kappa-swiglu --independent-kappa-router` to base or mixed training
-to predict kappa conditioning with a separate bias-free token-to-expert
+to predict token-dependent kappa scales with a separate bias-free token-to-expert
 projection. The original router still selects experts and weights their
-outputs. The predictor gathers scores for those selected experts; logit
-normalization uses only the predictor's own weights. With
-`--kappa-input router_probs`, conditioning uses the predictor's top-k softmax,
-not the original router's mixture weights. Constant conditioning is unsupported.
+outputs. The predictor gathers raw outputs for those selected experts and
+uses `kappa_bias + predicted_kappa_scale` as the activation conditioning.
+There is no additional learned `kappa_scale` multiplier, softmax, or logit
+normalization in this mode; `top_logits` and `router_probs` behave identically.
+With `--kappa-bias-from-scale`, bias is `kappa_bias_alpha * predicted_kappa_scale`,
+so conditioning is `(1 + kappa_bias_alpha) * predicted_kappa_scale`.
+The scalar alpha remains learnable; no separate bias or scale parameter is
+allocated. Static bias/scale regularization is skipped for this token-dependent
+bias. Diagnostics use detached predictor logits cached from the latest forward,
+excluding padding and unused expert slots. Constant conditioning is unsupported.
 
 Predictor weights receive full gradients. Only the predictor's gradient path
 back to the input latent is multiplied by 0.1; expert and routing paths are
@@ -147,6 +153,8 @@ preserving deterministic initial conditioning. In separate-phase mode,
 missing or older single-set predictor weights are copied into both slots.
 Fresh pretraining initializes the predictor uniformly like
 other input projections. Predictor weights and the mode are saved for evaluation.
+Legacy learned scale tensors are ignored when loading independent mode.
+Existing independent checkpoints therefore load but do not preserve their old outputs.
 
 ## Notes
 

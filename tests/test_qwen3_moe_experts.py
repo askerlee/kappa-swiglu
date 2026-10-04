@@ -10,6 +10,96 @@ from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qw
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
+@pytest.mark.parametrize('is_sft', [False, True])
+@pytest.mark.parametrize('derived_bias', [False, True])
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_input, is_sft, derived_bias, granularity):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    config = GPTConfig(
+        n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
+        independent_kappa_router=True, separate_base_sft_kappa=True,
+        kappa_bias_from_scale=derived_bias, global_kappa_bias_granularity=granularity,
+    )
+    experts = Qwen3MLPExperts(config)
+    if granularity == 'global' and not derived_bias:
+        experts.bind_shared_kappa_bias(torch.nn.Parameter(torch.zeros(2, 1)))
+    experts.kappa_phase = int(is_sft)
+    with torch.no_grad():
+        if derived_bias:
+            experts.kappa_bias_alpha.fill_(0.7)
+        else:
+            bias_param = experts._get_kappa_bias_parameter()
+            bias_param.zero_()
+            bias_param[int(is_sft)].fill_(0.2)
+    raw_gate = torch.randn(3, 2, 16)
+    predicted_scale = torch.randn(3, 2, requires_grad=True)
+    bias = experts._materialize_kappa_bias(selected_router_scores=predicted_scale)
+    conditioning = (
+        (1 + experts.kappa_bias_alpha) * predicted_scale.unsqueeze(-1)
+        if derived_bias else 0.2 + predicted_scale.unsqueeze(-1)
+    )
+    slope = experts.kappa_slope_max_scale ** torch.tanh(conditioning)
+    expected = raw_gate * torch.sigmoid(raw_gate * slope)
+    actual = experts._apply_kappa_slope_scaled_activation(
+        raw_gate, bias, predicted_scale, kappa_slot=int(is_sft),
+    )
+    torch.testing.assert_close(actual, expected)
+    grad_params = (predicted_scale, experts.kappa_bias_alpha) if derived_bias else (predicted_scale,)
+    actual_grads = torch.autograd.grad(actual.square().sum(), grad_params, retain_graph=True)
+    expected_grads = torch.autograd.grad(expected.square().sum(), grad_params)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual_grad, expected_grad)
+        assert actual_grad.abs().sum() > 0
+    assert experts.kappa_scale is None
+    with torch.no_grad():
+        experts.eval()
+        actual_eval = experts._apply_kappa_slope_scaled_activation(
+            raw_gate, bias, predicted_scale, kappa_slot=int(is_sft),
+        )
+        torch.testing.assert_close(actual_eval, expected)
+        if derived_bias:
+            experts.kappa_bias_alpha.fill_(0.4)
+            changed_scale = predicted_scale + 0.3
+            changed_eval = experts._apply_kappa_slope_scaled_activation(
+                raw_gate, None, changed_scale, kappa_slot=int(is_sft),
+            )
+            changed_slope = experts.kappa_slope_max_scale ** torch.tanh(1.4 * changed_scale.unsqueeze(-1))
+            torch.testing.assert_close(changed_eval, raw_gate * torch.sigmoid(raw_gate * changed_slope))
+
+
+def test_independent_kappa_router_materialized_scale_cache():
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        independent_kappa_router=True, kappa_bias_from_scale=True,
+        separate_base_sft_kappa=True,
+    )
+    experts = Qwen3MLPExperts(config)
+    with pytest.raises(RuntimeError, match='cached kappa router logits'):
+        experts._materialize_kappa_scale()
+    logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]], requires_grad=True)
+    mask = torch.tensor([[True, True, False], [True, False, False]])
+    live_scale = experts._materialize_kappa_scale(selected_router_scores=logits, valid_score_mask=mask)
+    assert live_scale is logits
+    live_scale.sum().backward()
+    torch.testing.assert_close(logits.grad, torch.ones_like(logits))
+    cached = experts._materialize_kappa_scale()
+    assert not cached.requires_grad
+    assert cached.grad_fn is None
+    assert cached.data_ptr() != logits.data_ptr()
+    torch.testing.assert_close(cached[mask], logits.detach()[mask])
+    assert cached[~mask].isnan().all()
+    torch.testing.assert_close(cached.nanmean(), torch.tensor(-1.0 / 3.0))
+    torch.testing.assert_close(cached.abs().nanmean(), torch.tensor(5.0 / 3.0))
+    bias = experts._materialize_kappa_bias()
+    torch.testing.assert_close(bias[..., 0], cached, equal_nan=True)
+    experts.kappa_phase = 1
+    with pytest.raises(RuntimeError, match='this slot'):
+        experts._materialize_kappa_scale()
+    experts._materialize_kappa_scale(selected_router_scores=logits + 1)
+    torch.testing.assert_close(experts._materialize_kappa_scale(), logits.detach() + 1)
+
+
 @pytest.mark.parametrize('exponent', [0.0, 0.5, 1.0])
 @pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
 @pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
@@ -36,10 +126,7 @@ def test_independent_kappa_router_scales_only_latent_gradients(
     indices = torch.tensor([[2, 0], [1, 2]])
     scores = layer._select_gate_confidence(torch.zeros(2, 2), torch.ones(2, 2), latent, indices)
     reference_logits = reference.router.w_g(reference_latent).gather(-1, indices)
-    reference_scores = reference._select_gate_confidence(
-        reference_logits, F.softmax(reference_logits, dim=-1),
-        reference_latent, indices,
-    )
+    reference_scores = reference_logits
     torch.testing.assert_close(scores, reference_scores)
     scores.square().sum().backward()
     reference_scores.square().sum().backward()
@@ -59,6 +146,7 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
         n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
         independent_kappa_router=True, router_tie_noise_steps=0,
         use_aux_loss=False, use_router_z_loss=False, min_capacity=2,
+        train_capacity=0.5, eval_capacity=0.5,
     )
     layer = MOELayer(config, layer_idx=0)
     with torch.no_grad():
@@ -72,19 +160,33 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     reference.load_state_dict({
         name: value for name, value in layer.state_dict().items()
         if name != 'kappa_router.weight'
-    })
+    }, strict=False)
+    with torch.no_grad():
+        reference.experts.kappa_scale.fill_(1.0)
+    reference._select_gate_confidence = lambda scores, probs, **kwargs: scores
     reference.experts.router_confidence_gate_bias_grad_scale.zero_()
     latent = torch.randn(1, 8, 4, requires_grad=True)
     valid_mask = torch.tensor([[True, True, True, True, True, True, False, False]])
     output = layer(latent, valid_token_mask=valid_mask)
     reference_output = reference(latent, valid_token_mask=valid_mask)
     torch.testing.assert_close(output, reference_output)
+    cached = layer.experts._materialize_kappa_scale()
+    with torch.no_grad():
+        _, _, _, indices, ranks = layer.router(latent, valid_token_mask=valid_mask)
+        selected_logits = F.linear(latent.reshape(-1, 4), layer.kappa_router.weight).gather(-1, indices)
+        valid_assignments = ranks < cached.size(1)
+        expected_cache = torch.full_like(cached, float('nan'))
+        expected_cache[indices[valid_assignments], ranks[valid_assignments]] = selected_logits[valid_assignments]
+    torch.testing.assert_close(cached, expected_cache, equal_nan=True)
+    assert valid_assignments.sum() < valid_mask.sum() * config.moe_top_k
+    assert not cached.requires_grad
     assert output[:, -2:].count_nonzero() == 0
     output.square().sum().backward()
     reference_output.square().sum().backward()
     torch.testing.assert_close(layer.router.w_g.weight.grad, reference.router.w_g.weight.grad)
     assert layer.router.w_g.weight.grad.abs().sum() > 0
     assert layer.kappa_router.weight.grad.abs().sum() > 0
+    assert layer.experts.kappa_scale is None
     with torch.no_grad():
         layer.eval()
         reference.eval()
@@ -92,6 +194,9 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
             layer(latent, valid_token_mask=valid_mask),
             reference(latent, valid_token_mask=valid_mask),
         )
+        layer.experts.set_kappa_swiglu_enabled(False)
+        layer(latent, valid_token_mask=valid_mask)
+        assert layer.experts._cached_kappa_scale is None
 
 
 @pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
@@ -111,6 +216,9 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
     with torch.no_grad():
         legacy.transformer.h[0].mlp.router.w_g.weight.normal_()
     state_dict = legacy.state_dict()
+    state_dict['transformer.h.0.mlp.experts.kappa_scale'] = torch.ones_like(
+        legacy.transformer.h[0].mlp.experts.kappa_bias
+    )
     predictor_key = 'transformer.h.0.mlp.kappa_router.weight'
     expected_weight = legacy.transformer.h[0].mlp.router.w_g.weight
     if has_predictor:
@@ -138,7 +246,8 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
 
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('matrix_optimizer', ['muon', 'muonh', 'aurora'])
-def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch, is_sft, matrix_optimizer):
+@pytest.mark.parametrize('derived_bias', [False, True])
+def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch, is_sft, matrix_optimizer, derived_bias):
     monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
     torch.manual_seed(42)
     config = GPTConfig(
@@ -146,13 +255,14 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
         kappa_input='top_logits', independent_kappa_router=True,
         total_ut_steps=2, separate_base_sft_kappa=True, router_tie_noise_steps=0,
+        kappa_bias_from_scale=derived_bias, kappa_bias_ema_rms_reg=derived_bias,
+        refresh_kappa_param_references=derived_bias,
     )
     reference = GPT(config)
     reference.init_weights()
     reference.set_kappa_training_phase(is_sft)
     with torch.no_grad():
         experts = reference.transformer.h[0].mlp.experts
-        experts.kappa_scale.fill_(0.3)
         experts.c_proj.normal_(std=0.05)
     checkpoint_config = deepcopy(config)
     checkpoint_config.activation_checkpointing = True
@@ -173,6 +283,17 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
         if param.grad is not None:
             torch.testing.assert_close(param.grad, checkpoint_param.grad, rtol=1e-5, atol=1e-6)
     assert reference.transformer.h[0].mlp.kappa_router.weight.grad.abs().sum() > 0
+    if derived_bias:
+        assert experts.kappa_bias is None
+        assert experts.kappa_scale is None
+        assert experts.initial_kappa_bias is None
+        assert experts.kappa_bias_alpha.grad.abs() > 0
+        with torch.no_grad():
+            reference.eval()
+            checkpoint_model.eval()
+            reference_logits = reference(tokens)
+            checkpoint_logits = checkpoint_model(tokens)
+            torch.testing.assert_close(reference_logits, checkpoint_logits)
     predictor_grads = reference.transformer.h[0].mlp.kappa_router.weight.grad.view(2, 3, 32)
     assert predictor_grads[1 - int(is_sft)].count_nonzero() == 0
     predictor = reference.transformer.h[0].mlp.kappa_router.weight
@@ -753,7 +874,7 @@ def test_dense_qwen3_mlp_enables_constant_kappa_bias_when_requested():
     assert mlp.use_kappa_swiglu is True
     assert mlp.kappa_bias is not None
     assert experts.use_kappa_swiglu is True
-    assert experts.use_kappa_scale is True
+    assert experts.use_kappa_scale_param is True
 
 
 def test_kappa_swiglu_runtime_toggle_preserves_parameters():

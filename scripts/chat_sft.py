@@ -142,7 +142,7 @@ parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.
 parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
                     help="anchor expert kappa bias and scale L2 either around their loaded initial values or around 0")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
-                    help="use a separate kappa projection with 0.1 input-latent gradients (default: inherit checkpoint)")
+                    help="predict kappa scales directly with 0.1 input-latent gradients (default: inherit checkpoint)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -788,7 +788,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 exp_gate_grad_norms.append(exp_gate_grad_norm)
                 losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
-            if layer.mlp.experts.use_kappa_scale:
+            if layer.mlp.experts.use_kappa_scale_param:
                 kappa_scale = layer.mlp.experts._get_kappa_scale_parameter()
                 kappa_bias = layer.mlp.experts._get_kappa_bias_parameter()
                 kappa_grad_correlation = gradient_correlation(
@@ -806,10 +806,14 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
-                if layer.mlp.experts.use_kappa_swiglu:
+                has_bias_stats = layer.mlp.experts.use_kappa_swiglu and (
+                    not (layer.mlp.experts.independent_kappa_router and layer.mlp.experts.kappa_bias_from_scale)
+                    or layer.mlp.experts._cached_kappa_scale is not None
+                )
+                if has_bias_stats:
                     exp_kappa_bias = layer.mlp.experts._materialize_kappa_bias()
-                    losses[f'kappa_bias_mean_{i}'] = exp_kappa_bias.mean().float().item()
-                    losses[f'kappa_bias_abs_mean_{i}'] = exp_kappa_bias.abs().mean().float().item()
+                    losses[f'kappa_bias_mean_{i}'] = exp_kappa_bias.float().nanmean().item()
+                    losses[f'kappa_bias_abs_mean_{i}'] = exp_kappa_bias.abs().float().nanmean().item()
                 exp_gate_mean_weight = exp_gate_weight.mean(dim=2)  # [n_exp, hidden_size]
                 # Compute the cosine similarity between router weights and router weight grads.
                 # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
@@ -836,16 +840,16 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
 
-                    if layer.mlp.experts.use_kappa_swiglu:
+                    if has_bias_stats:
                         reduce_dims = tuple(range(1, exp_kappa_bias.ndim))
-                        exp_kappa_bias_mean = exp_kappa_bias.float().mean(dim=reduce_dims)
-                        exp_kappa_bias_abs_mean = exp_kappa_bias.abs().float().mean(dim=reduce_dims)
+                        exp_kappa_bias_mean = exp_kappa_bias.float().nanmean(dim=reduce_dims)
+                        exp_kappa_bias_abs_mean = exp_kappa_bias.abs().float().nanmean(dim=reduce_dims)
                         exp_kappa_bias_positive_mean = mean_by_sign(exp_kappa_bias, reduce_dims, sign='positive')
                         exp_kappa_bias_negative_mean = mean_by_sign(exp_kappa_bias, reduce_dims, sign='negative')
-                        losses[f'kappa_bias_mean_top_{i}'] = exp_kappa_bias_mean[top_indices].mean().item()
-                        losses[f'kappa_bias_mean_bottom_{i}'] = exp_kappa_bias_mean[bottom_indices].mean().item()
-                        losses[f'kappa_bias_abs_mean_top_{i}'] = exp_kappa_bias_abs_mean[top_indices].mean().item()
-                        losses[f'kappa_bias_abs_mean_bottom_{i}'] = exp_kappa_bias_abs_mean[bottom_indices].mean().item()
+                        losses[f'kappa_bias_mean_top_{i}'] = exp_kappa_bias_mean[top_indices].nanmean().item()
+                        losses[f'kappa_bias_mean_bottom_{i}'] = exp_kappa_bias_mean[bottom_indices].nanmean().item()
+                        losses[f'kappa_bias_abs_mean_top_{i}'] = exp_kappa_bias_abs_mean[top_indices].nanmean().item()
+                        losses[f'kappa_bias_abs_mean_bottom_{i}'] = exp_kappa_bias_abs_mean[bottom_indices].nanmean().item()
                         losses[f'kappa_bias_positive_mean_top_{i}'] = finite_mean_item(exp_kappa_bias_positive_mean[top_indices])
                         losses[f'kappa_bias_positive_mean_bottom_{i}'] = finite_mean_item(exp_kappa_bias_positive_mean[bottom_indices])
                         losses[f'kappa_bias_negative_mean_top_{i}'] = finite_mean_item(exp_kappa_bias_negative_mean[top_indices])

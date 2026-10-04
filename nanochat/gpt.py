@@ -1474,6 +1474,8 @@ class Qwen3MLPExperts(nn.Module):
         self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
         self._shared_kappa_bias = None
         self._shared_kappa_scale = None
+        self._cached_kappa_scale = None
+        self._cached_kappa_scale_slot = None
         self._eval_kappa_bias_cache = None
         self._eval_kappa_bias_cache_dtype = None
         self._eval_kappa_bias_cache_device = None
@@ -1503,14 +1505,17 @@ class Qwen3MLPExperts(nn.Module):
         self.gate_proj = nn.Parameter(
             torch.empty(self.n_exp, self.hidden_size, self.intermediate_size)
         )
-        self.use_kappa_scale = (
+        self.use_kappa_scale_param = (
             self.use_kappa_swiglu
             and self.kappa_input in {'top_logits', 'router_probs'}
+            and not self.independent_kappa_router
         )
         self.kappa_bias_from_scale = bool(getattr(config, 'kappa_bias_from_scale', False))
-        if self.use_kappa_swiglu and self.kappa_bias_from_scale and not self.use_kappa_scale:
+        if self.use_kappa_swiglu and self.kappa_bias_from_scale and not (
+            self.use_kappa_scale_param or self.independent_kappa_router
+        ):
             raise ValueError("kappa_bias_from_scale requires a learned kappa_scale")
-        if self.use_kappa_scale and self.kappa_bias_from_scale:
+        if self.use_kappa_swiglu and self.kappa_bias_from_scale:
             self.kappa_bias_alpha = nn.Parameter(torch.ones(()))
         else:
             self.register_parameter('kappa_bias_alpha', None)
@@ -1524,14 +1529,16 @@ class Qwen3MLPExperts(nn.Module):
                     self.register_parameter('kappa_bias', None)
                 else:
                     self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
-                if self.use_kappa_scale:
+                if self.use_kappa_scale_param:
                     self.kappa_scale = nn.Parameter(torch.empty(*kappa_bias_shape))
                 else:
                     self.register_parameter('kappa_scale', None)
             self.register_parameter('kappa_bias_expert', None)
             self.register_parameter('kappa_bias_intermediate', None)
             self.register_parameter('kappa_bias_residual', None)
-            if self.kappa_bias_ema_rms_reg:
+            if self.kappa_bias_ema_rms_reg and not (
+                self.independent_kappa_router and self.kappa_bias_from_scale
+            ):
                 keeper_kwargs = {
                     'beta': getattr(config, 'kappa_bias_l2_ema_beta', 0.99),
                     'anchor_start': getattr(config, 'kappa_bias_l2_ema_anchor_start', 0.4),
@@ -1540,7 +1547,7 @@ class Qwen3MLPExperts(nn.Module):
                     'total_ut_steps': self.num_kappa_slots,
                 }
                 self.kappa_bias_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
-                if self.use_kappa_scale:
+                if self.use_kappa_scale_param:
                     self.kappa_scale_ema_rms_reg_keeper = GateProjBiasEmaTargetKeeper(**keeper_kwargs)
         else:
             self.register_parameter('kappa_bias', None)
@@ -1627,16 +1634,18 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch.no_grad()
     def snapshot_kappa_param_references(self):
-        if not self.use_kappa_swiglu:
+        if not self.use_kappa_swiglu or (
+            self.independent_kappa_router and self.kappa_bias_from_scale
+        ):
             self.initial_kappa_bias = None
             self.initial_kappa_scale = None
-            return
+            return self.initial_kappa_bias, self.initial_kappa_scale
         self.initial_kappa_bias = torch.stack([
             self._materialize_kappa_bias(kappa_slot)
             for kappa_slot in range(self.num_kappa_slots)
         ]).detach().clone()
         self.initial_kappa_scale = None
-        if self.use_kappa_scale:
+        if self.use_kappa_scale_param:
             self.initial_kappa_scale = torch.stack([
                 self._materialize_kappa_scale(kappa_slot)
                 for kappa_slot in range(self.num_kappa_slots)
@@ -1649,12 +1658,20 @@ class Qwen3MLPExperts(nn.Module):
     @torch._dynamo.disable keeps Dynamo from tracing across those representation
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
-    def _materialize_kappa_bias(self, kappa_slot=None):
+    def _materialize_kappa_bias(self, kappa_slot=None, selected_router_scores=None):
         if kappa_slot is None:
-            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
+            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
+                self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
+            )
         if not self.use_kappa_swiglu:
             return self.disabled_kappa_bias.detach().requires_grad_(True)
         if self.kappa_bias_from_scale:
+            if self.independent_kappa_router:
+                if selected_router_scores is None:
+                    selected_router_scores = self._materialize_kappa_scale(kappa_slot)
+                return (
+                    self.kappa_bias_alpha * selected_router_scores.float().unsqueeze(-1)
+                ).expand(-1, -1, self.intermediate_size)
             return self.kappa_bias_alpha * self._materialize_kappa_scale(kappa_slot)
         kappa_bias = self._get_kappa_bias_parameter()
         if kappa_bias is None:
@@ -1666,10 +1683,23 @@ class Qwen3MLPExperts(nn.Module):
             return kappa_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    def _materialize_kappa_scale(self, kappa_slot=None):
+    def _materialize_kappa_scale(self, kappa_slot=None, selected_router_scores=None, valid_score_mask=None):
         if kappa_slot is None:
-            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
-        if not self.use_kappa_scale:
+            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
+                self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
+            )
+        if self.use_kappa_swiglu and self.independent_kappa_router:
+            if selected_router_scores is not None:
+                cached = selected_router_scores.detach().clone()
+                if valid_score_mask is not None:
+                    cached.masked_fill_(~valid_score_mask, float('nan'))
+                self._cached_kappa_scale = cached
+                self._cached_kappa_scale_slot = kappa_slot
+                return selected_router_scores
+            if self._cached_kappa_scale is None or self._cached_kappa_scale_slot != kappa_slot:
+                raise RuntimeError("Independent kappa_scale requires cached kappa router logits for this slot")
+            return self._cached_kappa_scale
+        if not self.use_kappa_scale_param:
             return self.disabled_kappa_scale.detach().requires_grad_(True)
         kappa_scale = self._get_kappa_scale_parameter()
         if kappa_scale is None:
@@ -1712,7 +1742,7 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch._dynamo.disable
     def _materialize_kappa_scale_for_eval(self, target_dtype, target_device, kappa_slot=0):
-        if not self.use_kappa_scale:
+        if not self.use_kappa_scale_param:
             return self.disabled_kappa_scale.to(device=target_device, dtype=target_dtype)
         kappa_scale = self._get_kappa_scale_parameter()
         if kappa_scale is None:
@@ -1757,7 +1787,7 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch._dynamo.disable
     def _get_kappa_scale_unsqueezed_for_eval(self, target_dtype, target_device, kappa_slot=0):
-        if not self.use_kappa_scale:
+        if not self.use_kappa_scale_param:
             return self.disabled_kappa_scale.to(device=target_device, dtype=target_dtype).unsqueeze(1)
         kappa_scale = self._get_kappa_scale_parameter()
         if kappa_scale is None:
@@ -1806,10 +1836,14 @@ class Qwen3MLPExperts(nn.Module):
         kappa_scale=None,
     ):
         target_dtype = torch.float32
-        kappa_bias = kappa_bias.to(dtype=target_dtype).unsqueeze(1)
+        kappa_bias = kappa_bias.to(dtype=target_dtype)
+        if kappa_bias.ndim == 2:
+            kappa_bias = kappa_bias.unsqueeze(1)
         slope_work = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
-        if self.kappa_input in {'top_logits', 'router_probs'}:
+        if self.independent_kappa_router:
+            slope_work = kappa_bias + slope_work
+        elif self.kappa_input in {'top_logits', 'router_probs'}:
             if kappa_scale is None:
                 kappa_scale = self._materialize_kappa_scale()
             kappa_scale = kappa_scale.to(dtype=target_dtype).unsqueeze(1)
@@ -1829,15 +1863,22 @@ class Qwen3MLPExperts(nn.Module):
         kappa_slot=0,
     ):
         target_dtype = gate_out_raw.dtype
-        kappa_bias = self._get_kappa_bias_unsqueezed_for_eval(
-            target_dtype, gate_out_raw.device, kappa_slot
-        )
+        if self.independent_kappa_router and self.kappa_bias_from_scale:
+            kappa_bias = self._materialize_kappa_bias(
+                kappa_slot, selected_router_scores=selected_router_scores
+            ).to(dtype=target_dtype)
+        else:
+            kappa_bias = self._get_kappa_bias_unsqueezed_for_eval(
+                target_dtype, gate_out_raw.device, kappa_slot
+            )
         slope_work = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
         log_kappa_slope_max_scale = self._get_log_kappa_slope_max_scale_for_eval(
             target_dtype,
             kappa_bias.device,
         )
-        if self.kappa_input in {'top_logits', 'router_probs'}:
+        if self.independent_kappa_router:
+            slope_work = kappa_bias + slope_work
+        elif self.kappa_input in {'top_logits', 'router_probs'}:
             kappa_scale = self._get_kappa_scale_unsqueezed_for_eval(
                 target_dtype, kappa_bias.device, kappa_slot
             )
@@ -2095,7 +2136,7 @@ class Qwen3MLPExperts(nn.Module):
             ),
         )
 
-    def forward(self, x, selected_router_scores=None, router_weight=None, loss_accum=None, current_ut=0):
+    def forward(self, x, selected_router_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None):
         kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else current_ut
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
@@ -2103,11 +2144,20 @@ class Qwen3MLPExperts(nn.Module):
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
         if selected_router_scores is not None and self.kappa_swiglu_enabled:
+            if self.independent_kappa_router:
+                selected_router_scores = self._materialize_kappa_scale(
+                    kappa_slot, selected_router_scores=selected_router_scores,
+                    valid_score_mask=valid_score_mask,
+                )
             if self.training:
-                kappa_bias = self._materialize_kappa_bias(kappa_slot)
+                kappa_bias = self._materialize_kappa_bias(
+                    kappa_slot, selected_router_scores=selected_router_scores
+                )
                 self._accumulate_kappa_bias_l2_losses(
                     kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
                 )
+            elif self.independent_kappa_router and self.kappa_bias_from_scale:
+                kappa_bias = None
             else:
                 kappa_bias = self._materialize_kappa_bias_for_eval(
                     gate_out_raw.dtype,
@@ -2115,7 +2165,7 @@ class Qwen3MLPExperts(nn.Module):
                     kappa_slot,
                 )
             kappa_scale = None
-            if self.training and self.use_kappa_scale:
+            if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
                 self._accumulate_kappa_scale_l2_losses(
                     kappa_scale, loss_accum=loss_accum, kappa_slot=kappa_slot
@@ -2134,6 +2184,8 @@ class Qwen3MLPExperts(nn.Module):
                 kappa_slot=kappa_slot,
             )
         else:
+            self._cached_kappa_scale = None
+            self._cached_kappa_scale_slot = None
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
         if selected_router_scores is not None and MANAGER.collect_load_balancing_stats:
             self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
@@ -2330,9 +2382,7 @@ class MOELayer(nn.Module):
                 self.num_kappa_router_slots, self.n_exp, -1
             )[kappa_slot]
             kappa_logits = F.linear(scale_grad(x_flat, 0.1), conditioning_weight)
-            top_k_scores = kappa_logits.gather(-1, top_k_indices)
-            if self.kappa_input == 'router_probs':
-                router_probs = F.softmax(top_k_scores, dim=-1)
+            return kappa_logits.gather(-1, top_k_indices)
         if self.kappa_input == 'top_logits':
             if self.kappa_input_logit_norm_exponent <= 0.0:
                 # No normalization.
@@ -2465,12 +2515,17 @@ class MOELayer(nn.Module):
             )
 
         # --- Run experts ---
+        valid_score_mask = None
+        if self.kappa_router is not None:
+            expert_counts = expert_mask.sum(dim=(0, 1))
+            valid_score_mask = torch.arange(exp_capacity, device=x.device).unsqueeze(0) < expert_counts.unsqueeze(1)
         expert_outputs = self.experts(
             expert_inputs,
             selected_router_scores=expert_router_scores,
             router_weight=self.router.w_g.weight,
             loss_accum=loss_accum,
             current_ut=current_ut,
+            valid_score_mask=valid_score_mask,
         ) # [n_exp, exp_capacity, C]
 
         # --- Combine expert outputs (the "gather" part) ---
@@ -2604,7 +2659,7 @@ class GPT(nn.Module):
                 if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
                     if not experts.kappa_bias_from_scale:
                         bias_enabled_modules.append(experts)
-                    if experts.use_kappa_scale:
+                    if experts.use_kappa_scale_param:
                         bias_scale_enabled_modules.append(experts)
             elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
                 bias_enabled_modules.append(mlp)
@@ -2721,6 +2776,15 @@ class GPT(nn.Module):
     def load_state_dict(self, state_dict, strict=True, assign=False):
         if strict:
             state_dict = state_dict.copy()
+            if getattr(self.config, 'independent_kappa_router', False):
+                expected_keys = self.state_dict().keys()
+                for name in tuple(state_dict):
+                    if name not in expected_keys and (
+                        name.endswith('.experts.kappa_scale')
+                        or name == 'global_kappa_scale'
+                        or '.kappa_scale_ema_rms_reg_keeper.' in name
+                    ):
+                        del state_dict[name]
             for name, param in self.state_dict().items():
                 # Keep the model’s current value for these parameters 
                 # if they are missing in the checkpoint, to avoid loading errors 
