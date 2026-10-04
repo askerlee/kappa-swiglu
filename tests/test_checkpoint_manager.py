@@ -863,6 +863,48 @@ def test_save_checkpoint_skips_optimizer_shard_when_optimizer_data_is_none(tmp_p
     assert not (checkpoint_dir / "optim_000020_rank0.pt").exists()
 
 
+def test_checkpoint_file_sizes_skip_changed_model_layout(tmp_path):
+    save_checkpoint(str(tmp_path), 10, {"weight": torch.ones(32)}, None, {})
+    model_data = {"weight": torch.ones(8)}
+    assert snapshot_checkpoint_file_sizes(str(tmp_path), 20, model_data=model_data) == (None, None)
+
+    save_checkpoint(str(tmp_path), 20, model_data, None, {})
+    assert validate_checkpoint_file_sizes(str(tmp_path), 20) is None
+
+    save_checkpoint(str(tmp_path), 30, model_data, None, {})
+    assert validate_checkpoint_file_sizes(str(tmp_path), 30) == 20
+    model_path = tmp_path / "model_000030.pt"
+    model_path.write_bytes(model_path.read_bytes()[:-64])
+    with pytest.raises(ValueError, match="validation failed"):
+        validate_checkpoint_file_sizes(str(tmp_path), 30)
+
+
+def test_checkpoint_file_sizes_skip_legacy_reference_before_predelete(tmp_path):
+    model_data = {"weight": torch.ones(8)}
+    save_checkpoint(str(tmp_path), 10, model_data, None, {})
+    (tmp_path / "meta_000010.json").write_text("{}")
+
+    assert snapshot_checkpoint_file_sizes(str(tmp_path), 20, model_data=model_data) == (None, None)
+    delete_old_checkpoints(str(tmp_path), 20)
+    save_checkpoint(str(tmp_path), 20, model_data, None, {})
+    assert validate_checkpoint_file_sizes(str(tmp_path), 20) is None
+
+
+def test_checkpoint_file_sizes_snapshot_matching_signature_before_predelete(tmp_path):
+    model_data = {"weight": torch.ones(8)}
+    save_checkpoint(str(tmp_path), 10, model_data, None, {})
+    comparison_step, reference_file_sizes = snapshot_checkpoint_file_sizes(
+        str(tmp_path), 20, model_data=model_data,
+    )
+    assert comparison_step == 10
+    delete_old_checkpoints(str(tmp_path), 20)
+    save_checkpoint(str(tmp_path), 20, model_data, None, {})
+    assert validate_checkpoint_file_sizes(
+        str(tmp_path), 20, comparison_step=comparison_step,
+        reference_file_sizes=reference_file_sizes,
+    ) == 10
+
+
 def test_validate_checkpoint_file_sizes_matches_previous_checkpoint(tmp_path):
     checkpoint_dir = tmp_path / "ckpt"
     checkpoint_dir.mkdir()

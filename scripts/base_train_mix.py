@@ -1911,6 +1911,7 @@ while True:
                     checkpoint_dir,
                     step,
                     expected_optimizer_ranks=expected_optimizer_ranks,
+                    model_data=orig_model.state_dict(),
                 )
                 delete_old_checkpoints(checkpoint_dir, step, keep_steps=keep_checkpoint_steps)
             except ValueError as exc:
@@ -1950,7 +1951,7 @@ while True:
                     if comparison_step is None:
                         print0(
                             f"Skipped checkpoint file size validation at step {step}: "
-                            "no prior checkpoint with matching file layout was found for file-size validation."
+                            "no prior checkpoint with matching file layout and model signature was found."
                         )
                     else:
                         validate_checkpoint_file_sizes(
@@ -1969,7 +1970,7 @@ while True:
                     if comparison_step is None:
                         print0(
                             f"Skipping old checkpoint deletion at step {step}: "
-                            "no prior checkpoint with matching file layout was found for file-size validation."
+                            "no prior checkpoint with matching file layout and model signature was found."
                         )
                     else:
                         delete_old_checkpoints(checkpoint_dir, step, keep_steps=keep_checkpoint_steps)

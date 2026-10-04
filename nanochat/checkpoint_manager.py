@@ -6,6 +6,7 @@ import os
 import re
 import glob
 import json
+import hashlib
 import logging
 import torch
 
@@ -485,10 +486,31 @@ def _expected_checkpoint_roles(expected_optimizer_ranks=None):
     return expected_roles
 
 
-def _find_comparison_checkpoint_files(checkpoint_dir, step, expected_roles):
+def _checkpoint_model_signature(model_data):
+    layout = [
+        (name, list(tensor.shape), str(tensor.dtype), list(tensor.stride()))
+        for name, tensor in sorted(model_data.items())
+    ]
+    payload = json.dumps([str(torch.__version__), layout]).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _saved_checkpoint_model_signature(checkpoint_dir, step):
+    meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
+    try:
+        with open(meta_path, encoding="utf-8") as meta_file:
+            metadata = json.load(meta_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    return metadata.get("checkpoint_model_signature")
+
+
+def _find_comparison_checkpoint_files(checkpoint_dir, step, expected_roles, model_signature=None):
     for older_step in _older_checkpoint_steps(checkpoint_dir, step):
         candidate_files = _checkpoint_files_for_step(checkpoint_dir, older_step)
         if expected_roles.issubset(candidate_files):
+            if model_signature is not None and _saved_checkpoint_model_signature(checkpoint_dir, older_step) != model_signature:
+                continue
             return older_step, candidate_files
     return None, None
 
@@ -811,7 +833,10 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
         # Save the metadata dict as json
         meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
         with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_data, f, indent=2)
+            json.dump({
+                **meta_data,
+                "checkpoint_model_signature": _checkpoint_model_signature(model_data),
+            }, f, indent=2)
         logger.info(f"Saved metadata to: {meta_path}")
     # Note that optimizer state is sharded across ranks, so each rank must save its own.
     if optimizer_data is not None:
@@ -821,17 +846,23 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
         logger.info(f"Saved optimizer state to: {optimizer_path}")
 
 
-def snapshot_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_ranks=None):
+def snapshot_checkpoint_file_sizes(checkpoint_dir, step, expected_optimizer_ranks=None, model_data=None):
     expected_roles = _expected_checkpoint_roles(expected_optimizer_ranks)
+    model_signature = (
+        _checkpoint_model_signature(model_data)
+        if model_data is not None
+        else _saved_checkpoint_model_signature(checkpoint_dir, step)
+    )
     comparison_step, comparison_files = _find_comparison_checkpoint_files(
         checkpoint_dir,
         step,
         expected_roles,
+        model_signature=model_signature,
     )
 
     if comparison_files is None:
         logger.warning(
-            "Skipping checkpoint file size validation for step %06d; no previous checkpoint with matching file layout was found.",
+            "Skipping checkpoint file size validation for step %06d; no previous checkpoint with matching file layout and model signature was found.",
             step,
         )
         return None, None
