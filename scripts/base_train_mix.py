@@ -313,7 +313,7 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
-                    help="L2 weight on kappa_bias and kappa_scale values (with --kappa-bias-from-scale, derived kappa_bias is not regularized and the omitted default is 0.002 unless --independent-kappa-router is enabled)")
+                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.002 with --kappa-bias-from-scale or --independent-kappa-router; derived kappa_bias is not regularized)")
 parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs='?', const=True, default=False,
                     help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
 parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99,
@@ -421,7 +421,7 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
-if args.kappa_bias_from_scale and not args.independent_kappa_router and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
+if (args.kappa_bias_from_scale or args.independent_kappa_router) and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
     args.kappa_l2_loss_weight = 0.002
 
 if args.separate_base_sft_kappa:
