@@ -90,7 +90,52 @@ def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
                     "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
                 }
                 exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
-                assert args.kappa_l2_loss_weight == (0.0001 if independent_router and not argv else expected)
+                assert args.kappa_l2_loss_weight == (0.001 if independent_router and not argv else expected)
+
+
+def test_independent_kappa_router_bias_l2_weight_is_ten_times_base_weight():
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        module = ast.parse(script.read_text(), filename=str(script))
+        base_assignment = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name) and node.value.func.id == "get_two_stage_annealed_loss_weight"
+            and any(isinstance(target, ast.Name) and target.id in {"kappa_l2_loss_weight", "kappa_bias_l2_loss_weight"} for target in node.targets)
+        )
+        scale_assignment = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "kappa_scale_l2_loss_weight" for target in node.targets)
+        )
+        adjustment = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Attribute) and node.test.attr == "independent_kappa_router"
+            and any(isinstance(child, ast.Name) and child.id == "kappa_bias_l2_loss_weight" for child in ast.walk(node))
+        )
+        assert base_assignment.lineno < scale_assignment.lineno < adjustment.lineno
+        weight_module = ast.Module(body=[base_assignment, scale_assignment, adjustment], type_ignores=[])
+        for independent_router in (False, True):
+            for base_weight in (0.0, 0.001, 0.02):
+                for step in (0, 50, 100):
+                    args = SimpleNamespace(
+                        independent_kappa_router=independent_router,
+                        kappa_l2_loss_weight=base_weight,
+                        kappa_scale_l2_loss_weight_scale=2.0,
+                        kappa_l2_loss_stage1_frac=0.5,
+                        kappa_l2_loss_final_frac=0.1,
+                    )
+                    anneal = load_function_from_script("get_two_stage_annealed_loss_weight", script)
+                    namespace = {
+                        "args": args, "step": step, "num_iterations": 100,
+                        "kappa_l2_stage1_iterations": 50,
+                        "get_two_stage_annealed_loss_weight": anneal,
+                    }
+                    exec(compile(weight_module, filename=str(script), mode="exec"), namespace)
+                    scheduled_weight = anneal(base_weight, step, 100, 50, 0.5, 0.1)
+                    assert namespace["kappa_bias_l2_loss_weight"] == scheduled_weight * (10 if independent_router else 1)
+                    assert namespace["kappa_scale_l2_loss_weight"] == scheduled_weight * 2.0
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():

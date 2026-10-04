@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -39,6 +40,34 @@ def test_independent_kappa_router_cli_wires_model_config(script_name):
     )
     default = next(keyword.value.value for keyword in option.keywords if keyword.arg == 'default')
     assert default is (None if script_name == 'chat_sft' else False)
+
+
+@pytest.mark.parametrize("independent_router", [False, True])
+@pytest.mark.parametrize("base_weight", [0.0, 0.001, 0.02])
+def test_chat_sft_independent_kappa_bias_l2_weight(independent_router, base_weight):
+    module = ast.parse(CHAT_SFT.read_text(), filename=str(CHAT_SFT))
+    weights = ast.Module(body=[
+        node for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id in {"kappa_bias_l2_loss_weight", "kappa_scale_l2_loss_weight"}
+            for target in node.targets
+        )
+    ], type_ignores=[])
+    namespace = {
+        "args": SimpleNamespace(
+            independent_kappa_router=None, kappa_l2_loss_weight=base_weight,
+            kappa_scale_l2_loss_weight_scale=0.2,
+        ),
+        "model": SimpleNamespace(config=SimpleNamespace(independent_kappa_router=independent_router)),
+    }
+    exec(compile(weights, filename=str(CHAT_SFT), mode="exec"), namespace)
+    assert namespace["kappa_bias_l2_loss_weight"] == base_weight * (10 if independent_router else 1)
+    assert namespace["kappa_scale_l2_loss_weight"] == base_weight * 0.2
+    source = CHAT_SFT.read_text()
+    assert 'loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss' in source
+    assert '"train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight' in source
 
 
 def test_chat_sft_keeps_sensitive_parameters_in_fp32_without_casting_buffers():

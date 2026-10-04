@@ -135,7 +135,7 @@ parser.add_argument(
     dest="kappa_l2_loss_weight",
     type=float,
     default=0,
-    help="L2 weight on kappa_bias values",
+    help="L2 base weight on kappa_bias and kappa_scale values; independent kappa routing uses 10x this weight for kappa_bias",
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
@@ -373,6 +373,9 @@ print0(f"Inherited aux_loss_weight: {aux_loss_weight}")
 user_config["aux_loss_weight"] = aux_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
+kappa_bias_l2_loss_weight = args.kappa_l2_loss_weight * (
+    10 if model.config.independent_kappa_router else 1
+)
 kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
 
 # If the model has not initialized kappa swiglu params, this has no effect.
@@ -1098,7 +1101,7 @@ while True:
         kappa_scale_l2_loss = losses.get("kappa_scale_l2_loss")
         if kappa_scale_l2_loss is None:
             kappa_scale_l2_loss = 0.0
-        loss = loss + args.kappa_l2_loss_weight * kappa_bias_l2_loss
+        loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
         loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
 
         loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
@@ -1187,7 +1190,7 @@ while True:
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
-            "train/kappa_bias_l2_loss_weight": args.kappa_l2_loss_weight,
+            "train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight,
             "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,

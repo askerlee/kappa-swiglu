@@ -313,7 +313,7 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
-                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.0001 with --independent-kappa-router, otherwise 0.002 with --kappa-bias-from-scale; derived kappa_bias is not regularized)")
+                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.001 with --independent-kappa-router, which uses 10x this weight for kappa_bias; otherwise 0.002 with --kappa-bias-from-scale; derived kappa_bias is not regularized)")
 parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs='?', const=True, default=False,
                     help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
 parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99,
@@ -1825,19 +1825,23 @@ while True:
     # By default, stage1_iterations = kappa_l2_loss_anneal_iterations = -1.
     # In this case, it's set as half of the total iterations in 
     # get_two_stage_annealed_loss_weight().
-    kappa_bias_l2_stage1_iterations = args.kappa_l2_loss_anneal_iterations
-    kappa_bias_l2_loss_weight = get_two_stage_annealed_loss_weight(
+    kappa_l2_stage1_iterations = args.kappa_l2_loss_anneal_iterations
+    kappa_l2_loss_weight = get_two_stage_annealed_loss_weight(
         args.kappa_l2_loss_weight,
         step,
         total_iterations=num_iterations,
-        stage1_iterations=kappa_bias_l2_stage1_iterations,
+        stage1_iterations=kappa_l2_stage1_iterations,
         stage1_floor_frac=args.kappa_l2_loss_stage1_frac,
         final_floor_frac=args.kappa_l2_loss_final_frac,
         nolearn_iterations=0,
     )
     kappa_scale_l2_loss_weight = (
-        kappa_bias_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
+        kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
     )
+    if args.independent_kappa_router:
+        kappa_bias_l2_loss_weight = kappa_l2_loss_weight * 10
+    else:
+        kappa_bias_l2_loss_weight = kappa_l2_loss_weight
     moe_kappa_slope_max_scale = get_kappa_slope_max_scale(
         args.moe_kappa_slope_max_scale,
         step,
