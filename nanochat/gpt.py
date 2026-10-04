@@ -1937,6 +1937,8 @@ class Qwen3MLPExperts(nn.Module):
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, kappa_slot=0):
         kappa_bias = kappa_bias.float()
         kappa_bias_l2_value = kappa_bias
+        if self.kappa_bias_from_scale:
+            return
         if self.initial_kappa_bias is not None:
             kappa_bias_l2_value = kappa_bias - self.initial_kappa_bias[kappa_slot].float()
         loss = kappa_bias_l2_value.square().mean()

@@ -22,35 +22,23 @@ def load_function_from_script(function_name, script=BASE_TRAIN):
     raise AssertionError(f"Function {function_name} not found in {BASE_TRAIN}")
 
 
-def test_kappa_bias_from_scale_halves_only_implicit_default_l2_weight():
-    cases = [
-        (False, [], 0.01, 0.01),
-        (True, [], 0.01, 0.005),
-        (True, ["--kappa-l2-loss-weight", "0.01"], 0.01, 0.01),
-        (True, ["--kappa-l2-loss-weight=0.01"], 0.01, 0.01),
-        (True, ["--kappa-l2-loss-weight", "0.02"], 0.02, 0.02),
-        (True, ["--kappa-l2-loss-weight=0"], 0.0, 0.0),
-    ]
+def test_kappa_bias_from_scale_keeps_default_l2_weight():
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         module = ast.parse(script.read_text(), filename=str(script))
-        adjustment = next(
-            node for node in module.body
-            if isinstance(node, ast.If)
-            and any(
-                isinstance(child, ast.Attribute) and child.attr == "kappa_bias_from_scale"
-                for child in ast.walk(node.test)
-            )
+        weight_arg = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--kappa-l2-loss-weight"
         )
-        adjustment_module = ast.Module(body=[adjustment], type_ignores=[])
-        for enabled, argv, weight, expected in cases:
-            args = SimpleNamespace(kappa_bias_from_scale=enabled, kappa_l2_loss_weight=weight)
-            namespace = {
-                "args": args,
-                "sys": SimpleNamespace(argv=[str(script), *argv]),
-                "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
-            }
-            exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
-            assert args.kappa_l2_loss_weight == expected
+        default = next(keyword.value for keyword in weight_arg.keywords if keyword.arg == "default")
+        assert ast.literal_eval(default) == 0.01
+        assert not any(
+            isinstance(node, ast.Attribute) and node.attr == "kappa_l2_loss_weight"
+            and isinstance(node.ctx, ast.Store)
+            for node in ast.walk(module)
+        )
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():

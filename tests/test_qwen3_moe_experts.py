@@ -187,6 +187,42 @@ def test_kappa_bias_from_scale_rejects_constant_input():
         GPTConfig(kappa_bias_from_scale=True, kappa_input="constant")
 
 
+@pytest.mark.parametrize("derived_bias", [False, True])
+def test_kappa_bias_from_scale_skips_bias_regularization_but_keeps_scale(derived_bias):
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        kappa_bias_from_scale=derived_bias, kappa_bias_ema_rms_reg=True,
+    )
+    experts = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        experts.kappa_scale.fill_(3.0)
+        if derived_bias:
+            experts.kappa_bias_alpha.fill_(2.0)
+        else:
+            experts.kappa_bias.fill_(6.0)
+        for keeper in (experts.kappa_bias_ema_rms_reg_keeper, experts.kappa_scale_ema_rms_reg_keeper):
+            keeper.target_ready.fill_(True)
+            keeper.target_rms.fill_(10.0)
+    accum = MOEManager()
+    experts._accumulate_kappa_bias_l2_losses(experts._materialize_kappa_bias(), loss_accum=accum)
+    experts._accumulate_kappa_scale_l2_losses(experts._materialize_kappa_scale(), loss_accum=accum)
+    bias_loss = accum.aggregate("kappa_bias_l2_loss")
+    bias_ema_loss = accum.aggregate("kappa_bias_ema_rms_reg_loss")
+    if derived_bias:
+        assert bias_loss == 0
+        assert bias_ema_loss == 0
+    else:
+        assert bias_loss.item() == 36.0
+        assert bias_ema_loss.item() > 0.0
+    scale_loss = accum.aggregate("kappa_scale_l2_loss")
+    assert scale_loss.item() == 9.0
+    assert accum.aggregate("kappa_scale_ema_rms_reg_loss").item() > 0.0
+    scale_loss.backward()
+    assert experts.kappa_scale.grad.abs().sum() > 0
+    if derived_bias:
+        assert experts.kappa_bias_alpha.grad is None
+
+
 def test_gate_activation_stats_match_logged_formulas():
     torch.manual_seed(0)
     config = GPTConfig(
