@@ -336,7 +336,7 @@ def _patch_missing_keys(model_data, model_config):
                 if uses_qwen3_moe and kappa_bias_from_scale:
                     model_data.setdefault(
                         f"transformer.h.{layer_idx}.mlp.experts.kappa_bias_alpha",
-                        torch.zeros((), device=checkpoint_device),
+                        torch.ones((), device=checkpoint_device),
                     )
                 elif kappa_bias_key not in model_data:
                     expert_bias = model_data.pop(kappa_bias_expert_key, None)

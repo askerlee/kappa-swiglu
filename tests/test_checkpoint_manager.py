@@ -52,7 +52,7 @@ def test_kappa_bias_from_scale_checkpoint_round_trip(granularity, dense_kappa):
     model.init_weights()
     for layer_idx in (1, 2):
         experts = model.transformer.h[layer_idx].mlp.experts
-        assert experts.kappa_bias_alpha.item() == 0.0
+        assert experts.kappa_bias_alpha.item() == 1.0
         with torch.no_grad():
             experts.kappa_bias_alpha.fill_(float(layer_idx))
             experts._get_kappa_scale_parameter().fill_(3.0)
@@ -71,6 +71,7 @@ def test_kappa_bias_from_scale_checkpoint_round_trip(granularity, dense_kappa):
     _patch_missing_keys(missing_data, config)
     assert "transformer.h.1.mlp.experts.kappa_bias" not in missing_data
     assert missing_data["transformer.h.1.mlp.experts.kappa_bias_alpha"].ndim == 0
+    assert missing_data["transformer.h.1.mlp.experts.kappa_bias_alpha"].item() == 1.0
     if granularity == 'global' and not dense_kappa:
         assert 'global_kappa_bias' not in missing_data
 

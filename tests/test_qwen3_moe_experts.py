@@ -159,7 +159,7 @@ def test_kappa_bias_from_scale_materialization_gradients_and_eval_cache(granular
     scale = experts._get_kappa_scale_parameter()
     assert experts.kappa_bias is None
     assert experts.kappa_bias_alpha.shape == torch.Size([])
-    assert experts.kappa_bias_alpha.item() == 0.0
+    assert experts.kappa_bias_alpha.item() == 1.0
     assert "kappa_bias" not in experts.state_dict()
     with torch.no_grad():
         experts.kappa_bias_alpha.fill_(2.0)

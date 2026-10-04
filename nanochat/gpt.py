@@ -1533,7 +1533,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.use_kappa_swiglu and self.kappa_bias_from_scale and not self.use_kappa_scale:
             raise ValueError("kappa_bias_from_scale requires a learned kappa_scale")
         if self.use_kappa_scale and self.kappa_bias_from_scale:
-            self.kappa_bias_alpha = nn.Parameter(torch.zeros(()))
+            self.kappa_bias_alpha = nn.Parameter(torch.ones(()))
         else:
             self.register_parameter('kappa_bias_alpha', None)
         if self.use_kappa_swiglu:
@@ -2818,7 +2818,7 @@ class GPT(nn.Module):
                 if isinstance(experts, Qwen3MLPExperts) and experts.kappa_scale is not None:
                     torch.nn.init.zeros_(experts.kappa_scale)
                 if isinstance(experts, Qwen3MLPExperts) and experts.kappa_bias_alpha is not None:
-                    torch.nn.init.zeros_(experts.kappa_bias_alpha)
+                    torch.nn.init.ones_(experts.kappa_bias_alpha)
             
         # Per-layer scalars
         self.resid_lambdas.fill_(1.0)   # 1.0 => typical residual connections at init

@@ -290,7 +290,7 @@ parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--kappa-bias-from-scale", type=str2bool, nargs='?', const=True, default=False,
-                    help="derive MoE kappa_bias as a learned scalar alpha per layer times kappa_scale (alpha starts at zero and is shared across UT/task slots)")
+                    help="derive MoE kappa_bias as a learned scalar alpha per layer times kappa_scale (alpha starts at one and is shared across UT/task slots)")
 parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
                     help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
 parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
