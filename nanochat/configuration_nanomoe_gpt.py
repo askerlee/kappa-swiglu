@@ -25,6 +25,7 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
+        independent_kappa_router: bool = False,
         kappa_input_constant: float = 1.0,
         kappa_input_logit_norm_exponent: float = 0.5,
         separate_base_sft_kappa: bool = False,
@@ -59,7 +60,6 @@ class GPTConfig:
         moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         num_moe_layers: int = -1,  # total number of MoE layers from moe_start_layer onward (-1 = all eligible layers)
         router_use_full_prec: bool = False,  # use float32 precision in the router
-        router_wg_delta: bool = False,  # train a full additive delta alongside the base router projection
         use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
         bilinear_mlp_moe: bool = False,  # disable SiLU gating in Qwen3-style MoE MLPs and use raw bilinear gating instead
@@ -110,6 +110,11 @@ class GPTConfig:
             )
         self.constant_kappa_bias_dense_layers = bool(constant_kappa_bias_dense_layers)
         self.kappa_input = kappa_input
+        self.independent_kappa_router = bool(independent_kappa_router)
+        if self.independent_kappa_router and (
+            not self.use_kappa_swiglu or not use_qwen3_moe_mlp or kappa_input == "constant"
+        ):
+            raise ValueError("independent_kappa_router requires kappa-SwiGLU MoE with nonconstant kappa_input")
         self.kappa_input_constant = (
             None if kappa_input_constant is None else float(kappa_input_constant)
         )
@@ -199,7 +204,6 @@ class GPTConfig:
             raise ValueError(f"num_moe_layers must be >= -1, got {num_moe_layers}")
         self.num_moe_layers = int(num_moe_layers)
         self.router_use_full_prec = router_use_full_prec
-        self.router_wg_delta = bool(router_wg_delta)
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
         self.bilinear_mlp_moe = bool(bilinear_mlp_moe)

@@ -24,6 +24,23 @@ def load_function_from_script(function_name):
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
 
 
+@pytest.mark.parametrize('script_name', ['base_train', 'base_train_mix', 'chat_sft'])
+def test_independent_kappa_router_cli_wires_model_config(script_name):
+    source = (ROOT / 'scripts' / f'{script_name}.py').read_text(encoding='utf-8')
+    assert '"--independent-kappa-router"' in source
+    assert 'independent_kappa_router=args.independent_kappa_router,' in source
+    module = ast.parse(source)
+    option = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'add_argument' and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == '--independent-kappa-router'
+    )
+    default = next(keyword.value.value for keyword in option.keywords if keyword.arg == 'default')
+    assert default is (None if script_name == 'chat_sft' else False)
+
+
 def test_chat_sft_keeps_sensitive_parameters_in_fp32_without_casting_buffers():
     module = torch.nn.Linear(4, 3)
     module.register_buffer("stats", torch.ones(2, dtype=torch.float32))
@@ -234,32 +251,6 @@ def test_chat_sft_logs_kappa_gradient_correlation_per_layer():
 
     assert "losses[f'kappa_grad_correlation_{i}'] = kappa_grad_correlation" in source
     assert 'log_data[f"inspect/kappa_grad_correlation_{i}"]' in source
-
-
-def test_router_wg_delta_cli_applies_during_training_and_eval():
-    source = CHAT_SFT.read_text(encoding="utf-8")
-
-    assert "if args.router_wg_delta:" in source
-    assert "if args.router_wg_delta and not args.eval_only:" not in source
-    assert "model.setup_router_wg_delta()" in source
-    assert "args.router_wg_delta = args.router_wg_delta or bool(" in source
-    assert 'getattr(model.config, "router_wg_delta", False)' in source
-    assert 'user_config["router_wg_delta"] = args.router_wg_delta' in source
-    assert '--router-wg-delta-l2-loss-weight' in source
-    assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
-    assert 'group.get("name") == "router_wg_base"' not in source
-
-
-def test_muonh_disables_router_wg_delta_l2_after_optimizer_inheritance():
-    source = CHAT_SFT.read_text(encoding="utf-8")
-
-    assert 'choices=["muon", "muonh", "aurora"]' in source
-    inherit_index = source.index('print0(f"Inherited matrix_optimizer: {args.matrix_optimizer}")')
-    disable_index = source.index('if args.matrix_optimizer == "muonh":', inherit_index)
-    assignment_index = source.index('args.router_wg_delta_l2_loss_weight = 0.0', disable_index)
-    config_index = source.index('user_config["router_wg_delta_l2_loss_weight"]', assignment_index)
-
-    assert inherit_index < disable_index < assignment_index < config_index
 
 
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():

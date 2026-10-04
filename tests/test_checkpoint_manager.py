@@ -121,11 +121,11 @@ def make_row_tensor(start_row, rows, cols):
 
 
 def test_migrate_optimizer_param_group_names_renames_legacy_kappa_group():
-    state_dict = {"param_groups": [{"name": "kappa_bias"}, {"name": "router_wg_base"}]}
+    state_dict = {"param_groups": [{"name": "kappa_bias"}, {"name": "embedding"}]}
 
     result = _migrate_optimizer_param_group_names(state_dict)
 
-    assert [group["name"] for group in result["param_groups"]] == ["kappa_params", "router_wg_base"]
+    assert [group["name"] for group in result["param_groups"]] == ["kappa_params", "embedding"]
 
 
 def write_sized_file(path, size):

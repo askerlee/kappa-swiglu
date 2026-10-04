@@ -246,6 +246,8 @@ parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const
                     help="allocate base/SFT kappa slots shared across UT passes; base training uses slot 0")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
+parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=False,
+                    help="predict kappa confidence with a separate projection; scale only its input-latent gradients by 0.1")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
@@ -640,6 +642,7 @@ def build_model_meta(depth):
         use_kappa_swiglu=args.use_kappa_swiglu,
         separate_base_sft_kappa=args.separate_base_sft_kappa,
         kappa_input=args.kappa_input,
+        independent_kappa_router=args.independent_kappa_router,
         kappa_input_constant=args.kappa_input_constant,
         kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,

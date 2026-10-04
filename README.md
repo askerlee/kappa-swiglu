@@ -119,6 +119,28 @@ independent AdamW moments and update counts; inactive slots remain unchanged.
 The mode is stored in checkpoint model configuration. Start a fresh run when
 switching an existing mixed-training recipe to the new parameter layout.
 
+## Independent Kappa Router
+
+Add `--use-kappa-swiglu --independent-kappa-router` to base or mixed training
+to predict kappa conditioning with a separate bias-free token-to-expert
+projection. The original router still selects experts and weights their
+outputs. The predictor gathers scores for those selected experts; logit
+normalization uses only the predictor's own weights. With
+`--kappa-input router_probs`, conditioning uses the predictor's top-k softmax,
+not the original router's mixture weights. Constant conditioning is unsupported.
+
+Predictor weights receive full gradients. Only the predictor's gradient path
+back to the input latent is multiplied by 0.1; expert and routing paths are
+unchanged. The predictor uses the MoE matrix optimizer and matrix learning
+rate, not the kappa bias/scale learning-rate schedule.
+
+Chat SFT inherits this mode from the checkpoint. Add
+`--independent-kappa-router` to enable it on an existing kappa checkpoint;
+missing predictor weights are copied from its router weights,
+preserving deterministic initial
+conditioning. Fresh pretraining initializes the predictor uniformly like
+other input projections. Predictor weights and the mode are saved for evaluation.
+
 ## Notes
 
 - The training command assumes this repository is the current working directory.

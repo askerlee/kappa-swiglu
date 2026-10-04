@@ -10,6 +10,143 @@ from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qw
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('exponent', [0.0, 0.5, 1.0])
+@pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
+def test_independent_kappa_router_scales_only_latent_gradients(exponent, kappa_input):
+    config = GPTConfig(
+        n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
+        independent_kappa_router=True, kappa_input_logit_norm_exponent=exponent,
+    )
+    layer = MOELayer(config, layer_idx=0)
+    reference_config = deepcopy(config)
+    reference_config.independent_kappa_router = False
+    reference = MOELayer(reference_config, layer_idx=0)
+    with torch.no_grad():
+        reference.router.w_g.weight.copy_(layer.kappa_router.weight)
+    latent = torch.randn(2, 4, requires_grad=True)
+    reference_latent = latent.detach().clone().requires_grad_(True)
+    indices = torch.tensor([[2, 0], [1, 2]])
+    scores = layer._select_gate_confidence(torch.zeros(2, 2), torch.ones(2, 2), latent, indices)
+    reference_logits = reference.router.w_g(reference_latent).gather(-1, indices)
+    reference_scores = reference._select_gate_confidence(
+        reference_logits, F.softmax(reference_logits, dim=-1),
+        reference_latent, indices,
+    )
+    torch.testing.assert_close(scores, reference_scores)
+    scores.square().sum().backward()
+    reference_scores.square().sum().backward()
+    torch.testing.assert_close(latent.grad, 0.1 * reference_latent.grad)
+    torch.testing.assert_close(layer.kappa_router.weight.grad, reference.router.w_g.weight.grad)
+    assert layer.router.w_g.weight.grad is None
+
+
+@pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
+def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_input):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    torch.manual_seed(42)
+    config = GPTConfig(
+        n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
+        independent_kappa_router=True, router_tie_noise_steps=0,
+        use_aux_loss=False, use_router_z_loss=False, min_capacity=2,
+    )
+    layer = MOELayer(config, layer_idx=0)
+    with torch.no_grad():
+        for param in layer.experts.parameters():
+            param.uniform_(-0.5, 0.5)
+        layer.kappa_router.weight.copy_(layer.router.w_g.weight)
+        layer.experts.router_confidence_gate_bias_grad_scale.zero_()
+    reference_config = deepcopy(config)
+    reference_config.independent_kappa_router = False
+    reference = MOELayer(reference_config, layer_idx=0)
+    reference.load_state_dict({
+        name: value for name, value in layer.state_dict().items()
+        if name != 'kappa_router.weight'
+    })
+    reference.experts.router_confidence_gate_bias_grad_scale.zero_()
+    latent = torch.randn(1, 8, 4, requires_grad=True)
+    valid_mask = torch.tensor([[True, True, True, True, True, True, False, False]])
+    output = layer(latent, valid_token_mask=valid_mask)
+    reference_output = reference(latent, valid_token_mask=valid_mask)
+    torch.testing.assert_close(output, reference_output)
+    assert output[:, -2:].count_nonzero() == 0
+    output.square().sum().backward()
+    reference_output.square().sum().backward()
+    torch.testing.assert_close(layer.router.w_g.weight.grad, reference.router.w_g.weight.grad)
+    assert layer.router.w_g.weight.grad.abs().sum() > 0
+    assert layer.kappa_router.weight.grad.abs().sum() > 0
+    with torch.no_grad():
+        layer.eval()
+        reference.eval()
+        torch.testing.assert_close(
+            layer(latent, valid_token_mask=valid_mask),
+            reference(latent, valid_token_mask=valid_mask),
+        )
+
+
+def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips():
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        kappa_input='top_logits',
+    )
+    legacy = GPT(config)
+    legacy.init_weights()
+    with torch.no_grad():
+        legacy.transformer.h[0].mlp.router.w_g.weight.normal_()
+    new_config = deepcopy(config)
+    new_config.independent_kappa_router = True
+    with torch.device('meta'):
+        model = GPT(new_config)
+    model.to_empty(device='cpu')
+    model.init_weights()
+    model.load_state_dict(legacy.state_dict(), strict=True, assign=True)
+    predictor = model.transformer.h[0].mlp.kappa_router.weight
+    torch.testing.assert_close(predictor, legacy.transformer.h[0].mlp.router.w_g.weight)
+    assert predictor.data_ptr() != model.transformer.h[0].mlp.router.w_g.weight.data_ptr()
+    with torch.no_grad():
+        predictor.add_(0.2)
+    reloaded = GPT(new_config)
+    reloaded.load_state_dict(model.state_dict())
+    torch.testing.assert_close(reloaded.transformer.h[0].mlp.kappa_router.weight, predictor)
+    optimizer = model.setup_optimizer()
+    assert any(predictor is param for group in optimizer.param_groups for param in group['params'])
+
+
+def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    torch.manual_seed(42)
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        kappa_input='top_logits', independent_kappa_router=True,
+        total_ut_steps=2, separate_base_sft_kappa=True, router_tie_noise_steps=0,
+    )
+    reference = GPT(config)
+    reference.init_weights()
+    with torch.no_grad():
+        experts = reference.transformer.h[0].mlp.experts
+        experts.kappa_scale.fill_(0.3)
+        experts.c_proj.normal_(std=0.05)
+    checkpoint_config = deepcopy(config)
+    checkpoint_config.activation_checkpointing = True
+    checkpoint_model = GPT(checkpoint_config)
+    checkpoint_model.load_state_dict(reference.state_dict())
+    tokens = torch.randint(0, 64, (2, 5))
+    targets = torch.randint(0, 64, (2, 5))
+    reference_loss, _ = reference(tokens, targets)
+    checkpoint_loss, _ = checkpoint_model(tokens, targets)
+    reference_loss.backward()
+    checkpoint_loss.backward()
+    torch.testing.assert_close(reference_loss, checkpoint_loss)
+    for (name, param), (checkpoint_name, checkpoint_param) in zip(
+        reference.named_parameters(), checkpoint_model.named_parameters()
+    ):
+        assert name == checkpoint_name
+        if param.grad is not None:
+            torch.testing.assert_close(param.grad, checkpoint_param.grad, rtol=1e-5, atol=1e-6)
+    assert reference.transformer.h[0].mlp.kappa_router.weight.grad.abs().sum() > 0
+
+
 def test_dense_gate_projection_is_applied_before_fc_gating():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -438,7 +575,7 @@ def test_router_valid_token_mask_excludes_padding_from_capacity():
     assert not router_probs[~valid_token_mask.reshape(-1)].any()
 
 
-def test_router_full_delta_preserves_logits_and_receives_gradients():
+def test_router_projection_receives_gradients_and_roundtrips():
     config = GPTConfig(
         n_layer=3,
         moe_start_layer=1,
@@ -449,99 +586,17 @@ def test_router_full_delta_preserves_logits_and_receives_gradients():
     )
     router = Router(config).eval()
     x = torch.randn(2, 3, config.n_embd)
-    expected_logits = F.linear(x.view(-1, config.n_embd), router.w_g.weight)
-    expected_scores, expected_indices = router(x)[2:4]
-
-    router.setup_router_wg_delta()
-    actual_logits = F.linear(x.view(-1, config.n_embd), router.effective_w_g_weight())
+    logits = F.linear(x.view(-1, config.n_embd), router.w_g.weight)
     actual_scores, actual_indices = router(x)[2:4]
-    torch.testing.assert_close(actual_logits, expected_logits)
-    torch.testing.assert_close(actual_scores, expected_scores)
-    torch.testing.assert_close(actual_indices, expected_indices)
+    torch.testing.assert_close(actual_scores, logits.gather(-1, actual_indices))
     assert router.w_g.weight.requires_grad
-    assert router.w_g_delta.requires_grad
 
-    actual_logits.sum().backward()
+    actual_scores.sum().backward()
     assert router.w_g.weight.grad is not None
-    assert router.w_g_delta.grad is not None
-    torch.testing.assert_close(router.w_g.weight.grad, router.w_g_delta.grad)
-
-    with torch.no_grad():
-        router.w_g_delta.fill_(0.25)
-    assert not torch.equal(router.effective_w_g_weight(), router.w_g.weight)
-    router.enable_router_wg_delta(False)
-    assert router.w_g.weight.requires_grad
-    assert not router.w_g_delta.requires_grad
-    torch.testing.assert_close(router.effective_w_g_weight(), router.w_g.weight)
-
-    config.router_wg_delta = True
+    assert router.w_g.weight.grad.abs().sum() > 0
     reloaded_router = Router(config)
     reloaded_router.load_state_dict(router.state_dict(), strict=True)
-    torch.testing.assert_close(reloaded_router.w_g_delta, router.w_g_delta)
-
-
-def test_router_wg_delta_l2_loss_tracks_allocated_delta_and_does_not_touch_base_weights():
-    config = GPTConfig(
-        sequence_len=4,
-        vocab_size=32,
-        n_layer=2,
-        moe_start_layer=0,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-    )
-    model = GPT(config, pad_vocab_size_to=1)
-    model.init_weights()
-    model.setup_router_wg_delta()
-    routers = [block.mlp.router for block in model.transformer.h]
-    with torch.no_grad():
-        routers[0].w_g_delta.fill_(0.25)
-        routers[1].w_g_delta.fill_(0.5)
-
-    delta_l2_loss = model.compute_router_wg_delta_l2_loss()
-    torch.testing.assert_close(delta_l2_loss, torch.tensor((0.25 ** 2 + 0.5 ** 2) / 2))
-    delta_l2_loss.backward()
-    assert all(router.w_g_delta.grad is not None for router in routers)
-    assert all(router.w_g.weight.grad is None for router in routers)
-
-    model.enable_router_wg_delta(False)
-    disabled_loss = model.compute_router_wg_delta_l2_loss()
-    torch.testing.assert_close(disabled_loss, delta_l2_loss.detach())
-    assert not disabled_loss.requires_grad
-
-    ids = torch.randint(0, config.vocab_size, (1, config.sequence_len))
-    _, base_mode_losses = model(ids, ids)
-    torch.testing.assert_close(
-        base_mode_losses["router_wg_delta_l2_loss"],
-        delta_l2_loss.detach(),
-    )
-
-
-def test_gpt_forward_skips_router_wg_delta_l2_when_not_enabled(monkeypatch):
-    config = GPTConfig(
-        sequence_len=4,
-        vocab_size=32,
-        n_layer=2,
-        moe_start_layer=0,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-    )
-    model = GPT(config, pad_vocab_size_to=1)
-    model.init_weights()
-
-    def fail_if_called():
-        raise AssertionError("router delta L2 must not be computed when disabled")
-
-    monkeypatch.setattr(model, "compute_router_wg_delta_l2_loss", fail_if_called)
-    ids = torch.randint(0, config.vocab_size, (1, config.sequence_len))
-    _, losses = model(ids, ids)
-
-    assert losses["router_wg_delta_l2_loss"] == 0
+    torch.testing.assert_close(reloaded_router.w_g.weight, router.w_g.weight)
 
 
 def test_no_expert_rate_tracks_joint_assignment_drops():

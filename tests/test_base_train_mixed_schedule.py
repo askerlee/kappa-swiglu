@@ -54,32 +54,6 @@ def test_chat_sft_steps_keep_base_train_capacity():
     assert "set_train_capacity" not in source
 
 
-def test_router_wg_delta_updates_only_on_mixed_chat_sft_steps():
-    source = BASE_TRAIN_MIX.read_text()
-
-    assert 'parser.add_argument("--router-wg-delta", action="store_true"' in source
-    assert "model.setup_router_wg_delta()" in source
-    assert "orig_model.enable_router_wg_delta(is_chat_sft_step)" in source
-    assert 'group.get("name") == "router_wg_delta" and not is_chat_sft_step' in source
-    assert 'group.get("name") == "router_wg_base" and is_chat_sft_step' not in source
-    assert 'group["initial_lr"] * lrm if is_chat_sft_step else 0.0' in source
-    assert 'group["lr"] = group["initial_lr"] * lrm' in source
-    assert 'args.router_wg_delta = bool(getattr(model.config, "router_wg_delta", False))' in source
-    assert "if is_chat_sft_step:" in source
-    assert 'loss = loss + args.router_wg_delta_l2_loss_weight * router_wg_delta_l2_loss' in source
-    assert '"train/router_wg_delta_l2_loss_step"' in source
-
-
-def test_muonh_disables_router_wg_delta_l2_loss():
-    source = BASE_TRAIN_MIX.read_text()
-
-    disable_index = source.index('if args.matrix_optimizer == "muonh":')
-    assignment_index = source.index('args.router_wg_delta_l2_loss_weight = 0.0', disable_index)
-    config_index = source.index('user_config = vars(args).copy()', assignment_index)
-
-    assert disable_index < assignment_index < config_index
-
-
 def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
     source = BASE_TRAIN_MIX.read_text()
 
