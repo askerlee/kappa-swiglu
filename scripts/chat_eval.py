@@ -9,6 +9,7 @@ torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 """
 
 import argparse
+import csv
 import os
 from functools import partial
 from contextlib import nullcontext
@@ -26,8 +27,8 @@ import torch
 import torch.distributed as dist
 
 from nanochat.chatcore import ALL_CHAT_EVAL_TASKS, compute_chatcore_metric
-from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type
-from nanochat.checkpoint_manager import load_model
+from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type, get_base_dir
+from nanochat.checkpoint_manager import load_model, find_largest_model, find_last_step
 from nanochat.engine import Engine
 
 from tasks.humaneval import HumanEval
@@ -191,6 +192,57 @@ def run_chat_eval(task_name, model, tokenizer, engine,
         raise ValueError(f"Unsupported task evaluation type: {task_object.eval_type}")
     return acc
 
+def save_chat_eval_results(args, results, chatcore_metric_dict):
+    if get_dist_info()[1] != 0:
+        return None
+    model_slug = f"{args.model_tag}_{args.source}_chat_{args.step:06d}"
+    output_csv_path = os.path.join(get_base_dir(), "chat_eval", f"{model_slug}.csv")
+    os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+    with open(output_csv_path, "w", encoding="utf-8", newline="") as result_file:
+        writer = csv.writer(result_file)
+        writer.writerow(["Task", "Accuracy"])
+        for task_name, accuracy in {**results, **chatcore_metric_dict}.items():
+            writer.writerow([task_name, f"{accuracy:.6f}"])
+    print0(f"\nChat eval results written to: {output_csv_path}")
+    if args.run != "dummy":
+        import wandb
+
+        if args.wandb_api_key_file:
+            with open(args.wandb_api_key_file, encoding="utf-8") as key_file:
+                os.environ["WANDB_API_KEY"] = key_file.read().strip()
+        metadata = {
+            "model_slug": model_slug,
+            "source": args.source,
+            "step": args.step,
+            "task_names": list(results),
+            "max_problems": args.max_problems,
+            "batch_size": args.batch_size,
+            "num_samples": args.num_samples,
+            "max_new_tokens": args.max_new_tokens,
+            "temperature": args.temperature,
+            "top_k": args.top_k,
+            "total_ut_steps": args.total_ut_steps,
+            **chatcore_metric_dict,
+        }
+        with wandb.init(project=args.wandb_project, name=args.run or model_slug, config=vars(args)) as wandb_run:
+            log_data = {f"chat_eval/{task_name}": accuracy for task_name, accuracy in results.items()}
+            for metric_name, log_name in (
+                ("ChatCORE metric", "ChatCORE"),
+                ("ChatCORE metric (without SpellingBee)", "ChatCORE_without_SpellingBee"),
+            ):
+                if metric_name in chatcore_metric_dict:
+                    log_data[f"chat_eval/{log_name}"] = chatcore_metric_dict[metric_name]
+            wandb_run.log(log_data, step=args.step)
+            artifact = wandb.Artifact(
+                name=f"{model_slug}-chat-eval",
+                type="chat-eval-results",
+                metadata=metadata,
+            )
+            artifact.add_file(output_csv_path, name=os.path.basename(output_csv_path))
+            wandb_run.log_artifact(artifact)
+    return output_csv_path
+
+
 if __name__ == "__main__":
 
     # Parse command-line arguments
@@ -205,6 +257,9 @@ if __name__ == "__main__":
     parser.add_argument('-b', '--batch-size', type=int, default=8, help='Batch size for categorical evaluation')
     parser.add_argument('-g', '--model-tag', type=str, default=None, help='Model tag to load')
     parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
+    parser.add_argument('--run', type=str, default=None, help="W&B run name (default: checkpoint name; 'dummy' disables uploads)")
+    parser.add_argument('--wandb-project', type=str, default='nano-moe-sft', help='W&B project for evaluation results')
+    parser.add_argument('--wandb-api-key-file', type=str, default=None, help='Optional W&B API key file')
     parser.add_argument('--loop', dest='total_ut_steps', type=int, default=None, help='Override the checkpoint Universal Transformer loop count')
     parser.add_argument('-x', '--max-problems', type=int, default=None, help='Max problems to evaluate')
     parser.add_argument(
@@ -227,6 +282,13 @@ if __name__ == "__main__":
     ptdtype = torch.float32 if args.dtype == 'float32' else torch.bfloat16
     autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
 
+    checkpoint_root = os.path.join(get_base_dir(), {
+        "base": "base_checkpoints", "sft": "chatsft_checkpoints", "rl": "chatrl_checkpoints",
+    }[args.source])
+    if args.model_tag is None:
+        args.model_tag = find_largest_model(checkpoint_root)
+    if args.step is None:
+        args.step = find_last_step(os.path.join(checkpoint_root, args.model_tag))
     model, tokenizer, meta = load_model(
         args.source,
         device,
@@ -267,6 +329,7 @@ if __name__ == "__main__":
     chatcore_metric_dict = compute_chatcore_metric(results)
     for metric_name, metric_value in chatcore_metric_dict.items():
         print0(f"{metric_name} accuracy: {100*metric_value:.2f}%")
+    save_chat_eval_results(args, results, chatcore_metric_dict)
     get_report().log(section="Chat evaluation " + args.source, data=[
         vars(args), # CLI args
         results,

@@ -1,4 +1,5 @@
 import ast
+import csv
 import os
 import sys
 from pathlib import Path
@@ -63,6 +64,70 @@ def load_function_from_script(function_name):
             exec(compile(function_module, filename=str(CHAT_SFT), mode="exec"), namespace)
             return namespace[function_name]
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
+
+
+@pytest.mark.parametrize("rank,upload", [(0, True), (0, False), (1, True)])
+def test_chat_eval_csv_and_wandb_artifact(tmp_path, monkeypatch, rank, upload):
+    script_path = ROOT / "scripts" / "chat_eval.py"
+    module = ast.parse(script_path.read_text(encoding="utf-8"))
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "save_chat_eval_results")
+    logged = {}
+
+    class FakeRun:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            logged["finished"] = True
+
+        def log(self, data, step):
+            logged["metrics"] = data
+            logged["step"] = step
+
+        def log_artifact(self, artifact):
+            logged["artifact"] = artifact
+
+    class FakeArtifact:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+        def add_file(self, path, name):
+            self.file = (path, name)
+
+    def fake_init(**kwargs):
+        logged["init"] = kwargs
+        return FakeRun()
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=fake_init, Artifact=FakeArtifact))
+    namespace = {"os": os, "csv": csv, "get_base_dir": lambda: str(tmp_path),
+                 "get_dist_info": lambda: (rank != 0, rank, rank, 2), "print0": lambda *args: None}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(script_path), "exec"), namespace)
+    args = SimpleNamespace(model_tag="d8", source="sft", step=42, run=None if upload else "dummy",
+                           wandb_project="nano-moe-sft", wandb_api_key_file=None,
+                           max_problems=10, batch_size=8, num_samples=1, max_new_tokens=512,
+                           temperature=0.0, top_k=50, total_ut_steps=2)
+    metrics = {"ChatCORE metric": 0.25, "ChatCORE metric (without SpellingBee)": 0.3}
+    path = namespace["save_chat_eval_results"](args, {"ARC-Easy": 0.5}, metrics)
+    if rank != 0:
+        assert path is None
+        assert not list(tmp_path.iterdir())
+        assert not logged
+        return
+    with open(path, newline="", encoding="utf-8") as result_file:
+        rows = list(csv.reader(result_file))
+    assert rows == [["Task", "Accuracy"], ["ARC-Easy", "0.500000"],
+                    ["ChatCORE metric", "0.250000"],
+                    ["ChatCORE metric (without SpellingBee)", "0.300000"]]
+    if upload:
+        assert logged["init"]["project"] == "nano-moe-sft"
+        assert logged["artifact"].options["type"] == "chat-eval-results"
+        assert logged["artifact"].options["metadata"]["task_names"] == ["ARC-Easy"]
+        assert logged["artifact"].file == (path, os.path.basename(path))
+        assert logged["metrics"]["chat_eval/ChatCORE_without_SpellingBee"] == 0.3
+        assert logged["step"] == 42
+        assert logged["finished"]
+    else:
+        assert not logged
 
 
 @pytest.mark.parametrize('script_name', ['base_train', 'base_train_mix', 'chat_sft'])
