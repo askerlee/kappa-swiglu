@@ -14,8 +14,6 @@ class MOEManager:
             "router_z_loss": [],
             "kappa_bias_l2_loss": [],
             "kappa_scale_l2_loss": [],
-            "kappa_bias_ema_rms_reg_loss": [],
-            "kappa_scale_ema_rms_reg_loss": [],
             "kappa_slope_scale_abs_top5p_mean": [],
             "kappa_slope_scale_abs_bottom5p_mean": [],
             "drop_rate_per_ks": [],

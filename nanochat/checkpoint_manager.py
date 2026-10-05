@@ -1060,7 +1060,6 @@ def build_model(checkpoint_dir, step, device, phase, **kwargs):
         moe_kappa_slope_max_scale=getattr(model_config, "moe_kappa_slope_max_scale", None),
         dense_kappa_slope_max_scale=getattr(model_config, "dense_kappa_slope_max_scale", None),
     )
-    model.set_kappa_bias_ema_rms_reg_step(0)
     # Put the model in the right training phase / mode
     if phase == "eval":
         model.eval()

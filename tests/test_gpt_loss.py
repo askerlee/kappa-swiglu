@@ -12,7 +12,7 @@ def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, total_ut_steps=3,
         use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
-        separate_base_sft_kappa=True, kappa_bias_ema_rms_reg=True,
+        separate_base_sft_kappa=True,
     )
     model = GPT(config)
     model.init_weights()
@@ -21,7 +21,7 @@ def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
     inputs = torch.randn(2, 2, 16)
     for module in (dense, experts):
         assert module.kappa_bias.shape[0] == 2
-        assert module.kappa_bias_ema_rms_reg_keeper.ema_rms.shape == (2,)
+        assert not any('ema_rms' in name for name in module.state_dict())
         with torch.no_grad():
             module.kappa_bias[0].fill_(-0.4)
             module.kappa_bias[1].fill_(0.4)
@@ -57,7 +57,7 @@ def test_separate_kappa_eval_cache_and_reference_slots(granularity):
         n_exp=2, moe_start_layer=1, total_ut_steps=3,
         use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
         separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
-        kappa_bias_ema_rms_reg=True, refresh_kappa_param_references=True,
+        refresh_kappa_param_references=True,
     )
     model = GPT(config)
     model.init_weights()
@@ -69,7 +69,7 @@ def test_separate_kappa_eval_cache_and_reference_slots(granularity):
         with torch.no_grad():
             bias[0].fill_(-0.5)
             bias[1].fill_(0.5)
-        assert module.kappa_scale_ema_rms_reg_keeper.ema_rms.shape == (2,)
+        assert not any('ema_rms' in name for name in module.state_dict())
     model.refresh_kappa_param_references()
     assert experts.initial_kappa_bias.shape[0] == 2
     assert experts.initial_kappa_scale.shape[0] == 2

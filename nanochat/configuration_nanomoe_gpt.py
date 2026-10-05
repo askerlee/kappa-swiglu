@@ -40,11 +40,6 @@ class GPTConfig:
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
         kappa_bias_l2_loss_weight: float = 0.0,
-        kappa_bias_ema_rms_reg: bool = False,
-        kappa_bias_l2_ema_beta: float = 0.99,
-        kappa_bias_l2_ema_anchor_start: float = 0.4,
-        kappa_bias_l2_ema_anchor_end: float = 0.8,
-        kappa_bias_l2_ema_floor_frac: float = 0.8,
         refresh_kappa_param_references: bool = False,
         refresh_kappa_bias_references: bool | None = None,
         use_noisy_top_k: bool = False,
@@ -151,36 +146,6 @@ class GPTConfig:
             )
         self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
         self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
-        self.kappa_bias_ema_rms_reg = bool(kappa_bias_ema_rms_reg)
-        self.kappa_bias_l2_ema_beta = float(kappa_bias_l2_ema_beta)
-        if not (0.0 <= self.kappa_bias_l2_ema_beta < 1.0):
-            raise ValueError(
-                "kappa_bias_l2_ema_beta must satisfy 0 <= beta < 1, got "
-                f"{kappa_bias_l2_ema_beta}"
-            )
-        self.kappa_bias_l2_ema_anchor_start = float(kappa_bias_l2_ema_anchor_start)
-        self.kappa_bias_l2_ema_anchor_end = float(kappa_bias_l2_ema_anchor_end)
-        if not (0.0 <= self.kappa_bias_l2_ema_anchor_start <= 1.0):
-            raise ValueError(
-                "kappa_bias_l2_ema_anchor_start must satisfy 0 <= start <= 1, got "
-                f"{kappa_bias_l2_ema_anchor_start}"
-            )
-        if not (0.0 <= self.kappa_bias_l2_ema_anchor_end <= 1.0):
-            raise ValueError(
-                "kappa_bias_l2_ema_anchor_end must satisfy 0 <= end <= 1, got "
-                f"{kappa_bias_l2_ema_anchor_end}"
-            )
-        if self.kappa_bias_l2_ema_anchor_end < self.kappa_bias_l2_ema_anchor_start:
-            raise ValueError(
-                "kappa_bias_l2_ema_anchor_end must be >= kappa_bias_l2_ema_anchor_start, got "
-                f"start={kappa_bias_l2_ema_anchor_start}, end={kappa_bias_l2_ema_anchor_end}"
-            )
-        self.kappa_bias_l2_ema_floor_frac = float(kappa_bias_l2_ema_floor_frac)
-        if self.kappa_bias_l2_ema_floor_frac < 0.0:
-            raise ValueError(
-                "kappa_bias_l2_ema_floor_frac must be >= 0, got "
-                f"{kappa_bias_l2_ema_floor_frac}"
-            )
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:

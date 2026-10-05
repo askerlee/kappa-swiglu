@@ -1,13 +1,63 @@
 import ast
+import argparse
 import math
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_TRAIN_MIX = ROOT / "scripts" / "base_train_mix.py"
+
+
+@pytest.mark.parametrize("script_name", ("base_train.py", "base_train_mix.py"))
+def test_training_script_rejects_removed_training_options(script_name):
+    script_path = ROOT / "scripts" / script_name
+    source = script_path.read_text()
+    tree = ast.parse(source, filename=str(script_path))
+    parser_nodes = []
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "args" for target in node.targets)
+        ):
+            break
+        if isinstance(node, ast.FunctionDef) and node.name == "str2bool":
+            parser_nodes.append(node)
+        elif isinstance(node, ast.Assign):
+            if any(
+                isinstance(target, ast.Name)
+                and target.id in {"parser", "DEFAULT_SEED", "AUX_LOSS_WEIGHT_DEFAULT"}
+                for target in node.targets
+            ):
+                parser_nodes.append(node)
+        elif (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "parser"
+        ):
+            parser_nodes.append(node)
+    namespace = {"argparse": argparse}
+    exec(compile(ast.Module(body=parser_nodes, type_ignores=[]), str(script_path), "exec"), namespace)
+    parser = namespace["parser"]
+    parser.parse_args([])
+    removed_options = [
+        "--mockup-mode", "--fp8", "--fp8-recipe",
+        "--kappa-ema-rms-reg", "--kappa-l2-ema-beta",
+        "--kappa-l2-ema-anchor-start", "--kappa-l2-ema-anchor-end",
+        "--kappa-l2-ema-floor-frac",
+    ]
+    for option in removed_options:
+        assert option not in parser.format_help()
+        with pytest.raises(SystemExit) as error:
+            parser.parse_args([option])
+        assert error.value.code == 2
+    assert "mockup" not in source.lower()
+    assert "fp8" not in source.lower()
 
 
 def load_function_from_script(function_name, script_path=BASE_TRAIN_MIX):

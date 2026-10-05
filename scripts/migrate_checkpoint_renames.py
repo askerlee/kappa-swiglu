@@ -46,11 +46,6 @@ NON_MODEL_CONFIG_EXACT_KEY_RENAMES = {
     "kappa_bias_delay_start_iteration_frac": "kappa_delay_start_iteration_frac",
     "kappa_bias_lr_warmup_iterations": "kappa_lr_warmup_iterations",
     "kappa_bias_l2_loss_weight": "kappa_l2_loss_weight",
-    "kappa_bias_ema_rms_reg": "kappa_ema_rms_reg",
-    "kappa_bias_l2_ema_beta": "kappa_l2_ema_beta",
-    "kappa_bias_l2_ema_anchor_start": "kappa_l2_ema_anchor_start",
-    "kappa_bias_l2_ema_anchor_end": "kappa_l2_ema_anchor_end",
-    "kappa_bias_l2_ema_floor_frac": "kappa_l2_ema_floor_frac",
     "kappa_bias_l2_loss_anneal_iterations": "kappa_l2_loss_anneal_iterations",
     "kappa_bias_l2_loss_stage1_frac": "kappa_l2_loss_stage1_frac",
     "kappa_bias_l2_loss_final_frac": "kappa_l2_loss_final_frac",
@@ -164,7 +159,6 @@ def _infer_model_config_updates_from_model_data(model_data: dict[str, Any]) -> d
 
     kappa_layers: set[int] = set()
     dense_kappa_layers: set[int] = set()
-    has_kappa_bias_ema_rms_reg = False
 
     for key in model_data:
         if not isinstance(key, str):
@@ -179,21 +173,12 @@ def _infer_model_config_updates_from_model_data(model_data: dict[str, Any]) -> d
                 if ".mlp.experts." not in key and layer_idx is not None:
                     dense_kappa_layers.add(layer_idx)
 
-        if "kappa_bias_ema_rms_reg_keeper." in key or "kappa_scale_ema_rms_reg_keeper." in key:
-            has_kappa_bias_ema_rms_reg = True
-            if layer_idx is not None:
-                kappa_layers.add(layer_idx)
-            if ".mlp.experts." not in key and layer_idx is not None:
-                dense_kappa_layers.add(layer_idx)
-
     updates: dict[str, Any] = {}
     if kappa_layers:
         updates["use_kappa_swiglu"] = True
         updates["kappa_bias_start_layer"] = min(kappa_layers)
     if dense_kappa_layers:
         updates["constant_kappa_bias_dense_layers"] = True
-    if has_kappa_bias_ema_rms_reg:
-        updates["kappa_bias_ema_rms_reg"] = True
     return updates
 
 

@@ -150,15 +150,14 @@ def test_base_train_separates_compute_and_parameter_storage_dtypes():
         )
         autocast_index = source.index('dtype=ptdtype')
         cast_index = source.index("cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)")
-        fp8_guard_index = source.index("if args.fp8:")
-        convert_index = source.index("convert_to_float8_training(model", fp8_guard_index)
-        optimizer_index = source.index("optimizer = model.setup_optimizer(", convert_index)
+        compile_index = source.index("model = build_training_model(orig_model, args.compile)", cast_index)
+        optimizer_index = source.index("optimizer = model.setup_optimizer(", compile_index)
 
         assert 'default="reference", choices=("reference", "float32", "bfloat16")' in source[parameter_dtype_arg_index:parameter_dtype_arg_index + 180]
         assert source.count("cast_model_parameters(model, parameter_dtype, embedding_dtype=embedding_dtype)") == 1
         assert dtype_arg_index < parameter_dtype_arg_index < dtype_resolution_index
         assert dtype_resolution_index < parameter_dtype_resolution_index < autocast_index < cast_index
-        assert cast_index < fp8_guard_index < convert_index < optimizer_index
+        assert cast_index < compile_index < optimizer_index
 
 
 def test_base_train_scalar_lr_defaults_to_x0_learning_rate():
@@ -230,7 +229,7 @@ def test_resume_lr_warmup_scales_then_restores_absolute_schedule():
 
         source = script.read_text()
         assert 'parser.add_argument("--resume-lr-warmup-steps"' in source
-        assert source.count("lrm *= get_resume_lr_warmup_scale(") == 2
+        assert source.count("lrm *= get_resume_lr_warmup_scale(") == 1
 
 
 def test_resume_lr_warmup_freezes_kappa_until_warmup_finishes():
@@ -382,9 +381,6 @@ def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     assert 'num_anneal_iterations=args.aux_loss_weight_init_anneal_iterations' in source
     assert 'final_weight=args.aux_loss_weight' in source
     assert '--use-kappa-swiglu-as-lr-scaler' not in source
-    assert 'parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs=' in source
-    assert 'kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg' in source
-    assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
     assert 'parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=0.1' in source
     assert '--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=0.02' in source
     assert 'stage1_iterations = max((effective_total_iterations + 1) // 2, 1)' in source
@@ -397,21 +393,29 @@ def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
 
 
-def test_kappa_bias_ema_rms_reg_cli_is_wired_into_config_and_step_updates():
-    source = BASE_TRAIN.read_text()
+def test_base_train_removes_kappa_ema_rms_reg_and_preserves_ordinary_l2():
+    from inspect import signature
+    from nanochat.configuration_nanomoe_gpt import GPTConfig
 
-    assert 'parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs=' in source
-    assert 'parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99' in source
-    assert 'parser.add_argument("--kappa-l2-ema-anchor-start", dest="kappa_l2_ema_anchor_start", type=float, default=0.4' in source
-    assert 'parser.add_argument("--kappa-l2-ema-anchor-end", dest="kappa_l2_ema_anchor_end", type=float, default=0.8' in source
-    assert 'parser.add_argument("--kappa-l2-ema-floor-frac", dest="kappa_l2_ema_floor_frac", type=float, default=0.8' in source
-    assert 'kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg' in source
-    assert 'kappa_bias_l2_ema_beta=args.kappa_l2_ema_beta' in source
-    assert 'kappa_bias_l2_ema_anchor_start=args.kappa_l2_ema_anchor_start' in source
-    assert 'kappa_bias_l2_ema_anchor_end=args.kappa_l2_ema_anchor_end' in source
-    assert 'kappa_bias_l2_ema_floor_frac=args.kappa_l2_ema_floor_frac' in source
-    assert 'orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)' in source
-    assert 'orig_model.set_kappa_bias_ema_rms_reg_step(step)' in source
+    removed_fields = (
+        "kappa_bias_ema_rms_reg",
+        "kappa_bias_l2_ema_beta",
+        "kappa_bias_l2_ema_anchor_start",
+        "kappa_bias_l2_ema_anchor_end",
+        "kappa_bias_l2_ema_floor_frac",
+    )
+    for config in (GPTConfig(), GPTConfig(**dict.fromkeys(removed_fields, True))):
+        for name in removed_fields:
+            assert name not in signature(GPTConfig).parameters
+            assert not hasattr(config, name)
+        assert config.kappa_bias_l2_loss_weight == 0.0
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        source = script.read_text()
+        assert "ema_rms" not in source
+        assert "kappa_l2_ema" not in source
+        assert "--kappa-l2-ema" not in source
+        assert "loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss" in source
+        assert "loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss" in source
 
 
 def test_kappa_input_logit_norm_exponent_cli_is_wired_into_config():

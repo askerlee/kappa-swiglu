@@ -35,7 +35,7 @@ import argparse
 import sys
 import signal
 import shlex
-from contextlib import nullcontext, contextmanager
+from contextlib import nullcontext
 import re
 
 import wandb
@@ -236,10 +236,6 @@ parser.add_argument("--dtype", type=str, default="bfloat16", choices=("float32",
 parser.add_argument("--parameter-dtype", type=str, default="bfloat16", choices=("reference", "float32", "bfloat16"),
                     help="parameter storage: reference keeps token/value embeddings in BF16 on CUDA and other parameters in FP32")
 parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for initialization")
-parser.add_argument("--mockup-mode", type=str2bool, nargs='?', const=True, default=False, help="skip actual training/eval/sample compute and only advance step counter")
-# FP8 training
-parser.add_argument("--fp8", type=str2bool, nargs='?', const=True, default=False, help="enable FP8 training (requires H100+ GPU and torchao)")
-parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
 # Model architecture
 parser.add_argument("--depth", type=int, default=8, help="depth of the Transformer model")
 parser.add_argument("--loop", dest="total_ut_steps", type=int, default=1, help="number of Universal Transformer passes through the full layer stack")
@@ -314,16 +310,6 @@ parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterat
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
                     help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.001 with --independent-kappa-router, which uses 10x this weight for kappa_bias; otherwise 0.002 with --kappa-bias-from-scale; derived kappa_bias is not regularized)")
-parser.add_argument("--kappa-ema-rms-reg", dest="kappa_ema_rms_reg", type=str2bool, nargs='?', const=True, default=False,
-                    help="enable an extra anchored EMA RMS floor regularizer for kappa_bias and kappa_scale on top of the ordinary L2 loss")
-parser.add_argument("--kappa-l2-ema-beta", dest="kappa_l2_ema_beta", type=float, default=0.99,
-                    help="EMA beta for the extra anchored EMA RMS floor regularizer used by --kappa-ema-rms-reg")
-parser.add_argument("--kappa-l2-ema-anchor-start", dest="kappa_l2_ema_anchor_start", type=float, default=0.4,
-                    help="fraction of total iterations where the anchored EMA RMS floor regularizer starts updating its target")
-parser.add_argument("--kappa-l2-ema-anchor-end", dest="kappa_l2_ema_anchor_end", type=float, default=0.5,
-                    help="fraction of total iterations where the anchored EMA RMS floor regularizer stops updating its target")
-parser.add_argument("--kappa-l2-ema-floor-frac", dest="kappa_l2_ema_floor_frac", type=float, default=0.9,
-                    help="floor fraction applied to the anchored EMA RMS target when --kappa-ema-rms-reg is enabled")
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
@@ -467,16 +453,6 @@ if args.aux_loss_weight_init_scale <= 0.0:
     raise ValueError("--aux-loss-weight-init-scale must be > 0")
 if args.aux_loss_weight_init_anneal_iterations < 0:
     raise ValueError("--aux-loss-weight-init-anneal-iterations must be >= 0")
-if not (0.0 <= args.kappa_l2_ema_beta < 1.0):
-    raise ValueError("--kappa-l2-ema-beta must satisfy 0 <= beta < 1")
-if not (0.0 <= args.kappa_l2_ema_anchor_start <= 1.0):
-    raise ValueError("--kappa-l2-ema-anchor-start must satisfy 0 <= start <= 1")
-if args.kappa_l2_ema_anchor_end < args.kappa_l2_ema_anchor_start:
-    raise ValueError("--kappa-l2-ema-anchor-end must be >= --kappa-l2-ema-anchor-start")
-if args.kappa_l2_ema_anchor_end > 1.0:
-    raise ValueError("--kappa-l2-ema-anchor-end must satisfy 0 <= end <= 1")
-if args.kappa_l2_ema_floor_frac < 0.0:
-    raise ValueError("--kappa-l2-ema-floor-frac must be >= 0")
 if args.kappa_input_logit_norm_exponent is not None and args.kappa_input_logit_norm_exponent < 0.0:
     raise ValueError("--kappa-input-logit-norm-exponent must be >= 0")
 if not (0.0 <= args.kappa_l2_loss_stage1_frac <= 1.0):
@@ -591,7 +567,7 @@ else:
     gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
 
 # wandb logging init
-use_dummy_wandb = args.debug or args.mockup_mode or args.model_tag is None or not master_process
+use_dummy_wandb = args.debug or args.model_tag is None or not master_process
 ckpt_prefix2 = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d12
 if args.resume_from_step != -1:
     mat = re.search(r"(\d+)$", str(args.resume_from_step).rstrip('/'))
@@ -688,11 +664,6 @@ def build_model_meta(depth):
         disable_kappa_bias=args.disable_kappa_bias,
         kappa_bias_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
-        kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg,
-        kappa_bias_l2_ema_beta=args.kappa_l2_ema_beta,
-        kappa_bias_l2_ema_anchor_start=args.kappa_l2_ema_anchor_start,
-        kappa_bias_l2_ema_anchor_end=args.kappa_l2_ema_anchor_end,
-        kappa_bias_l2_ema_floor_frac=args.kappa_l2_ema_floor_frac,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
@@ -765,79 +736,6 @@ print0(
     f"Compute dtype: {ptdtype}; parameter storage mode: {args.parameter_dtype} "
     f"(default={parameter_dtype}, embeddings={embedding_dtype})"
 )
-
-# -----------------------------------------------------------------------------
-# FP8 training initialization and management (this has to be done before torch.compile)
-
-# Convert Linear layers to Float8Linear if --fp8 is set
-if args.fp8:
-    if device_type != "cuda":
-        print0("Warning: FP8 training requires CUDA, ignoring --fp8 flag")
-    else:
-        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
-        import torch.nn as nn
-
-        # Filter: only convert layers with dimensions divisible by 16 (FP8 hardware requirement)
-        def fp8_module_filter(mod: nn.Module, fqn: str) -> bool:
-            if not isinstance(mod, nn.Linear):
-                return False
-            # FP8 requires both in_features and out_features divisible by 16
-            if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
-                return False
-            return True
-
-        fp8_config = Float8LinearConfig.from_recipe_name(args.fp8_recipe)
-        convert_to_float8_training(model, config=fp8_config, module_filter_fn=fp8_module_filter)
-        num_fp8_layers = sum(1 for m in model.modules() if 'Float8' in type(m).__name__)
-        num_skipped = sum(1 for m in model.modules() if isinstance(m, nn.Linear)) - num_fp8_layers
-        print0(f"✓ FP8 training enabled ({args.fp8_recipe} scaling) - converted {num_fp8_layers} layers, skipped {num_skipped} (dims not divisible by 16)")
-
-# Context manager to temporarily disable FP8 so that model evaluation remains in BF16
-@contextmanager
-def disable_fp8(model):
-    """Temporarily swap Float8Linear modules with nn.Linear for BF16 evaluation.
-
-    CastConfig is a frozen dataclass, so we can't mutate scaling_type. Instead,
-    we swap out Float8Linear modules entirely and restore them after.
-    """
-    import torch.nn as nn
-
-    # Find all Float8Linear modules and their locations
-    fp8_locations = []  # list of (parent_module, attr_name, fp8_module)
-    for name, module in model.named_modules():
-        if 'Float8' in type(module).__name__:
-            if '.' in name:
-                parent_name, attr_name = name.rsplit('.', 1)
-                parent = model.get_submodule(parent_name)
-            else:
-                parent = model
-                attr_name = name
-            fp8_locations.append((parent, attr_name, module))
-
-    if not fp8_locations:
-        yield  # No FP8 modules, nothing to do
-        return
-
-    # Swap Float8Linear -> nn.Linear (shares the same weight tensor, no copy)
-    for parent, attr_name, fp8_module in fp8_locations:
-        linear = nn.Linear(
-            fp8_module.in_features,
-            fp8_module.out_features,
-            bias=fp8_module.bias is not None,
-            device=fp8_module.weight.device,
-            dtype=fp8_module.weight.dtype,
-        )
-        linear.weight = fp8_module.weight  # share, don't copy
-        if fp8_module.bias is not None:
-            linear.bias = fp8_module.bias
-        setattr(parent, attr_name, linear)
-
-    try:
-        yield
-    finally:
-        # Restore Float8Linear modules
-        for parent, attr_name, fp8_module in fp8_locations:
-            setattr(parent, attr_name, fp8_module)
 
 # -----------------------------------------------------------------------------
 # Compile the model
@@ -940,7 +838,6 @@ total_tokens = total_batch_size * num_iterations
 print0(f"Total number of training tokens: {total_tokens:,}")
 print0(f"Tokens : {target_scaling_params_label} ratio: {total_batch_size * num_iterations / target_scaling_params:.2f}") # Chinchilla is ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
-orig_model.set_kappa_bias_ema_rms_reg_total_iterations(num_iterations)
 
 if args.total_ut_steps > 1:
     print0(f"Loops = {args.total_ut_steps}")
@@ -1742,9 +1639,6 @@ else:
                 f"step {last_core_eval_step:06d}."
             )
 
-if args.mockup_mode:
-    print0("Mockup mode enabled: skipping training/eval/sample compute and only advancing steps.")
-
 core_results = {}
 prev_exp_gate_implicit_bias_signs = {}
 has_rebuilt_compile_after_eval = False
@@ -1818,7 +1712,6 @@ while True:
     # once in a while: evaluate the val bpb (all ranks participate)
     if (
         (not should_terminate_after_checkpoint)
-        and (not args.mockup_mode)
         and args.eval_every > 0
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.eval_every == 0))
     ):
@@ -1826,7 +1719,7 @@ while True:
         orig_model.set_kappa_training_phase(False)
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-        with disable_fp8(orig_model), autocast_ctx:
+        with autocast_ctx:
             # val_bpb: Compute summed loss over targets, but normalize by the number of bytes
             # of the target text, not tokens.
             # Use orig_model (uncompiled) to avoid grad_mode recompilation of the
@@ -1959,17 +1852,15 @@ while True:
 
     # once in a while: estimate the CORE metric (all ranks participate)
     # use the original uncompiled model because the inputs keep changing shape
-    # disable FP8 for evaluation to use BF16 for more consistent/accurate results
 
     if (
         (not should_terminate_after_checkpoint)
-        and (not args.mockup_mode)
         and args.core_metric_every > 0
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.core_metric_every == 0))
     ):
         orig_model.set_kappa_training_phase(False)
         model.eval()
-        with disable_fp8(orig_model), autocast_ctx:
+        with autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
             max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
             core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
@@ -2034,7 +1925,6 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     should_sample = (
         (not should_terminate_after_checkpoint)
-        and (not args.mockup_mode)
         and args.sample_every > 0
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.sample_every == 0))
     )
@@ -2060,7 +1950,7 @@ while True:
             for prompt in prompts:
                 prompt_start = time.perf_counter()
                 tokens = tokenizer(prompt, prepend="<|bos|>")
-                with disable_fp8(orig_model), autocast_ctx:
+                with autocast_ctx:
                     sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
                 prompt_elapsed = time.perf_counter() - prompt_start
                 print0(f"sample prompt took {prompt_elapsed:.2f}s: {prompt}")
@@ -2107,182 +1997,153 @@ while True:
     # -------------------------------------------------------------------------
     # single training step
     # evaluate the gradient
-    if args.mockup_mode:
-        lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
-                                args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
-                                lr_base_scale=args.lr_base_scale)
-        lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
-        losses = {
-            'ntp_loss': 0.0,
-            'aux_loss': 0.0,
-            'router_z_loss': 0.0,
-            'kappa_bias_l2_loss': 0.0,
-            'kappa_scale_l2_loss': 0.0,
-            'kappa_bias_ema_rms_reg_loss': 0.0,
-            'kappa_scale_ema_rms_reg_loss': 0.0,
-            'kappa_slope_scale_abs_mean': 0.0,
-            'drop_rate_per_ks': None,
-            'no_expert_rates': None,
-        }
-        train_loss_f = 0.0
-        dt = 1.0
-    else:
-        if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
-            print0("resuming training after eval/sample")
-            print0("about to synchronize before resumed training step")
-        trace_rank(f"step {step}: entering training step")
-        trace_rank(f"step {step}: synchronizing before timer")
-        synchronize()
-        if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
-            print0("finished synchronize before resumed training step")
-        trace_rank(f"step {step}: synchronize before timer complete")
-        t0 = time.time()
-        step_losses = None
-        training_model = model
-        orig_model.set_training_step(step)
-        orig_model.set_kappa_bias_ema_rms_reg_step(step)
-        kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
-        step_sft_padding_tokens = 0
-        step_sft_token_positions = 0
-        for micro_step in range(grad_accum_steps):
-            micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
-            current_training_model = (
-                orig_model
-                if run_eager_training_step_after_core_eval and micro_step == 0
-                else training_model
-            )
-            MANAGER.collect_backward_stats = (
-                MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
-            )
-            if micro_step == 0 or micro_step == grad_accum_steps - 1:
-                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
-            micro_x = chat_sft_x if is_chat_sft_step else x
-            micro_y = chat_sft_y if is_chat_sft_step else y
-            micro_valid_token_mask = chat_sft_valid_token_mask if is_chat_sft_step else None
-            if micro_step == grad_accum_steps - 1:
-                micro_x = micro_x[:last_device_batch_size]
-                micro_y = micro_y[:last_device_batch_size]
-                if micro_valid_token_mask is not None:
-                    micro_valid_token_mask = micro_valid_token_mask[:last_device_batch_size]
+    if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
+        print0("resuming training after eval/sample")
+        print0("about to synchronize before resumed training step")
+    trace_rank(f"step {step}: entering training step")
+    trace_rank(f"step {step}: synchronizing before timer")
+    synchronize()
+    if should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval:
+        print0("finished synchronize before resumed training step")
+    trace_rank(f"step {step}: synchronize before timer complete")
+    t0 = time.time()
+    step_losses = None
+    training_model = model
+    orig_model.set_training_step(step)
+    kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
+    step_sft_padding_tokens = 0
+    step_sft_token_positions = 0
+    for micro_step in range(grad_accum_steps):
+        micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
+        current_training_model = (
+            orig_model
+            if run_eager_training_step_after_core_eval and micro_step == 0
+            else training_model
+        )
+        MANAGER.collect_backward_stats = (
+            MANAGER.collect_load_balancing_stats and micro_step == grad_accum_steps - 1
+        )
+        if micro_step == 0 or micro_step == grad_accum_steps - 1:
+            trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting forward")
+        micro_x = chat_sft_x if is_chat_sft_step else x
+        micro_y = chat_sft_y if is_chat_sft_step else y
+        micro_valid_token_mask = chat_sft_valid_token_mask if is_chat_sft_step else None
+        if micro_step == grad_accum_steps - 1:
+            micro_x = micro_x[:last_device_batch_size]
+            micro_y = micro_y[:last_device_batch_size]
             if micro_valid_token_mask is not None:
-                step_sft_padding_tokens = (
-                    step_sft_padding_tokens + (~micro_valid_token_mask).sum()
-                )
-                step_sft_token_positions += micro_valid_token_mask.numel()
-            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
-                print0("starting first resumed forward")
-                if run_eager_training_step_after_core_eval:
-                    print0("running first post-CORE training step eagerly before returning to compiled training")
-            with autocast_ctx:
-                loss, micro_losses = current_training_model(
-                    micro_x, micro_y, valid_token_mask=micro_valid_token_mask
-                )
-            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
-                print0("finished first resumed forward")
-            step_losses = accumulate_step_losses(step_losses, micro_losses, micro_weight)
-            aux_loss = micro_losses.get("aux_loss")
-            if aux_loss is None:
-                aux_loss = 0.0
-            loss = loss + aux_loss_weight * aux_loss
-            kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
-            if kappa_bias_l2_loss is None:
-                kappa_bias_l2_loss = 0.0
-            kappa_scale_l2_loss = micro_losses.get("kappa_scale_l2_loss")
-            if kappa_scale_l2_loss is None:
-                kappa_scale_l2_loss = 0.0
-            kappa_bias_ema_rms_reg_loss = micro_losses.get("kappa_bias_ema_rms_reg_loss")
-            if kappa_bias_ema_rms_reg_loss is None:
-                kappa_bias_ema_rms_reg_loss = 0.0
-            kappa_scale_ema_rms_reg_loss = micro_losses.get("kappa_scale_ema_rms_reg_loss")
-            if kappa_scale_ema_rms_reg_loss is None:
-                kappa_scale_ema_rms_reg_loss = 0.0
-            loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
-            loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
-            loss = loss + kappa_bias_l2_loss_weight * kappa_bias_ema_rms_reg_loss
-            loss = loss + kappa_scale_l2_loss_weight * kappa_scale_ema_rms_reg_loss
-            
-            loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
-            if micro_step == 0 or micro_step == grad_accum_steps - 1:
-                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
-            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
-                print0("starting first resumed backward")
-            loss.backward()
-            if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
-                print0("finished first resumed backward")
-            if run_eager_training_step_after_core_eval and micro_step == 0:
-                trace_rank(f"step {step}: rebuilding compiled training wrapper after eager recovery micro-step")
-                rebuild_start = time.perf_counter()
-                orig_model.train()
-                model = build_training_model(orig_model, args.compile)
-                training_model = model
-                has_rebuilt_compile_after_eval = True
-                rebuild_elapsed = time.perf_counter() - rebuild_start
-                print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
-                trace_rank(f"step {step}: rebuilt compiled training wrapper after eager recovery micro-step")
-            if abort_on_nonfinite_grad:
-                grad_issue = find_first_nonfinite_grad(orig_model)
-                if grad_issue is not None:
-                    grad_name, grad_index, grad_value = grad_issue
-                    loss_snapshot = summarize_loss_snapshot(loss, micro_losses)
-                    raise RuntimeError(
-                        f"Non-finite gradient detected before optimizer.step at step={step}, micro_step={micro_step}. "
-                        f"name={grad_name} index={grad_index} value={grad_value}. "
-                        f"loss_snapshot={loss_snapshot}"
-                    )
-            MANAGER.collect_backward_stats = False
-            if micro_step == 0 or micro_step == grad_accum_steps - 1:
-                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
-            if is_chat_sft_step:
-                chat_sft_x, chat_sft_y, chat_sft_valid_token_mask, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
-            else:
-                x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
-            if micro_step == 0 or micro_step == grad_accum_steps - 1:
-                trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetched next batch")
+                micro_valid_token_mask = micro_valid_token_mask[:last_device_batch_size]
+        if micro_valid_token_mask is not None:
+            step_sft_padding_tokens = (
+                step_sft_padding_tokens + (~micro_valid_token_mask).sum()
+            )
+            step_sft_token_positions += micro_valid_token_mask.numel()
+        if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
+            print0("starting first resumed forward")
+            if run_eager_training_step_after_core_eval:
+                print0("running first post-CORE training step eagerly before returning to compiled training")
+        with autocast_ctx:
+            loss, micro_losses = current_training_model(
+                micro_x, micro_y, valid_token_mask=micro_valid_token_mask
+            )
+        if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
+            print0("finished first resumed forward")
+        step_losses = accumulate_step_losses(step_losses, micro_losses, micro_weight)
+        aux_loss = micro_losses.get("aux_loss")
+        if aux_loss is None:
+            aux_loss = 0.0
+        loss = loss + aux_loss_weight * aux_loss
+        kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
+        if kappa_bias_l2_loss is None:
+            kappa_bias_l2_loss = 0.0
+        kappa_scale_l2_loss = micro_losses.get("kappa_scale_l2_loss")
+        if kappa_scale_l2_loss is None:
+            kappa_scale_l2_loss = 0.0
+        loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
+        loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
 
-        losses = average_step_losses(step_losses, grad_accum_normalizer)
-
-        if MANAGER.collect_load_balancing_stats:
-            collect_weight_grad_stats(model, losses, moe_layer_indices)
-
-        # step the optimizer
-        lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
-                                args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
-                                lr_base_scale=args.lr_base_scale)
-        lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
-        muon_momentum = get_muon_momentum(step)
-        for group in optimizer.param_groups:
-            if "active_kappa_slot" in group:
-                group["active_kappa_slot"] = int(is_chat_sft_step)
-            if group.get("name") == "kappa_params" and group['kind'] == 'adamw':
-                resume_kappa_lr_scale = get_resume_kappa_lr_scale(
-                    step, args.resume_from_step, args.resume_lr_warmup_steps
+        loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
+        if micro_step == 0 or micro_step == grad_accum_steps - 1:
+            trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} starting backward")
+        if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
+            print0("starting first resumed backward")
+        loss.backward()
+        if (should_sample or refresh_compiled_training_model or run_eager_training_step_after_core_eval) and micro_step == 0:
+            print0("finished first resumed backward")
+        if run_eager_training_step_after_core_eval and micro_step == 0:
+            trace_rank(f"step {step}: rebuilding compiled training wrapper after eager recovery micro-step")
+            rebuild_start = time.perf_counter()
+            orig_model.train()
+            model = build_training_model(orig_model, args.compile)
+            training_model = model
+            has_rebuilt_compile_after_eval = True
+            rebuild_elapsed = time.perf_counter() - rebuild_start
+            print0(f"compiled training wrapper rebuilt in {rebuild_elapsed:.2f}s")
+            trace_rank(f"step {step}: rebuilt compiled training wrapper after eager recovery micro-step")
+        if abort_on_nonfinite_grad:
+            grad_issue = find_first_nonfinite_grad(orig_model)
+            if grad_issue is not None:
+                grad_name, grad_index, grad_value = grad_issue
+                loss_snapshot = summarize_loss_snapshot(loss, micro_losses)
+                raise RuntimeError(
+                    f"Non-finite gradient detected before optimizer.step at step={step}, micro_step={micro_step}. "
+                    f"name={grad_name} index={grad_index} value={grad_value}. "
+                    f"loss_snapshot={loss_snapshot}"
                 )
-                group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale * resume_kappa_lr_scale
-                if resume_kappa_lr_scale == 0.0:
-                    for param in group["params"]:
-                        param.grad = None
-            elif group.get("name") == "kappa_router":
-                group["lr"] = group["initial_lr"] * lrm * float(
-                    step >= group.get("kappa_param_delay_start_iterations", 0)
-                )
-            else:
-                group["lr"] = group["initial_lr"] * lrm
-            if group['kind'] in ('muon', 'muonh'):
-                group["momentum"] = muon_momentum
-            group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
-        orig_model.update_aux_free_load_balancing()
-        trace_rank(f"step {step}: starting optimizer.step()")
-        optimizer.step()
-        trace_rank(f"step {step}: finished optimizer.step()")
-        model.zero_grad(set_to_none=True)
-        trace_rank(f"step {step}: converting ntp_loss to host scalar")
-        train_loss_f = losses['ntp_loss'].item() # .item() is a CPU-GPU sync point
-        trace_rank(f"step {step}: ntp_loss host scalar ready")
-        trace_rank(f"step {step}: synchronizing after optimizer")
-        synchronize()
-        trace_rank(f"step {step}: synchronize after optimizer complete")
-        t1 = time.time()
-        dt = t1 - t0
+        MANAGER.collect_backward_stats = False
+        if micro_step == 0 or micro_step == grad_accum_steps - 1:
+            trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetching next batch")
+        if is_chat_sft_step:
+            chat_sft_x, chat_sft_y, chat_sft_valid_token_mask, chat_sft_dataloader_state_dict = next(chat_sft_train_loader)
+        else:
+            x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        if micro_step == 0 or micro_step == grad_accum_steps - 1:
+            trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetched next batch")
+
+    losses = average_step_losses(step_losses, grad_accum_normalizer)
+
+    if MANAGER.collect_load_balancing_stats:
+        collect_weight_grad_stats(model, losses, moe_layer_indices)
+
+    # step the optimizer
+    lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
+                            args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
+                            lr_base_scale=args.lr_base_scale)
+    lrm *= get_resume_lr_warmup_scale(step, args.resume_from_step, args.resume_lr_warmup_steps)
+    muon_momentum = get_muon_momentum(step)
+    for group in optimizer.param_groups:
+        if "active_kappa_slot" in group:
+            group["active_kappa_slot"] = int(is_chat_sft_step)
+        if group.get("name") == "kappa_params" and group['kind'] == 'adamw':
+            resume_kappa_lr_scale = get_resume_kappa_lr_scale(
+                step, args.resume_from_step, args.resume_lr_warmup_steps
+            )
+            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale * resume_kappa_lr_scale
+            if resume_kappa_lr_scale == 0.0:
+                for param in group["params"]:
+                    param.grad = None
+        elif group.get("name") == "kappa_router":
+            group["lr"] = group["initial_lr"] * lrm * float(
+                step >= group.get("kappa_param_delay_start_iterations", 0)
+            )
+        else:
+            group["lr"] = group["initial_lr"] * lrm
+        if group['kind'] in ('muon', 'muonh'):
+            group["momentum"] = muon_momentum
+        group["weight_decay"] = get_weight_decay(group["initial_weight_decay"], step, num_iterations)
+    orig_model.update_aux_free_load_balancing()
+    trace_rank(f"step {step}: starting optimizer.step()")
+    optimizer.step()
+    trace_rank(f"step {step}: finished optimizer.step()")
+    model.zero_grad(set_to_none=True)
+    trace_rank(f"step {step}: converting ntp_loss to host scalar")
+    train_loss_f = losses['ntp_loss'].item() # .item() is a CPU-GPU sync point
+    trace_rank(f"step {step}: ntp_loss host scalar ready")
+    trace_rank(f"step {step}: synchronizing after optimizer")
+    synchronize()
+    trace_rank(f"step {step}: synchronize after optimizer complete")
+    t1 = time.time()
+    dt = t1 - t0
 
     # -------------------------------------------------------------------------
 
@@ -2340,8 +2201,6 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
             "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
-            "train/kappa_bias_ema_rms_reg_loss_step": losses['kappa_bias_ema_rms_reg_loss'],
-            "train/kappa_scale_ema_rms_reg_loss_step": losses['kappa_scale_ema_rms_reg_loss'],
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),

@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.engine import KVCache
-from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, _save_activations_on_cpu, scale_grad
+from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, _save_activations_on_cpu, scale_grad
 from nanochat.manager import MOEManager
 
 
@@ -19,7 +19,6 @@ def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_fr
         n_exp=2, n_embd=4, use_kappa_swiglu=True, disable_kappa_bias=True,
         global_kappa_param_granularity=granularity, kappa_bias_from_scale=bias_from_scale,
         independent_kappa_router=independent_router, separate_base_sft_kappa=True,
-        kappa_bias_ema_rms_reg=True,
     )
     experts = Qwen3MLPExperts(config)
     if granularity == 'global':
@@ -49,7 +48,6 @@ def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_fr
             torch.testing.assert_close(actual_eval, expected)
             experts.train()
     assert manager.aggregate('kappa_bias_l2_loss') == 0
-    assert manager.aggregate('kappa_bias_ema_rms_reg_loss') == 0
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
@@ -59,7 +57,7 @@ def test_disable_kappa_bias_dense_activation_is_standard_silu(monkeypatch, granu
     config = GPTConfig(
         n_embd=4, use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
         disable_kappa_bias=True, global_kappa_param_granularity=granularity,
-        separate_base_sft_kappa=True, kappa_bias_ema_rms_reg=True,
+        separate_base_sft_kappa=True,
     )
     mlp = Qwen3MLP(config)
     assert mlp.has_kappa_swiglu is True
@@ -84,7 +82,6 @@ def test_disable_kappa_bias_dense_activation_is_standard_silu(monkeypatch, granu
             torch.testing.assert_close(mlp(inputs), expected)
             mlp.train()
     assert manager.aggregate('kappa_bias_l2_loss') == 0
-    assert manager.aggregate('kappa_bias_ema_rms_reg_loss') == 0
 
 
 def test_disable_kappa_bias_constant_moe_activation_is_standard_silu():
@@ -512,7 +509,6 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
         kappa_input='top_logits', independent_kappa_router=True,
         total_ut_steps=2, separate_base_sft_kappa=True, router_tie_noise_steps=0,
-        kappa_bias_ema_rms_reg=regularization,
         refresh_kappa_param_references=regularization,
     )
     reference = GPT(config)
@@ -752,7 +748,7 @@ def test_independent_kappa_router_rejects_bias_from_scale(kappa_input):
 def test_kappa_bias_from_scale_skips_bias_regularization_but_keeps_scale(derived_bias):
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True,
-        kappa_bias_from_scale=derived_bias, kappa_bias_ema_rms_reg=True,
+        kappa_bias_from_scale=derived_bias,
     )
     experts = Qwen3MLPExperts(config)
     with torch.no_grad():
@@ -761,23 +757,16 @@ def test_kappa_bias_from_scale_skips_bias_regularization_but_keeps_scale(derived
             experts.kappa_bias_alpha.fill_(2.0)
         else:
             experts.kappa_bias.fill_(6.0)
-        for keeper in (experts.kappa_bias_ema_rms_reg_keeper, experts.kappa_scale_ema_rms_reg_keeper):
-            keeper.target_ready.fill_(True)
-            keeper.target_rms.fill_(10.0)
     accum = MOEManager()
     experts._accumulate_kappa_bias_l2_losses(experts._materialize_kappa_bias(), loss_accum=accum)
     experts._accumulate_kappa_scale_l2_losses(experts._materialize_kappa_scale(), loss_accum=accum)
     bias_loss = accum.aggregate("kappa_bias_l2_loss")
-    bias_ema_loss = accum.aggregate("kappa_bias_ema_rms_reg_loss")
     if derived_bias:
         assert bias_loss == 0
-        assert bias_ema_loss == 0
     else:
         assert bias_loss.item() == 36.0
-        assert bias_ema_loss.item() > 0.0
     scale_loss = accum.aggregate("kappa_scale_l2_loss")
     assert scale_loss.item() == 9.0
-    assert accum.aggregate("kappa_scale_ema_rms_reg_loss").item() > 0.0
     scale_loss.backward()
     assert experts.kappa_scale.grad.abs().sum() > 0
     if derived_bias:
@@ -1944,8 +1933,6 @@ def test_gpt_total_ut_steps_averages_repeated_manager_losses():
         "router_z_loss",
         "kappa_bias_l2_loss",
         "kappa_scale_l2_loss",
-        "kappa_bias_ema_rms_reg_loss",
-        "kappa_scale_ema_rms_reg_loss",
     )
 
     for name in loss_names:
@@ -1991,7 +1978,8 @@ def test_gpt_total_ut_steps_averages_kappa_l2_from_model_forward():
     torch.testing.assert_close(losses["kappa_bias_l2_loss"], torch.tensor(4.0))
 
 
-def test_gpt_total_ut_steps_updates_kappa_ema_once_and_applies_loss_each_loop():
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_gpt_kappa_losses_and_state_exclude_ema_helpers(checkpointed):
     torch.manual_seed(0)
     config = GPTConfig(
         sequence_len=8,
@@ -2007,37 +1995,26 @@ def test_gpt_total_ut_steps_updates_kappa_ema_once_and_applies_loss_each_loop():
         use_aux_loss=False,
         use_router_z_loss=False,
         use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.5,
-        kappa_bias_l2_ema_anchor_start=0.0,
-        kappa_bias_l2_ema_anchor_end=1.0,
-        kappa_bias_l2_ema_floor_frac=0.8,
+        activation_checkpointing=checkpointed,
         debug=False,
     )
     model = GPT(config)
     model.init_weights()
-    model.set_kappa_bias_ema_rms_reg_total_iterations(1)
     experts = model.transformer.h[0].mlp.experts
     with torch.no_grad():
-        experts.kappa_bias.fill_(2.0)
-    model.set_kappa_bias_ema_rms_reg_step(0)
-    model._update_kappa_ema_rms_targets()
-
-    with torch.no_grad():
         experts.kappa_bias.fill_(0.5)
-    model.set_kappa_bias_ema_rms_reg_step(1)
+        experts.kappa_scale.fill_(0.25)
     idx = torch.randint(0, config.vocab_size, (2, 4))
     targets = torch.randint(0, config.vocab_size, (2, 4))
-    _, losses = model(idx, targets)
-
-    torch.testing.assert_close(
-        experts.kappa_bias_ema_rms_reg_keeper.ema_rms,
-        torch.tensor([1.25, 1.25]),
-    )
-    torch.testing.assert_close(
-        losses["kappa_bias_ema_rms_reg_loss"],
-        torch.tensor(0.25),
-    )
+    loss, losses = model(idx, targets)
+    torch.testing.assert_close(losses["kappa_bias_l2_loss"], torch.tensor(0.25))
+    torch.testing.assert_close(losses["kappa_scale_l2_loss"], torch.tensor(0.0625))
+    assert not any("ema_rms" in name for name in losses)
+    assert not any("ema_rms" in name for name in model.state_dict())
+    for module in (model, experts):
+        assert not hasattr(module, "set_kappa_bias_ema_rms_reg_step")
+        assert not hasattr(module, "set_kappa_bias_ema_rms_reg_total_iterations")
+    loss.backward()
 
 
 def test_moe_functional_dispatch_drops_overflow_without_dynamic_shapes():
@@ -2416,367 +2393,28 @@ def test_kappa_bias_l2_losses_are_reported_from_kappa_biases():
     torch.testing.assert_close(losses['kappa_bias_l2_loss'], torch.tensor(4.0))
 
 
-def test_kappa_bias_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.99,
-        kappa_bias_l2_ema_anchor_start=0.0,
-        kappa_bias_l2_ema_anchor_end=0.0,
-        kappa_bias_l2_ema_floor_frac=0.8,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    MANAGER.reset("kappa_bias_l2_loss")
-    MANAGER.reset("kappa_bias_ema_rms_reg_loss")
-    experts.set_kappa_bias_ema_rms_reg_total_iterations(1)
-    experts.set_kappa_bias_ema_rms_reg_step(0)
-    first_value = torch.full((2, 16), 2.0)
-    experts.kappa_bias_ema_rms_reg_keeper.update(first_value, step=0)
-    experts._accumulate_kappa_bias_l2_losses(first_value)
-    first_l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
-    first_ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")
-    MANAGER.reset("kappa_bias_l2_loss")
-    MANAGER.reset("kappa_bias_ema_rms_reg_loss")
-
-    experts.set_kappa_bias_ema_rms_reg_step(1)
-    second_value = torch.full((2, 16), 0.5)
-    experts.kappa_bias_ema_rms_reg_keeper.update(second_value, step=1)
-    experts._accumulate_kappa_bias_l2_losses(second_value)
-    second_l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
-    second_ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")
-    MANAGER.reset("kappa_bias_l2_loss")
-    MANAGER.reset("kappa_bias_ema_rms_reg_loss")
-
-    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
-    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_l2_loss, torch.tensor(0.25))
-    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.5) ** 2))
-
-
-def test_moe_manager_registers_kappa_bias_ema_rms_reg_losses_by_default():
-    manager = MOEManager()
-
-    manager.add("kappa_bias_ema_rms_reg_loss", torch.tensor(1.25))
-    manager.add("kappa_scale_ema_rms_reg_loss", torch.tensor(0.75))
-
-    torch.testing.assert_close(
-        manager.aggregate("kappa_bias_ema_rms_reg_loss"),
-        torch.tensor(1.25),
-    )
-    torch.testing.assert_close(
-        manager.aggregate("kappa_scale_ema_rms_reg_loss"),
-        torch.tensor(0.75),
-    )
-
-
-def test_kappa_bias_ema_target_keeper_raises_on_nonfinite_input():
-    keeper = GateProjBiasEmaTargetKeeper(
-        beta=0.99,
-        anchor_start=0.0,
-        anchor_end=1.0,
-        floor_frac=0.8,
-    )
-
-    with pytest.raises(RuntimeError, match="non-finite value"):
-        keeper.update(torch.tensor([float('nan')]), step=0)
-
-
-def test_kappa_bias_ema_target_keeper_raises_on_nonfinite_target_before_loss():
-    keeper = GateProjBiasEmaTargetKeeper(
-        beta=0.99,
-        anchor_start=0.0,
-        anchor_end=1.0,
-        floor_frac=0.8,
-    )
-    keeper.target_rms.fill_(float('nan'))
-    keeper.target_ready.fill_(True)
-
-    with pytest.raises(RuntimeError, match="non-finite floor"):
-        keeper.loss(torch.tensor([1.0]))
-
-
-def test_kappa_bias_ema_target_keeper_loss_compiles_without_readiness_graph_break():
-    keeper = GateProjBiasEmaTargetKeeper(
-        beta=0.99,
-        anchor_start=0.0,
-        anchor_end=1.0,
-        floor_frac=0.8,
-    )
-    keeper.target_rms.fill_(2.0)
-    compiled_loss = torch.compile(keeper.loss, fullgraph=True, backend="eager")
-
-    keeper.target_ready.fill_(False)
-    torch.testing.assert_close(compiled_loss(torch.ones(4)), torch.tensor(0.0))
-
-    keeper.target_ready.fill_(True)
-    torch.testing.assert_close(compiled_loss(torch.ones(4)), torch.tensor(0.36))
-
-
-def test_kappa_bias_ema_target_keeper_tracks_ut_passes_independently():
-    keeper = GateProjBiasEmaTargetKeeper(
-        beta=0.5,
-        anchor_start=0.0,
-        anchor_end=1.0,
-        floor_frac=0.8,
-        total_ut_steps=2,
-    )
-
-    keeper.update(torch.full((4,), 2.0), step=0, kappa_slot=0)
-    keeper.update(torch.full((4,), 4.0), step=0, kappa_slot=1)
-
-    torch.testing.assert_close(keeper.ema_rms, torch.tensor([2.0, 4.0]))
-    torch.testing.assert_close(
-        keeper.loss(torch.full((4,), 1.0), kappa_slot=0),
-        torch.tensor((1.6 - 1.0) ** 2),
-    )
-    torch.testing.assert_close(
-        keeper.loss(torch.full((4,), 1.0), kappa_slot=1),
-        torch.tensor((3.2 - 1.0) ** 2),
-    )
-
-
-def test_kappa_bias_ema_target_error_includes_module_source():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config, layer_idx=3)
-
-    with pytest.raises(RuntimeError, match=r"Qwen3MLPExperts\(layer=3, granularity=per-gate\)\.kappa_bias"):
-        with torch.no_grad():
-            experts.kappa_bias.fill_(float('nan'))
-        experts.update_kappa_ema_rms_targets()
-
-
-def test_kappa_bias_ema_target_loss_has_finite_gradient_at_zero():
-    keeper = GateProjBiasEmaTargetKeeper(
-        beta=0.99,
-        anchor_start=0.0,
-        anchor_end=1.0,
-        floor_frac=0.8,
-    )
-    keeper.target_rms.fill_(2.0)
-    keeper.target_ready.fill_(True)
-
-    value = torch.zeros(4, requires_grad=True)
-    loss = keeper.loss(value)
-    loss.backward()
-
-    assert torch.isfinite(loss)
-    assert value.grad is not None
-    assert torch.isfinite(value.grad).all()
-
-
-def test_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_kappa_swiglu=True,
-        kappa_input="router_probs",
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.99,
-        kappa_bias_l2_ema_anchor_start=0.0,
-        kappa_bias_l2_ema_anchor_end=0.0,
-        kappa_bias_l2_ema_floor_frac=0.8,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-    experts.set_kappa_bias_ema_rms_reg_total_iterations(1)
-    experts.set_kappa_bias_ema_rms_reg_step(0)
-    first_value = torch.full((2, 16), 2.0)
-    experts.kappa_scale_ema_rms_reg_keeper.update(first_value, step=0)
-    experts._accumulate_kappa_scale_l2_losses(first_value)
-    first_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
-    first_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-
-    experts.set_kappa_bias_ema_rms_reg_step(1)
-    second_value = torch.full((2, 16), 0.25)
-    experts.kappa_scale_ema_rms_reg_keeper.update(second_value, step=1)
-    experts._accumulate_kappa_scale_l2_losses(second_value)
-    second_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
-    second_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-
-    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
-    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_l2_loss, torch.tensor(0.0625))
-    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.25) ** 2))
-
-
-def test_dense_kappa_scale_ema_rms_reg_loss_is_added_on_top_of_l2_loss():
-    config = GPTConfig(
-        n_embd=4,
-        use_kappa_swiglu=True,
+@pytest.mark.parametrize("module_class", [Qwen3MLP, Qwen3MLPExperts])
+@pytest.mark.parametrize("parameter_name", ["bias", "scale"])
+@pytest.mark.parametrize("value", [0.0, 0.25, 2.0])
+def test_kappa_regularization_is_ordinary_l2(module_class, parameter_name, value):
+    module = module_class(GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
         constant_kappa_bias_dense_layers=True,
-        kappa_input="constant",
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.99,
-        kappa_bias_l2_ema_anchor_start=0.0,
-        kappa_bias_l2_ema_anchor_end=0.0,
-        kappa_bias_l2_ema_floor_frac=0.8,
-        debug=False,
-    )
-    mlp = Qwen3MLP(config)
-
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-    mlp.set_kappa_bias_ema_rms_reg_total_iterations(1)
-    mlp.set_kappa_bias_ema_rms_reg_step(0)
-    first_value = torch.full((16,), 2.0)
-    mlp.kappa_scale_ema_rms_reg_keeper.update(first_value, step=0)
-    mlp._accumulate_kappa_scale_l2_losses(first_value)
-    first_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
-    first_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-
-    mlp.set_kappa_bias_ema_rms_reg_step(1)
-    second_value = torch.full((16,), 0.25)
-    mlp.kappa_scale_ema_rms_reg_keeper.update(second_value, step=1)
-    mlp._accumulate_kappa_scale_l2_losses(second_value)
-    second_l2_loss = MANAGER.aggregate("kappa_scale_l2_loss")
-    second_ema_rms_reg_loss = MANAGER.aggregate("kappa_scale_ema_rms_reg_loss")
-    MANAGER.reset("kappa_scale_l2_loss")
-    MANAGER.reset("kappa_scale_ema_rms_reg_loss")
-
-    torch.testing.assert_close(first_l2_loss, torch.tensor(4.0))
-    torch.testing.assert_close(first_ema_rms_reg_loss, torch.tensor(0.0))
-    torch.testing.assert_close(second_l2_loss, torch.tensor(0.0625))
-    torch.testing.assert_close(second_ema_rms_reg_loss, torch.tensor((1.6 - 0.25) ** 2))
-
-
-def test_kappa_bias_ema_target_buffers_load_from_older_checkpoints():
-    config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=3,
-        moe_start_layer=1,
-        num_moe_layers=1,
-        moe_layer_stride=1,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        use_aux_loss=False,
-        use_router_z_loss=False,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        debug=False,
-    )
-    model = GPT(config)
-    state_dict = {
-        name: value
-        for name, value in model.state_dict().items()
-        if "ema_rms_reg_keeper" not in name
-    }
-
-    load_result = model.load_state_dict(state_dict, strict=True)
-
-    assert not load_result.missing_keys
-    assert not load_result.unexpected_keys
-    experts = model.transformer.h[1].mlp.experts
-    assert torch.equal(experts.kappa_bias_ema_rms_reg_keeper.ema_rms, torch.zeros(1))
-    assert torch.equal(experts.kappa_scale_ema_rms_reg_keeper.ema_rms, torch.zeros(1))
-    assert not bool(experts.kappa_bias_ema_rms_reg_keeper.initialized.item())
-    assert not bool(experts.kappa_scale_ema_rms_reg_keeper.initialized.item())
-
-
-def test_kappa_bias_ema_scalar_buffers_expand_across_ut_passes_on_load():
-    config = GPTConfig(
-        sequence_len=8,
-        vocab_size=32,
-        n_layer=1,
-        moe_start_layer=0,
-        num_moe_layers=1,
-        n_exp=2,
-        n_embd=32,
-        n_head=4,
-        total_ut_steps=2,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        debug=False,
-    )
-    model = GPT(config)
-    state_dict = model.state_dict()
-    keeper_prefix = "transformer.h.0.mlp.experts.kappa_bias_ema_rms_reg_keeper"
-    state_dict[f"{keeper_prefix}.ema_rms"] = torch.tensor(1.5)
-    state_dict[f"{keeper_prefix}.target_rms"] = torch.tensor(1.25)
-    state_dict[f"{keeper_prefix}.initialized"] = torch.tensor(True)
-    state_dict[f"{keeper_prefix}.target_ready"] = torch.tensor(True)
-
-    load_result = model.load_state_dict(state_dict, strict=True)
-
-    assert not load_result.missing_keys
-    assert not load_result.unexpected_keys
-    keeper = model.transformer.h[0].mlp.experts.kappa_bias_ema_rms_reg_keeper
-    torch.testing.assert_close(keeper.ema_rms, torch.tensor([1.5, 1.5]))
-    torch.testing.assert_close(keeper.target_rms, torch.tensor([1.25, 1.25]))
-    assert keeper.initialized.tolist() == [True, True]
-    assert keeper.target_ready.tolist() == [True, True]
-
-
-def test_kappa_bias_ema_anchor_fractions_resolve_against_total_iterations():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.99,
-        kappa_bias_l2_ema_anchor_start=0.4,
-        kappa_bias_l2_ema_anchor_end=0.8,
-        kappa_bias_l2_ema_floor_frac=0.8,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-    experts.set_kappa_bias_ema_rms_reg_total_iterations(10)
-
-    anchor_start, anchor_end = experts.kappa_bias_ema_rms_reg_keeper._resolve_anchor_steps()
-
-    assert anchor_start == 4
-    assert anchor_end == 8
-
-
-def test_kappa_bias_ema_rms_reg_is_zero_before_anchor():
-    config = GPTConfig(
-        n_exp=2,
-        n_embd=4,
-        use_kappa_swiglu=True,
-        kappa_bias_ema_rms_reg=True,
-        kappa_bias_l2_ema_beta=0.99,
-        kappa_bias_l2_ema_anchor_start=0.4,
-        kappa_bias_l2_ema_anchor_end=0.8,
-        kappa_bias_l2_ema_floor_frac=0.8,
-        debug=False,
-    )
-    experts = Qwen3MLPExperts(config)
-    experts.set_kappa_bias_ema_rms_reg_total_iterations(10)
-
-    value = torch.full((2, 16), 2.0)
-    MANAGER.reset("kappa_bias_l2_loss")
-    MANAGER.reset("kappa_bias_ema_rms_reg_loss")
-    experts.set_kappa_bias_ema_rms_reg_step(0)
-    experts.kappa_bias_ema_rms_reg_keeper.update(value, step=0)
-    experts._accumulate_kappa_bias_l2_losses(value)
-    l2_loss = MANAGER.aggregate("kappa_bias_l2_loss")
-    ema_rms_reg_loss = MANAGER.aggregate("kappa_bias_ema_rms_reg_loss")
-    MANAGER.reset("kappa_bias_l2_loss")
-    MANAGER.reset("kappa_bias_ema_rms_reg_loss")
-
-    torch.testing.assert_close(l2_loss, value.square().mean())
-    torch.testing.assert_close(ema_rms_reg_loss, torch.tensor(0.0))
-    assert not bool(experts.kappa_bias_ema_rms_reg_keeper.target_ready.item())
+    ))
+    shape = (16,) if module_class is Qwen3MLP else (2, 16)
+    parameter = torch.full(shape, value, requires_grad=True)
+    accum = MOEManager()
+    assert "kappa_bias_ema_rms_reg_loss" not in accum._values
+    assert "kappa_scale_ema_rms_reg_loss" not in accum._values
+    accumulate = getattr(module, f"_accumulate_kappa_{parameter_name}_l2_losses")
+    accumulate(parameter, loss_accum=accum)
+    loss = accum.aggregate(f"kappa_{parameter_name}_l2_loss")
+    torch.testing.assert_close(loss, torch.tensor(value ** 2))
+    loss.backward()
+    torch.testing.assert_close(parameter.grad, torch.full(shape, 2 * value / parameter.numel()))
+    assert not hasattr(module, "update_kappa_ema_rms_targets")
+    assert not hasattr(module, "kappa_bias_ema_rms_reg_keeper")
+    assert not hasattr(module, "kappa_scale_ema_rms_reg_keeper")
 
 
 def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
