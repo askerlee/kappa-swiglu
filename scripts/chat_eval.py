@@ -266,7 +266,7 @@ if __name__ == "__main__":
     from nanochat.report import get_report
     chatcore_metric_dict = compute_chatcore_metric(results)
     for metric_name, metric_value in chatcore_metric_dict.items():
-        print0(f"{metric_name}: {metric_value:.4f}")
+        print0(f"{metric_name} accuracy: {100*metric_value:.2f}%")
     get_report().log(section="Chat evaluation " + args.source, data=[
         vars(args), # CLI args
         results,
