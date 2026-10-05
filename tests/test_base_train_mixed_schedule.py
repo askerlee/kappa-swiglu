@@ -166,7 +166,9 @@ def test_kappa_swiglu_uses_explicit_enable_flag_on_both_sources():
     assert 'parser.add_argument("--use-kappa-swiglu-sft-only"' not in source
     assert "use_kappa_swiglu_sft_only" not in source
     assert "args.use_kappa_swiglu = True" in source
-    assert "kappa_swiglu_training_enabled = args.use_kappa_swiglu" in source
+    assert "use_kappa_swiglu=args.use_kappa_swiglu" in source
+    assert "kappa_swiglu_training_enabled" not in source
+    assert "set_kappa_swiglu_enabled" not in source
 
 
 def test_separate_kappa_routes_mixed_training_and_base_evaluation():
@@ -206,21 +208,19 @@ def test_base_evaluation_keeps_kappa_enabled_and_restores_training_phase():
                 for step in (2500, 2750, 5500, 8250):
                     events = []
                     model = SimpleNamespace(
+                        kappa_swiglu_enabled=enabled,
                         set_kappa_training_phase=lambda phase: events.append(("phase", phase)),
                         set_kappa_swiglu_enabled=lambda value: events.append(("enabled", value)),
                     )
                     namespace = {
                         "orig_model": model,
                         "args": SimpleNamespace(separate_base_sft_kappa=separate_slots),
-                        "kappa_swiglu_training_enabled": enabled,
                         "is_chat_sft_step": step % 11 == 0,
                     }
                     exec(compile(ast.Module(body=transitions, type_ignores=[]),
                                  filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
-                    assert events[:2] == [("phase", False), ("enabled", enabled)]
-                    assert set(events[2:]) == {
-                        ("phase", step % 11 == 0), ("enabled", enabled),
-                    }
+                    assert events == [("phase", False), ("phase", step % 11 == 0)]
+                    assert model.kappa_swiglu_enabled is enabled
 
 
 def test_kappa_logging_uses_current_step_metrics():

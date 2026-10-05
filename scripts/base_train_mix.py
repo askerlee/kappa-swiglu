@@ -1765,8 +1765,6 @@ while True:
     is_resume_step = resuming and step == args.resume_from_step
     is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
     orig_model.set_kappa_training_phase(is_chat_sft_step)
-    kappa_swiglu_training_enabled = args.use_kappa_swiglu
-    orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     refresh_compiled_training_model = False
     run_eager_training_step_after_core_eval = False
@@ -1826,7 +1824,6 @@ while True:
     ):
         orig_model.eval()
         orig_model.set_kappa_training_phase(False)
-        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with disable_fp8(orig_model), autocast_ctx:
@@ -1848,7 +1845,6 @@ while True:
         }), step=step)
         orig_model.train()
         orig_model.set_kappa_training_phase(is_chat_sft_step)
-        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         MANAGER.reset_all()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
@@ -1972,13 +1968,11 @@ while True:
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.core_metric_every == 0))
     ):
         orig_model.set_kappa_training_phase(False)
-        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
             max_per_task = args.core_metric_max_per_task if not is_last_step else -1 
             core_results = evaluate_core(orig_model, tokenizer, device, max_per_task=max_per_task)
-        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         orig_model.set_kappa_training_phase(is_chat_sft_step)
         core_metric = core_results["core_metric"]
         print0(f"Step {step:05d} | CORE metric: {core_metric:.4f}")
