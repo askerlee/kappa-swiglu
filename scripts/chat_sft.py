@@ -1174,7 +1174,6 @@ while True:
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
-            "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
             "train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight,
             "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,

@@ -2389,7 +2389,6 @@ while True:
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
-            "train/kappa_slope_scale_abs_mean_normalized_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean_normalized'].mean()),
             "train/implicit_gate_proj_bias_top5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_top5p_mean'].mean()),
             "train/implicit_gate_proj_bias_bottom5p_mean_step": scalar_loss_to_item(losses['implicit_gate_proj_bias_bottom5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_mean'].mean()),
@@ -2500,8 +2499,6 @@ while True:
                 log_data.update({f"inspect/kappa_slope_scale_abs_top5p_mean_{i}": losses[f'kappa_slope_scale_abs_top5p_mean_{i}']})
             if f'kappa_slope_scale_abs_bottom5p_mean_{i}' in losses:
                 log_data.update({f"inspect/kappa_slope_scale_abs_bottom5p_mean_{i}": losses[f'kappa_slope_scale_abs_bottom5p_mean_{i}']})
-            if f'kappa_slope_scale_abs_mean_normalized_{i}' in losses:
-                log_data.update({f"inspect/kappa_slope_scale_abs_mean_normalized_{i}": losses[f'kappa_slope_scale_abs_mean_normalized_{i}']})
             if f'implicit_gate_proj_bias_top5p_mean_{i}' in losses:
                 log_data.update({f"inspect/implicit_gate_proj_bias_top5p_mean_{i}": losses[f'implicit_gate_proj_bias_top5p_mean_{i}']})
             if f'implicit_gate_proj_bias_bottom5p_mean_{i}' in losses:
@@ -2562,8 +2559,6 @@ while True:
                 log_data.update({f"inspect/kappa_slope_scale_abs_top5p_mean_{i}": losses[f'kappa_slope_scale_abs_top5p_mean_{i}']})
             if f'kappa_slope_scale_abs_bottom5p_mean_{i}' in losses:
                 log_data.update({f"inspect/kappa_slope_scale_abs_bottom5p_mean_{i}": losses[f'kappa_slope_scale_abs_bottom5p_mean_{i}']})
-            if f'kappa_slope_scale_abs_mean_normalized_{i}' in losses:
-                log_data.update({f"inspect/kappa_slope_scale_abs_mean_normalized_{i}": losses[f'kappa_slope_scale_abs_mean_normalized_{i}']})
 
         wandb_run.log(drop_none_log_values(log_data), step=step)
         throughput_interval_steps = 0

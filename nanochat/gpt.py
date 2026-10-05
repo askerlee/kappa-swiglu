@@ -1417,7 +1417,6 @@ class Qwen3MLP(nn.Module):
                 ).squeeze(0)
             ),
         )
-        MANAGER.add("kappa_slope_scale_abs_mean_normalized", _diagnostic_to_cpu(slope_scale_mean))
 
     def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else current_ut
@@ -2079,15 +2078,6 @@ class Qwen3MLPExperts(nn.Module):
         MANAGER.add(
             "kappa_slope_scale_abs_bottom5p_mean",
             _diagnostic_to_cpu(torch.stack(bottom_means).mean() if bottom_means else zero),
-        )
-        active_token_counts_sqrt = active_token_counts.sqrt().clamp_min(1e-8)
-        total_active_tokens_sqrt = active_token_counts_sqrt.sum().clamp_min(1)
-        normalized_slope_scale_mean = (
-            slope_scale_mean_per_expert * active_token_counts_sqrt
-        ).sum() / total_active_tokens_sqrt
-        MANAGER.add(
-            "kappa_slope_scale_abs_mean_normalized",
-            _diagnostic_to_cpu(normalized_slope_scale_mean),
         )
 
     @torch._dynamo.disable
@@ -3536,7 +3526,6 @@ class GPT(nn.Module):
                    'kappa_slope_scale_abs_top5p_mean': 0,
                    'kappa_slope_scale_abs_bottom5p_mean': 0,
                    'kappa_slope_scale_abs_mean': 0,
-                   'kappa_slope_scale_abs_mean_normalized': 0,
                    'implicit_gate_proj_bias_top5p_mean': 0,
                    'implicit_gate_proj_bias_bottom5p_mean': 0,
                    'routed_token_router_weight_cosine_mean': 0,
@@ -3589,13 +3578,6 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("kappa_slope_scale_abs_mean")
-        kappa_slope_scale_abs_mean_normalized = MANAGER.aggregate("kappa_slope_scale_abs_mean_normalized")
-        losses['kappa_slope_scale_abs_mean_normalized'] = (
-            kappa_slope_scale_abs_mean_normalized.detach()
-            if kappa_slope_scale_abs_mean_normalized is not None
-            else torch.zeros((), device=x.device)
-        )
-        MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
         implicit_gate_proj_bias_top5p_mean = MANAGER.aggregate("implicit_gate_proj_bias_top5p_mean")
         losses['implicit_gate_proj_bias_top5p_mean'] = (
             implicit_gate_proj_bias_top5p_mean.detach()
@@ -3665,11 +3647,6 @@ class GPT(nn.Module):
             if kappa_slope_scale_abs_mean is not None and kappa_slope_scale_abs_mean.ndim > 0
             else 0
         )
-        kappa_slope_scale_abs_mean_normalized_count = (
-            kappa_slope_scale_abs_mean_normalized.shape[0]
-            if kappa_slope_scale_abs_mean_normalized is not None and kappa_slope_scale_abs_mean_normalized.ndim > 0
-            else 0
-        )
         implicit_gate_proj_bias_top5p_count = (
             losses['implicit_gate_proj_bias_top5p_mean'].shape[0]
             if losses['implicit_gate_proj_bias_top5p_mean'].ndim > 0
@@ -3699,10 +3676,6 @@ class GPT(nn.Module):
             if kappa_bias_stats_idx < kappa_slope_scale_abs_mean_count:
                 losses[f'kappa_slope_scale_abs_mean_{layer_idx}'] = (
                     kappa_slope_scale_abs_mean[kappa_bias_stats_idx].item()
-                )
-            if kappa_bias_stats_idx < kappa_slope_scale_abs_mean_normalized_count:
-                losses[f'kappa_slope_scale_abs_mean_normalized_{layer_idx}'] = (
-                    kappa_slope_scale_abs_mean_normalized[kappa_bias_stats_idx].item()
                 )
             if kappa_bias_stats_idx < kappa_slope_scale_abs_top5p_count:
                 losses[f'kappa_slope_scale_abs_top5p_mean_{layer_idx}'] = (

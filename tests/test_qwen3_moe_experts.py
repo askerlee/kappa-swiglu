@@ -2784,7 +2784,6 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
         experts.kappa_bias.fill_(1.0)
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
-    MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
 
     selected_router_scores = torch.tensor([
         [1.0, 0.5],
@@ -2804,15 +2803,15 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
         MANAGER.collect_load_balancing_stats = old_collect
 
     shift_abs_mean = MANAGER.aggregate("kappa_slope_scale_abs_mean")
-    normalized_shift_abs_mean = MANAGER.aggregate("kappa_slope_scale_abs_mean_normalized")
+    assert "kappa_slope_scale_abs_mean_normalized" not in MANAGER.tensor_var_names
+    assert "kappa_slope_scale_abs_mean_normalized" not in MANAGER._values
 
     expected_mean = slope_scales[0].float().mean().reshape(1)
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
-    MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
 
     torch.testing.assert_close(shift_abs_mean, expected_mean)
-    torch.testing.assert_close(normalized_shift_abs_mean, expected_mean)
+    assert not shift_abs_mean.requires_grad
 
 
 def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled():
@@ -2828,7 +2827,6 @@ def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled()
         experts.kappa_bias.fill_(1.0)
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
-    MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
 
     old_collect = MANAGER.collect_load_balancing_stats
     MANAGER.collect_load_balancing_stats = False
@@ -2843,11 +2841,9 @@ def test_gate_stats_and_gate_bias_stats_do_not_update_when_collection_disabled()
         MANAGER.collect_load_balancing_stats = old_collect
 
     assert MANAGER.aggregate("kappa_slope_scale_abs_mean") is None
-    assert MANAGER.aggregate("kappa_slope_scale_abs_mean_normalized") is None
     assert experts.last_gate_stats is None
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
-    MANAGER.reset("kappa_slope_scale_abs_mean_normalized")
 
 
 def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric():
@@ -2884,20 +2880,13 @@ def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric():
         MANAGER.collect_load_balancing_stats = old_collect
 
     assert 'kappa_slope_scale_abs_mean' in losses
-    assert 'kappa_slope_scale_abs_mean_normalized' in losses
+    assert not any('abs_mean_normalized' in name for name in losses)
     assert 'kappa_slope_scale_abs_mean_1' in losses
-    assert 'kappa_slope_scale_abs_mean_normalized_1' in losses
     assert torch.isfinite(losses['kappa_slope_scale_abs_mean'])
-    assert torch.isfinite(losses['kappa_slope_scale_abs_mean_normalized'])
     assert losses['kappa_slope_scale_abs_mean'].item() >= 0.0
-    assert losses['kappa_slope_scale_abs_mean_normalized'].item() >= 0.0
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean'],
         torch.tensor([losses['kappa_slope_scale_abs_mean_1']]),
-    )
-    torch.testing.assert_close(
-        losses['kappa_slope_scale_abs_mean_normalized'],
-        torch.tensor([losses['kappa_slope_scale_abs_mean_normalized_1']]),
     )
 
 
@@ -2935,20 +2924,13 @@ def test_gpt_forward_reports_kappa_slope_scale_abs_mean_metric_in_slope_scaler_m
         MANAGER.collect_load_balancing_stats = old_collect
 
     assert 'kappa_slope_scale_abs_mean' in losses
-    assert 'kappa_slope_scale_abs_mean_normalized' in losses
+    assert not any('abs_mean_normalized' in name for name in losses)
     assert 'kappa_slope_scale_abs_mean_1' in losses
-    assert 'kappa_slope_scale_abs_mean_normalized_1' in losses
     assert torch.isfinite(losses['kappa_slope_scale_abs_mean'])
-    assert torch.isfinite(losses['kappa_slope_scale_abs_mean_normalized'])
     assert losses['kappa_slope_scale_abs_mean'].item() >= 0.0
-    assert losses['kappa_slope_scale_abs_mean_normalized'].item() >= 0.0
     torch.testing.assert_close(
         losses['kappa_slope_scale_abs_mean'],
         torch.tensor([losses['kappa_slope_scale_abs_mean_1']]),
-    )
-    torch.testing.assert_close(
-        losses['kappa_slope_scale_abs_mean_normalized'],
-        torch.tensor([losses['kappa_slope_scale_abs_mean_normalized_1']]),
     )
 
 
