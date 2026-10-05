@@ -85,6 +85,11 @@ def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
         active_grad = grad.view(-1)
         exp_avg = state['exp_avg'].view(-1)
         exp_avg_sq = state['exp_avg_sq'].view(-1)
+    elif param_name.endswith('.mlp.kappa_router.bias'):
+        active_param = param.view(2, -1)[slot]
+        active_grad = grad.view(2, -1)[slot]
+        exp_avg = state['exp_avg'].view(2, -1)[slot]
+        exp_avg_sq = state['exp_avg_sq'].view(2, -1)[slot]
     else:
         active_param = param[slot].view(-1)
         active_grad = grad[slot].view(-1)

@@ -146,6 +146,69 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
         torch.testing.assert_close(actual_eval, expected)
 
 
+@pytest.mark.parametrize('disable_bias', [False, True])
+@pytest.mark.parametrize('is_sft', [False, True])
+def test_kappa_router_bias_follows_disabled_expert_bias(disable_bias, is_sft):
+    config = GPTConfig(
+        n_exp=3, n_embd=4, use_kappa_swiglu=True,
+        independent_kappa_router=True, disable_kappa_bias=disable_bias,
+        separate_base_sft_kappa=True,
+    )
+    layer = MOELayer(config, layer_idx=0)
+    assert (layer.kappa_router.bias is not None) == disable_bias
+    layer.experts.kappa_phase = int(is_sft)
+    with torch.no_grad():
+        layer.kappa_router.weight.zero_()
+        if disable_bias:
+            layer.kappa_router.bias.copy_(torch.arange(6, dtype=torch.float32))
+    inputs = torch.randn(2, 4, requires_grad=True)
+    indices = torch.tensor([[0, 2], [1, 0]])
+    scores = layer._select_gate_confidence(torch.ones(2, 2), torch.ones(2, 2), inputs, indices)
+    expected = indices.float() + 3 * int(is_sft) if disable_bias else torch.zeros(2, 2)
+    torch.testing.assert_close(scores, expected)
+    scores.sum().backward()
+    if disable_bias:
+        expected_grad = torch.zeros(2, 3)
+        expected_grad[int(is_sft)] = torch.tensor([2.0, 1.0, 1.0])
+        torch.testing.assert_close(layer.kappa_router.bias.grad.view(2, 3), expected_grad)
+
+
+@pytest.mark.parametrize('matrix_optimizer', ['muon', 'aurora'])
+@pytest.mark.parametrize('is_sft', [False, True])
+def test_kappa_router_bias_initialization_loading_and_optimizer(matrix_optimizer, is_sft):
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        independent_kappa_router=True, disable_kappa_bias=True,
+        separate_base_sft_kappa=True,
+    )
+    model = GPT(config)
+    model.init_weights()
+    bias = model.transformer.h[0].mlp.kappa_router.bias
+    torch.testing.assert_close(bias, torch.zeros(6))
+    state = model.state_dict()
+    del state['transformer.h.0.mlp.kappa_router.bias']
+    with torch.no_grad():
+        bias.fill_(4.0)
+    model.load_state_dict(state, strict=True)
+    torch.testing.assert_close(bias, torch.zeros(6))
+    optimizer = model.setup_optimizer(matrix_optimizer=matrix_optimizer, kappa_param_delay_start_iterations=20)
+    group = next(group for group in optimizer.param_groups if any(param is bias for param in group['params']))
+    assert group['kind'] == 'adamw'
+    assert group['name'] == 'kappa_router'
+    assert group['kappa_param_delay_start_iterations'] == 20
+    group['active_kappa_slot'] = int(is_sft)
+    bias.grad = torch.ones_like(bias)
+    group['lr'] = 0.0
+    optimizer.step()
+    torch.testing.assert_close(bias, torch.zeros(6))
+    group['lr'] = group['initial_lr']
+    optimizer.step()
+    active_bias = bias.view(2, 3)
+    assert active_bias[int(is_sft)].count_nonzero() == 3
+    torch.testing.assert_close(active_bias[1 - int(is_sft)], torch.zeros(3))
+
+
 @pytest.mark.parametrize('initial_anchor', [False, True])
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('use_loss_accum', [False, True])
