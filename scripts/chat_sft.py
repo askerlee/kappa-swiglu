@@ -18,6 +18,14 @@ import math
 import os
 import sys
 
+offline_parser = argparse.ArgumentParser(add_help=False)
+offline_parser.add_argument("--hf-offline", action="store_true",
+                            help="use cached Hugging Face datasets and files without network requests")
+offline_args, _ = offline_parser.parse_known_args()
+if offline_args.hf_offline:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 allocator_conf = os.environ.get(
     "PYTORCH_ALLOC_CONF",
     os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
@@ -66,7 +74,7 @@ def arg_was_explicitly_set(argv, option_name):
 
 # -----------------------------------------------------------------------------
 # CLI arguments
-parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the model")
+parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the model", parents=[offline_parser])
 # Logging
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime

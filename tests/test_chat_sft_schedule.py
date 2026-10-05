@@ -1,4 +1,6 @@
 import ast
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +13,38 @@ from nanochat.common import cast_model_parameters
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_SFT = ROOT / "scripts" / "chat_sft.py"
 CHECKPOINT_MANAGER = ROOT / "nanochat" / "checkpoint_manager.py"
+
+
+@pytest.mark.parametrize("offline,existing", [(True, None), (True, "0"), (False, None), (False, "1")])
+def test_chat_sft_hf_offline_before_task_imports(monkeypatch, offline, existing):
+    for variable in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE"):
+        if existing is None:
+            monkeypatch.delenv(variable, raising=False)
+        else:
+            monkeypatch.setenv(variable, existing)
+    monkeypatch.setenv("PYTORCH_ALLOC_CONF", "test")
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "test")
+    monkeypatch.setattr(sys, "argv", [str(CHAT_SFT), "--device-type", "cpu"] + (["--hf-offline"] if offline else []))
+    module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
+    prefix = []
+    for node in module.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "tasks.arc":
+            break
+        prefix.append(node)
+    namespace = {}
+    exec(compile(ast.Module(body=prefix, type_ignores=[]), filename=str(CHAT_SFT), mode="exec"), namespace)
+    for variable in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE"):
+        assert os.environ.get(variable) == ("1" if offline else existing)
+
+    parser_assignment = next(
+        node for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "parser" for target in node.targets)
+    )
+    exec(compile(ast.Module(body=[parser_assignment], type_ignores=[]), filename=str(CHAT_SFT), mode="exec"), namespace)
+    parser = namespace["parser"]
+    assert parser.parse_args(["--hf-offline"] if offline else []).hf_offline is offline
+    assert "--hf-offline" in parser.format_help()
 
 
 def load_function_from_script(function_name):
