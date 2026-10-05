@@ -629,7 +629,7 @@ def build_model_meta(depth):
         global_kappa_param_granularity=args.global_kappa_granularity,
         kappa_bias_from_scale=args.kappa_bias_from_scale,
         disable_kappa_bias=args.disable_kappa_bias,
-        kappa_bias_start_layer=args.kappa_start_layer,
+        kappa_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         router_z_loss_weight=args.router_z_loss_weight,
@@ -879,7 +879,7 @@ optimizer = model.setup_optimizer(
     kappa_lr_final_scale=args.kappa_lr_final_scale,
     kappa_lr_max_scale=args.kappa_lr_max_scale,
     kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
-    kappa_bias_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
+    kappa_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
 )
 
 if resuming and load_optimizer_state:
@@ -1087,7 +1087,7 @@ def average_step_losses(step_losses, grad_accum_normalizer):
     return averaged_losses
 
 def get_dense_kappa_bias_stat_layer_indices(model):
-    start_layer = max(0, int(getattr(model.config, 'kappa_bias_start_layer', 0)))
+    start_layer = max(0, int(getattr(model.config, 'kappa_start_layer', 0)))
     return [
         layer_idx
         for layer_idx in range(start_layer, len(model.transformer.h))

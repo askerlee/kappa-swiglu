@@ -1197,7 +1197,7 @@ def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
         kappa_input="router_probs",
         kappa_input_constant=1.0,
         constant_kappa_bias_dense_layers=True,
-        kappa_bias_start_layer=2,
+        kappa_start_layer=2,
         debug=False,
     )
 
@@ -2846,7 +2846,7 @@ def test_kappa_bias_respects_start_layer_cutoff():
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        kappa_bias_start_layer=3,
+        kappa_start_layer=3,
         debug=False,
     )
 

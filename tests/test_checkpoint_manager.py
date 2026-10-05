@@ -14,6 +14,35 @@ def make_optimizer(param_groups):
     return SimpleNamespace(param_groups=param_groups)
 
 
+@pytest.mark.parametrize("metadata,expected", [
+    ({}, 0),
+    ({"kappa_bias_start_layer": 3}, 3),
+    ({"kappa_start_layer": 2}, 2),
+    ({"kappa_bias_start_layer": 3, "kappa_start_layer": 2}, 2),
+])
+def test_checkpoint_config_migrates_kappa_start_layer(metadata, expected):
+    _patch_missing_config_keys(metadata)
+    config = GPTConfig(**metadata)
+    assert config.kappa_start_layer == expected
+    assert "kappa_bias_start_layer" not in metadata
+    assert not hasattr(config, "kappa_bias_start_layer")
+
+
+def test_checkpoint_rename_migration_updates_kappa_start_layer_in_model_config():
+    from scripts.migrate_checkpoint_renames import rename_legacy_keys, _infer_model_config_updates_from_model_data
+
+    changes = []
+    renamed = rename_legacy_keys(
+        {"model_config": {"kappa_bias_start_layer": 3}, "args": {"kappa_bias_start_layer": 2}},
+        changes, Path("meta_test.json"),
+    )
+    assert renamed == {"model_config": {"kappa_start_layer": 3}, "args": {"kappa_start_layer": 2}}
+    assert len(changes) == 2
+    inferred = _infer_model_config_updates_from_model_data({"transformer.h.3.mlp.experts.kappa_bias": None})
+    assert inferred["kappa_start_layer"] == 3
+    assert "kappa_bias_start_layer" not in inferred
+
+
 @pytest.mark.parametrize('total_ut_steps', [1, 3])
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
 def test_task_kappa_checkpoint_keeps_two_slots_when_loop_count_changes(total_ut_steps, granularity):
@@ -564,7 +593,7 @@ def test_infer_kappa_bias_detects_rank1_residual_checkpoint_layout():
     _infer_kappa_bias(model_data, model_config_kwargs)
 
     assert model_config_kwargs["use_kappa_swiglu"] is True
-    assert model_config_kwargs["kappa_bias_start_layer"] == 1
+    assert model_config_kwargs["kappa_start_layer"] == 1
 
 
 def test_patch_missing_keys_initializes_newly_enabled_kappa_parameters_to_zero():

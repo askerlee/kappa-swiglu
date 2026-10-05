@@ -785,7 +785,7 @@ def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
         matrix_lr=0.01,
         weight_decay=0.0,
         kappa_lr_final_scale=1.0,
-        kappa_bias_lr_warmup_iterations=1000,
+        kappa_lr_warmup_iterations=1000,
     )
 
     kappa_params = {

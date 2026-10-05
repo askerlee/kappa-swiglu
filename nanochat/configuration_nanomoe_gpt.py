@@ -35,7 +35,7 @@ class GPTConfig:
         global_kappa_param_granularity: str = "per-gate",
         kappa_bias_from_scale: bool = False,
         disable_kappa_bias: bool = False,
-        kappa_bias_start_layer: int = 0,
+        kappa_start_layer: int = 0,
         log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
@@ -139,10 +139,10 @@ class GPTConfig:
             raise ValueError("independent_kappa_router and kappa_bias_from_scale are mutually exclusive")
         if self.kappa_bias_from_scale and kappa_input == "constant":
             raise ValueError("kappa_bias_from_scale requires kappa_input='router_probs' or 'top_logits'")
-        self.kappa_bias_start_layer = int(kappa_bias_start_layer)
-        if self.kappa_bias_start_layer < 0:
+        self.kappa_start_layer = int(kappa_start_layer)
+        if self.kappa_start_layer < 0:
             raise ValueError(
-                f"kappa_bias_start_layer must be >= 0, got {kappa_bias_start_layer}"
+                f"kappa_start_layer must be >= 0, got {kappa_start_layer}"
             )
         self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
         self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)

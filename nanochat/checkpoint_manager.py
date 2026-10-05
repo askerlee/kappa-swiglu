@@ -25,6 +25,9 @@ def log0(message):
 
 def _patch_missing_config_keys(model_config_kwargs):
     """Add default values for new config keys missing in old checkpoints."""
+    if "kappa_bias_start_layer" in model_config_kwargs:
+        legacy_start_layer = model_config_kwargs.pop("kappa_bias_start_layer")
+        model_config_kwargs.setdefault("kappa_start_layer", legacy_start_layer)
     # Old models were trained with full context (no sliding window)
     if "window_pattern" not in model_config_kwargs:
         model_config_kwargs["window_pattern"] = "L"
@@ -83,10 +86,10 @@ def _infer_kappa_bias(model_data, model_config_kwargs):
         return
 
     inferred_start_layer = min(kappa_bias_layers)
-    model_config_kwargs.setdefault("kappa_bias_start_layer", inferred_start_layer)
+    model_config_kwargs.setdefault("kappa_start_layer", inferred_start_layer)
     log0(
         "Patching missing expert kappa_bias config in model config to "
-        f"enabled from layer {model_config_kwargs['kappa_bias_start_layer']}"
+        f"enabled from layer {model_config_kwargs['kappa_start_layer']}"
     )
 
 
@@ -184,7 +187,7 @@ def _override_kappa_scale_values(model_data, model_kwargs):
 
 def _kappa_bias_enabled_for_layer(model_config, layer_idx):
     return bool(getattr(model_config, "use_kappa_swiglu", False)) and (
-        layer_idx >= int(getattr(model_config, "kappa_bias_start_layer", 0))
+        layer_idx >= int(getattr(model_config, "kappa_start_layer", 0))
     )
 
 

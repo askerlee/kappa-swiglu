@@ -198,7 +198,7 @@ if not (0.0 <= args.final_lr_frac <= 1.0):
     raise ValueError("--final-lr-frac must satisfy 0 <= fraction <= 1")
 if args.kappa_bias_delay_start_min_iterations < 0:
     raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
-if args.kappa_bias_lr_warmup_iterations < 0:
+if args.kappa_lr_warmup_iterations < 0:
     raise ValueError("--kappa-bias-lr-warmup-iterations must be >= 0")
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
@@ -448,7 +448,7 @@ if not args.eval_only:
         kappa_lr_final_scale=args.kappa_lr_final_scale,
         kappa_lr_max_scale=args.kappa_lr_max_scale,
         kappa_param_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
-        kappa_bias_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
+        kappa_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
     )
     # Override the initial learning rate as a fraction of the base learning rate
     for group in optimizer.param_groups:

@@ -1104,13 +1104,13 @@ class Qwen3MLP(nn.Module):
             persistent=False,
         )
         self.global_kappa_param_granularity = getattr(config, 'global_kappa_param_granularity', 'per-gate')
-        kappa_bias_start_layer = int(getattr(config, 'kappa_bias_start_layer', 0))
+        kappa_start_layer = int(getattr(config, 'kappa_start_layer', 0))
         self.use_kappa_swiglu = (
             bool(getattr(config, 'use_kappa_swiglu', False))
             and bool(getattr(config, 'constant_kappa_bias_dense_layers', False))
         )
         self.has_kappa_swiglu = self.use_kappa_swiglu and (
-            layer_idx is None or layer_idx >= kappa_bias_start_layer
+            layer_idx is None or layer_idx >= kappa_start_layer
         )
         self.kappa_swiglu_enabled = self.has_kappa_swiglu
         self._shared_kappa_bias = None
@@ -1315,9 +1315,9 @@ class Qwen3MLPExperts(nn.Module):
         self.global_kappa_param_granularity = getattr(config, 'global_kappa_param_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
-        kappa_bias_start_layer = int(getattr(config, 'kappa_bias_start_layer', 0))
+        kappa_start_layer = int(getattr(config, 'kappa_start_layer', 0))
         self.use_kappa_swiglu = bool(getattr(config, 'use_kappa_swiglu', False)) and (
-            layer_idx is None or layer_idx >= kappa_bias_start_layer
+            layer_idx is None or layer_idx >= kappa_start_layer
         )
         self.kappa_swiglu_enabled = self.use_kappa_swiglu
         self.independent_kappa_router = bool(getattr(config, 'independent_kappa_router', False))
@@ -2876,7 +2876,7 @@ class GPT(nn.Module):
                         kappa_lr_final_scale=1.0,
                         kappa_lr_max_scale=1.0,
                         kappa_param_delay_start_iterations=0,
-                        kappa_bias_lr_warmup_iterations=1000):
+                        kappa_lr_warmup_iterations=1000):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
@@ -2979,7 +2979,7 @@ class GPT(nn.Module):
                 lr_scale_end=kappa_lr_final_scale,
                 lr_scale_max=kappa_lr_max_scale,
                 kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
-                lr_scale_warmup_iterations=kappa_bias_lr_warmup_iterations,
+                lr_scale_warmup_iterations=kappa_lr_warmup_iterations,
                 betas=adam_betas,
                 eps=1e-10,
                 weight_decay=0.0,
@@ -3346,19 +3346,19 @@ class GPT(nn.Module):
             else torch.zeros((), device=x.device)
         )
         MANAGER.reset("routed_token_router_weight_cosine_bottom5p_mean")
-        kappa_bias_layer_indices = []
+        kappa_layer_indices = []
         implicit_gate_proj_bias_layer_indices = []
         for layer_idx, block in enumerate(self.transformer.h):
             mlp = getattr(block, 'mlp', None)
             experts = getattr(mlp, 'experts', None)
             if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
-                kappa_bias_layer_indices.append(layer_idx)
+                kappa_layer_indices.append(layer_idx)
             if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_gate_proj_bias:
                 implicit_gate_proj_bias_layer_indices.append(layer_idx)
             elif isinstance(mlp, Qwen3MLP) and mlp.has_kappa_swiglu:
-                kappa_bias_layer_indices.append(layer_idx)
-        kappa_bias_layer_to_stats_idx = {
-            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_bias_layer_indices)
+                kappa_layer_indices.append(layer_idx)
+        kappa_layer_to_stats_idx = {
+            layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_layer_indices)
         }
         implicit_gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
@@ -3405,18 +3405,18 @@ class GPT(nn.Module):
             if losses['routed_token_router_weight_cosine_bottom5p_mean'].ndim > 0
             else 0
         )
-        for layer_idx, kappa_bias_stats_idx in kappa_bias_layer_to_stats_idx.items():
-            if kappa_bias_stats_idx < kappa_slope_scale_abs_mean_count:
+        for layer_idx, kappa_stats_idx in kappa_layer_to_stats_idx.items():
+            if kappa_stats_idx < kappa_slope_scale_abs_mean_count:
                 losses[f'kappa_slope_scale_abs_mean_{layer_idx}'] = (
-                    kappa_slope_scale_abs_mean[kappa_bias_stats_idx].item()
+                    kappa_slope_scale_abs_mean[kappa_stats_idx].item()
                 )
-            if kappa_bias_stats_idx < kappa_slope_scale_abs_top5p_count:
+            if kappa_stats_idx < kappa_slope_scale_abs_top5p_count:
                 losses[f'kappa_slope_scale_abs_top5p_mean_{layer_idx}'] = (
-                    kappa_slope_scale_abs_top5p_mean[kappa_bias_stats_idx].item()
+                    kappa_slope_scale_abs_top5p_mean[kappa_stats_idx].item()
                 )
-            if kappa_bias_stats_idx < kappa_slope_scale_abs_bottom5p_count:
+            if kappa_stats_idx < kappa_slope_scale_abs_bottom5p_count:
                 losses[f'kappa_slope_scale_abs_bottom5p_mean_{layer_idx}'] = (
-                    kappa_slope_scale_abs_bottom5p_mean[kappa_bias_stats_idx].item()
+                    kappa_slope_scale_abs_bottom5p_mean[kappa_stats_idx].item()
                 )
         for layer_idx, implicit_stats_idx in implicit_gate_proj_bias_layer_to_stats_idx.items():
             if implicit_stats_idx < implicit_gate_proj_bias_top5p_count:

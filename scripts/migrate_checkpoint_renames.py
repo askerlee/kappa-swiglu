@@ -21,6 +21,7 @@ import torch
 # Exact renames that are safe for checkpoint metadata and payloads everywhere,
 # including model_config and state-dict-adjacent metadata.
 ALWAYS_EXACT_KEY_RENAMES = {
+    "kappa_bias_start_layer": "kappa_start_layer",
     "global_kappa_bias_granularity": "global_kappa_param_granularity",
     "use_gate_proj_bias": "use_kappa_swiglu",
     "use_exp_kappa_bias": "use_kappa_swiglu",
@@ -39,12 +40,11 @@ ALWAYS_EXACT_KEY_RENAMES = {
 NON_MODEL_CONFIG_EXACT_KEY_RENAMES = {
     "constant_kappa_bias_dense_layers": "constant_kappa_dense_layers",
     "global_kappa_param_granularity": "global_kappa_granularity",
-    "kappa_bias_start_layer": "kappa_start_layer",
     "kappa_bias_lr_max_scale": "kappa_lr_max_scale",
     "kappa_bias_lr_final_scale": "kappa_lr_final_scale",
     "kappa_bias_delay_start_min_iterations": "kappa_delay_start_min_iterations",
     "kappa_bias_delay_start_iteration_frac": "kappa_delay_start_iteration_frac",
-    "kappa_bias_lr_warmup_iterations": "kappa_lr_warmup_iterations",
+    "kappa_lr_warmup_iterations": "kappa_lr_warmup_iterations",
     "kappa_bias_l2_loss_weight": "kappa_l2_loss_weight",
     "kappa_bias_l2_loss_anneal_iterations": "kappa_l2_loss_anneal_iterations",
     "kappa_bias_l2_loss_stage1_frac": "kappa_l2_loss_stage1_frac",
@@ -176,7 +176,7 @@ def _infer_model_config_updates_from_model_data(model_data: dict[str, Any]) -> d
     updates: dict[str, Any] = {}
     if kappa_layers:
         updates["use_kappa_swiglu"] = True
-        updates["kappa_bias_start_layer"] = min(kappa_layers)
+        updates["kappa_start_layer"] = min(kappa_layers)
     if dense_kappa_layers:
         updates["constant_kappa_bias_dense_layers"] = True
     return updates
