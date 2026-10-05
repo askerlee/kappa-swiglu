@@ -53,37 +53,49 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
         torch.testing.assert_close(actual_eval, expected)
 
 
-@pytest.mark.parametrize('empty_mask', [False, True])
+@pytest.mark.parametrize('initial_anchor', [False, True])
+@pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('use_loss_accum', [False, True])
-def test_independent_kappa_router_scale_l2_uses_valid_live_logits(
-    monkeypatch, empty_mask, use_loss_accum,
+def test_independent_kappa_router_scale_l2_uses_router_weights(
+    monkeypatch, initial_anchor, is_sft, use_loss_accum,
 ):
     manager = MOEManager()
     monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
     config = GPTConfig(
-        n_exp=2, n_embd=4, use_kappa_swiglu=True,
-        independent_kappa_router=True,
+        n_layer=1, n_head=2, n_embd=32, n_exp=2, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        independent_kappa_router=True, separate_base_sft_kappa=True,
+        refresh_kappa_param_references=initial_anchor,
     )
-    experts = Qwen3MLPExperts(config)
+    model = GPT(config)
+    model.init_weights()
+    model.set_kappa_training_phase(is_sft)
+    layer = model.transformer.h[0].mlp
+    weight = layer.kappa_router.weight
+    initial_weight = weight.detach().clone()
+    active_slice = slice(int(is_sft) * config.n_exp, (int(is_sft) + 1) * config.n_exp)
+    if initial_anchor:
+        layer._accumulate_kappa_router_l2_loss()
+        torch.testing.assert_close(manager.aggregate('kappa_scale_l2_loss'), torch.tensor(0.0))
+        manager.reset_all()
     with torch.no_grad():
-        for parameter in experts.parameters():
-            parameter.zero_()
-    logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]], requires_grad=True)
-    mask = torch.tensor([[True, True, False], [True, False, False]])
-    if empty_mask:
-        mask.zero_()
+        weight[active_slice].add_(0.2)
+    inputs = torch.randn(1, 3, config.n_embd, requires_grad=True)
     accum = MOEManager() if use_loss_accum else manager
-    experts(
-        torch.zeros(2, 3, 4), selected_router_scores=logits,
-        valid_score_mask=mask, loss_accum=accum if use_loss_accum else None,
-    )
+    layer(inputs, loss_accum=accum if use_loss_accum else None)
     scale_loss = accum.aggregate('kappa_scale_l2_loss')
-    expected_loss = torch.tensor(0.0 if empty_mask else 13.0 / 3.0)
-    torch.testing.assert_close(scale_loss, expected_loss)
+    delta = weight.detach()[active_slice]
+    if initial_anchor:
+        delta = delta - initial_weight[active_slice]
+    torch.testing.assert_close(scale_loss, delta.square().mean())
     scale_loss.backward()
-    expected_gradient = 2 * logits.detach().masked_fill(~mask, 0.0) / mask.sum().clamp_min(1)
-    torch.testing.assert_close(logits.grad, expected_gradient)
-    assert experts.kappa_scale is None
+    expected_gradient = torch.zeros_like(weight)
+    expected_gradient[active_slice] = 2 * delta / delta.numel()
+    torch.testing.assert_close(weight.grad, expected_gradient)
+    assert inputs.grad is None
+    assert layer.router.w_g.weight.grad is None
+    assert layer.experts.kappa_scale is None
+    assert 'transformer.h.0.mlp.initial_kappa_router_weight' not in model.state_dict()
 
 
 def test_independent_kappa_router_materialized_scale_cache():
@@ -257,6 +269,7 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
         expected_weight = state_dict[predictor_key]
     new_config = deepcopy(config)
     new_config.independent_kappa_router = True
+    new_config.refresh_kappa_param_references = True
     with torch.device('meta'):
         model = GPT(new_config)
     model.to_empty(device='cpu')
@@ -265,12 +278,19 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
     predictor = model.transformer.h[0].mlp.kappa_router.weight
     for slot_weight in predictor.view(-1, config.n_exp, config.n_embd):
         torch.testing.assert_close(slot_weight, expected_weight)
+    layer = model.transformer.h[0].mlp
+    torch.testing.assert_close(layer.initial_kappa_router_weight, predictor)
+    assert layer.initial_kappa_router_weight.data_ptr() != predictor.data_ptr()
+    accum = MOEManager()
+    layer._accumulate_kappa_router_l2_loss(loss_accum=accum)
+    torch.testing.assert_close(accum.aggregate('kappa_scale_l2_loss'), torch.tensor(0.0))
     assert predictor.data_ptr() != model.transformer.h[0].mlp.router.w_g.weight.data_ptr()
     with torch.no_grad():
         predictor[:config.n_exp].add_(0.2)
     reloaded = GPT(new_config)
     reloaded.load_state_dict(model.state_dict())
     torch.testing.assert_close(reloaded.transformer.h[0].mlp.kappa_router.weight, predictor)
+    torch.testing.assert_close(reloaded.transformer.h[0].mlp.initial_kappa_router_weight, predictor)
     optimizer = model.setup_optimizer()
     assert any(predictor is param for group in optimizer.param_groups for param in group['params'])
 

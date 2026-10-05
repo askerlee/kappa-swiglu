@@ -135,12 +135,12 @@ parser.add_argument(
     dest="kappa_l2_loss_weight",
     type=float,
     default=0,
-    help="L2 base weight on kappa_bias and kappa_scale values; independent kappa routing uses 10x this weight for kappa_bias",
+    help="L2 base weight on kappa_bias and kappa_scale parameters (kappa router weights for independent routing); independent kappa routing uses 10x this weight for kappa_bias",
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
-                    help="anchor expert kappa bias and scale L2 either around their loaded initial values or around 0")
+                    help="anchor expert kappa bias and scale L2 (kappa router weights for independent routing) around their loaded initial values or 0")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
                     help="predict kappa scales directly with 0.1 input-latent gradients (default: inherit checkpoint)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
