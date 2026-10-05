@@ -24,10 +24,12 @@ accidental destructive behavior, but it is not safe against malicious adversaria
 import contextlib
 import faulthandler
 import io
-import multiprocessing
+import json
 import os
 import platform
 import signal
+import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
@@ -144,7 +146,7 @@ def reliability_guard(maximum_memory_bytes: Optional[int] = None):
     with caution.
     """
 
-    if platform.uname().system != "Darwin":
+    if maximum_memory_bytes is not None and platform.uname().system != "Darwin":
         # These resource limit calls seem to fail on macOS (Darwin), skip?
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
@@ -200,7 +202,7 @@ def reliability_guard(maximum_memory_bytes: Optional[int] = None):
 
     subprocess.Popen = None  # type: ignore
 
-    __builtins__["help"] = None
+    builtins.help = None
 
     import sys
 
@@ -289,12 +291,15 @@ def execute_code(
     maximum_memory_bytes: Optional[int] = 256 * 1024 * 1024, # 256MB default
 ) -> ExecutionResult:
     """
-    Execute Python code in a sandboxed environment.
+    Execute Python code in a fresh, isolated interpreter without importing the
+    caller's training entry point or inheriting its model memory and callbacks.
 
     Args:
         code: Python code to execute as a string
         timeout: Maximum execution time in seconds (default: 5.0)
-        maximum_memory_bytes: Memory limit in bytes (default: 256MB, None to disable)
+        maximum_memory_bytes: Worker resource limit in bytes (default: 256MB,
+            None to disable). On Linux this includes total virtual address space,
+            not just resident RAM. Memory limits are skipped on macOS.
 
     Returns:
         ExecutionResult with success status, stdout/stderr, and error information
@@ -307,34 +312,41 @@ def execute_code(
         'hello world\\n'
     """
 
-    manager = multiprocessing.Manager()
-    result_dict = manager.dict()
+    payload = json.dumps({
+        "code": code,
+        "timeout": timeout,
+        "maximum_memory_bytes": maximum_memory_bytes,
+    })
+    with subprocess.Popen(
+        [sys.executable, "-I", os.path.abspath(__file__)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(payload, timeout=timeout + 1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr="",
+                error="Execution timed out (process killed)",
+                timeout=True,
+                memory_exceeded=False,
+            )
 
-    p = multiprocessing.Process(
-        target=_unsafe_execute,
-        args=(code, timeout, maximum_memory_bytes, result_dict)
-    )
-    p.start()
-    p.join(timeout=timeout + 1)
-
-    if p.is_alive():
-        p.kill()
+    try:
+        result_dict = json.loads(stdout)
+    except json.JSONDecodeError:
         return ExecutionResult(
             success=False,
             stdout="",
-            stderr="",
-            error="Execution timed out (process killed)",
-            timeout=True,
-            memory_exceeded=False,
-        )
-
-    if not result_dict:
-        return ExecutionResult(
-            success=False,
-            stdout="",
-            stderr="",
+            stderr=stderr,
             error="Execution failed (no result returned)",
-            timeout=True,
+            timeout=False,
             memory_exceeded=False,
         )
 
@@ -346,4 +358,16 @@ def execute_code(
         timeout=result_dict["timeout"],
         memory_exceeded=result_dict["memory_exceeded"],
     )
+
+
+if __name__ == "__main__":
+    payload = json.loads(sys.stdin.read())
+    result_dict = {}
+    _unsafe_execute(
+        payload["code"],
+        payload["timeout"],
+        payload["maximum_memory_bytes"],
+        result_dict,
+    )
+    print(json.dumps(result_dict))
 
