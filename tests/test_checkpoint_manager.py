@@ -21,7 +21,7 @@ def test_task_kappa_checkpoint_keeps_two_slots_when_loop_count_changes(total_ut_
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, n_exp=2,
         moe_start_layer=1, total_ut_steps=total_ut_steps,
         use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
-        separate_base_sft_kappa=True, global_kappa_bias_granularity=granularity,
+        separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
     )
     model_data = {}
     _patch_missing_keys(model_data, config)
@@ -46,7 +46,7 @@ def test_kappa_bias_from_scale_checkpoint_round_trip(granularity, dense_kappa):
         n_layer=3, n_head=2, n_embd=16, vocab_size=32, n_exp=2,
         moe_start_layer=1, total_ut_steps=3, use_kappa_swiglu=True,
         kappa_bias_from_scale=True, constant_kappa_bias_dense_layers=dense_kappa,
-        separate_base_sft_kappa=True, global_kappa_bias_granularity=granularity,
+        separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
     )
     model = GPT(config)
     model.init_weights()

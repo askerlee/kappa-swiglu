@@ -56,7 +56,7 @@ def test_separate_kappa_eval_cache_and_reference_slots(granularity):
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, total_ut_steps=3,
         use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
-        separate_base_sft_kappa=True, global_kappa_bias_granularity=granularity,
+        separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
         kappa_bias_ema_rms_reg=True, refresh_kappa_param_references=True,
     )
     model = GPT(config)

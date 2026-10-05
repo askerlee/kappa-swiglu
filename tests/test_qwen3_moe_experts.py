@@ -10,6 +10,99 @@ from nanochat.gpt import GPT, MANAGER, GateProjBiasEmaTargetKeeper, MOELayer, Qw
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+@pytest.mark.parametrize(('bias_from_scale', 'independent_router'), [(False, False), (True, False), (False, True)])
+def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_from_scale, independent_router):
+    manager = MOEManager()
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True, disable_kappa_bias=True,
+        global_kappa_param_granularity=granularity, kappa_bias_from_scale=bias_from_scale,
+        independent_kappa_router=independent_router, separate_base_sft_kappa=True,
+        kappa_bias_ema_rms_reg=True,
+    )
+    experts = Qwen3MLPExperts(config)
+    if granularity == 'global':
+        experts.bind_shared_kappa_bias(torch.nn.Parameter(torch.full((2, 1), 3.0)))
+        if not independent_router:
+            experts.bind_shared_kappa_scale(torch.nn.Parameter(torch.full((2, 1), 0.5)))
+    with torch.no_grad():
+        if experts._get_kappa_bias_parameter() is not None:
+            experts._get_kappa_bias_parameter().fill_(3.0)
+        if experts._get_kappa_scale_parameter() is not None:
+            experts._get_kappa_scale_parameter().fill_(0.5)
+    scores = torch.full((2, 3), 0.7, requires_grad=True)
+    raw_gate = torch.randn(2, 3, 16)
+    for slot in (0, 1):
+        bias = experts._materialize_kappa_bias(slot, selected_router_scores=scores)
+        torch.testing.assert_close(bias, torch.zeros(2, 16))
+        experts._accumulate_kappa_bias_l2_losses(bias, kappa_slot=slot)
+        scale = None if independent_router else experts._materialize_kappa_scale(slot)
+        conditioning = scores.unsqueeze(-1) if independent_router else scores.unsqueeze(-1) * scale.unsqueeze(1)
+        expected = raw_gate * torch.sigmoid(raw_gate * config.moe_kappa_slope_max_scale ** conditioning.tanh())
+        actual = experts._apply_kappa_slope_scaled_activation(raw_gate, bias, scores, kappa_scale=scale, kappa_slot=slot)
+        torch.testing.assert_close(actual, expected)
+        assert torch.autograd.grad(actual.sum(), scores, retain_graph=True)[0].abs().sum() > 0
+        with torch.no_grad():
+            experts.eval()
+            actual_eval = experts._apply_kappa_slope_scaled_activation(raw_gate, bias, scores, kappa_slot=slot)
+            torch.testing.assert_close(actual_eval, expected)
+            experts.train()
+    assert manager.aggregate('kappa_bias_l2_loss') == 0
+    assert manager.aggregate('kappa_bias_ema_rms_reg_loss') == 0
+
+
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+def test_disable_kappa_bias_dense_activation_is_standard_silu(monkeypatch, granularity):
+    manager = MOEManager()
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    config = GPTConfig(
+        n_embd=4, use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
+        disable_kappa_bias=True, global_kappa_param_granularity=granularity,
+        separate_base_sft_kappa=True, kappa_bias_ema_rms_reg=True,
+    )
+    mlp = Qwen3MLP(config)
+    if granularity == 'global':
+        mlp.bind_shared_kappa_bias(torch.nn.Parameter(torch.full((2, 1), 3.0)))
+    else:
+        with torch.no_grad():
+            mlp.kappa_bias.fill_(3.0)
+    inputs = torch.randn(2, 3, 4)
+    expected = mlp.c_proj(F.silu(mlp.gate_proj(inputs)) * mlp.c_fc(inputs))
+    for slot in (0, 1):
+        mlp.kappa_phase = slot
+        torch.testing.assert_close(mlp._materialize_kappa_bias(slot), torch.zeros(16))
+        torch.testing.assert_close(mlp(inputs), expected)
+        with torch.no_grad():
+            mlp.eval()
+            torch.testing.assert_close(mlp(inputs), expected)
+            mlp.train()
+    assert manager.aggregate('kappa_bias_l2_loss') == 0
+    assert manager.aggregate('kappa_bias_ema_rms_reg_loss') == 0
+
+
+def test_disable_kappa_bias_constant_moe_activation_is_standard_silu():
+    experts = Qwen3MLPExperts(GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        kappa_input='constant', disable_kappa_bias=True,
+    ))
+    with torch.no_grad():
+        experts.kappa_bias.fill_(3.0)
+    raw_gate = torch.randn(2, 3, 16, requires_grad=True)
+    scores = torch.ones(2, 3)
+    bias = experts._materialize_kappa_bias()
+    expected = F.silu(raw_gate)
+    actual = experts._apply_kappa_slope_scaled_activation(raw_gate, bias, scores)
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    assert experts.kappa_bias.grad is None
+    with torch.no_grad():
+        experts.eval()
+        torch.testing.assert_close(
+            experts._apply_kappa_slope_scaled_activation(raw_gate, bias, scores), expected,
+        )
+
+
 @pytest.mark.parametrize('kappa_input', ['top_logits', 'router_probs'])
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
@@ -18,7 +111,7 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
     config = GPTConfig(
         n_exp=3, n_embd=4, use_kappa_swiglu=True, kappa_input=kappa_input,
         independent_kappa_router=True, separate_base_sft_kappa=True,
-        global_kappa_bias_granularity=granularity,
+        global_kappa_param_granularity=granularity,
     )
     experts = Qwen3MLPExperts(config)
     if granularity == 'global':
@@ -540,7 +633,7 @@ def test_kappa_bias_can_rescale_kappa_slope_from_router_probs():
 def test_kappa_bias_from_scale_materialization_gradients_and_eval_cache(granularity, separate_base_sft_kappa):
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True,
-        kappa_bias_from_scale=True, global_kappa_bias_granularity=granularity,
+        kappa_bias_from_scale=True, global_kappa_param_granularity=granularity,
         total_ut_steps=3, separate_base_sft_kappa=separate_base_sft_kappa,
     )
     experts = Qwen3MLPExperts(config, layer_idx=1)
@@ -2945,7 +3038,7 @@ def test_kappa_bias_materializes_expected_shape_for_local_granularities(
         n_exp=2,
         n_embd=4,
         use_kappa_swiglu=True,
-        global_kappa_bias_granularity=granularity,
+        global_kappa_param_granularity=granularity,
         debug=False,
     )
 
@@ -2961,7 +3054,7 @@ def test_kappa_bias_materialization_broadcasts_per_expert_values():
         n_exp=3,
         n_embd=4,
         use_kappa_swiglu=True,
-        global_kappa_bias_granularity="per-expert",
+        global_kappa_param_granularity="per-expert",
         debug=False,
     )
 
@@ -2982,7 +3075,7 @@ def test_kappa_bias_selects_and_backprops_only_the_current_ut_pass():
         n_embd=4,
         total_ut_steps=2,
         use_kappa_swiglu=True,
-        global_kappa_bias_granularity="per-expert",
+        global_kappa_param_granularity="per-expert",
         debug=False,
     )
     experts = Qwen3MLPExperts(config)
@@ -3010,7 +3103,7 @@ def test_dense_kappa_bias_selects_only_the_current_ut_pass():
         total_ut_steps=2,
         use_kappa_swiglu=True,
         constant_kappa_bias_dense_layers=True,
-        global_kappa_bias_granularity="per-layer",
+        global_kappa_param_granularity="per-layer",
         debug=False,
     )
     mlp = Qwen3MLP(config)
@@ -3039,7 +3132,7 @@ def test_kappa_bias_global_granularity_shares_one_parameter_across_layers():
         use_aux_loss=False,
         use_router_z_loss=False,
         use_kappa_swiglu=True,
-        global_kappa_bias_granularity="global",
+        global_kappa_param_granularity="global",
         debug=False,
     )
 

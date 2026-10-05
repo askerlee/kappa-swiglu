@@ -1186,13 +1186,14 @@ class Qwen3MLP(nn.Module):
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
         self.register_buffer(
             'kappa_slope_max_scale',
             torch.tensor(float(getattr(config, 'dense_kappa_slope_max_scale', 2.0))),
             persistent=False,
         )
-        self.global_kappa_bias_granularity = getattr(config, 'global_kappa_bias_granularity', 'per-gate')
+        self.global_kappa_param_granularity = getattr(config, 'global_kappa_param_granularity', 'per-gate')
         self.kappa_bias_ema_rms_reg = bool(getattr(config, 'kappa_bias_ema_rms_reg', False))
         kappa_bias_start_layer = int(getattr(config, 'kappa_bias_start_layer', 0))
         self.use_kappa_swiglu = (
@@ -1215,7 +1216,7 @@ class Qwen3MLP(nn.Module):
         self.kappa_scale_ema_rms_reg_keeper = None
         if self.has_active_kappa_bias:
             kappa_bias_shape = (self.num_kappa_slots, *self._get_kappa_bias_parameter_shape())
-            if self.global_kappa_bias_granularity == 'global':
+            if self.global_kappa_param_granularity == 'global':
                 self.register_parameter('kappa_bias', None)
             else:
                 self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
@@ -1244,19 +1245,19 @@ class Qwen3MLP(nn.Module):
             )
 
     def _get_kappa_bias_parameter_shape(self):
-        if self.global_kappa_bias_granularity == 'per-gate':
+        if self.global_kappa_param_granularity == 'per-gate':
             return (self.intermediate_size,)
-        if self.global_kappa_bias_granularity in {'per-expert', 'per-layer', 'global'}:
+        if self.global_kappa_param_granularity in {'per-expert', 'per-layer', 'global'}:
             return (1,)
         raise ValueError(
-              f"Unsupported kappa bias granularity: {self.global_kappa_bias_granularity!r}"
+              f"Unsupported kappa bias granularity: {self.global_kappa_param_granularity!r}"
         )
 
     def set_kappa_swiglu_enabled(self, enabled):
         self.kappa_swiglu_enabled = self.has_active_kappa_bias and bool(enabled)
 
     def bind_shared_kappa_bias(self, kappa_bias):
-        if self.global_kappa_bias_granularity != 'global':
+        if self.global_kappa_param_granularity != 'global':
             raise ValueError("Shared kappa_bias binding is only valid for global granularity")
         self._shared_kappa_bias = kappa_bias
 
@@ -1267,6 +1268,8 @@ class Qwen3MLP(nn.Module):
         return self._shared_kappa_bias
 
     def _materialize_kappa_bias(self, kappa_slot=None):
+        if self.disable_kappa_bias:
+            return self.gate_proj.weight.new_zeros(self.intermediate_size)
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         if not self.has_active_kappa_bias:
@@ -1275,7 +1278,7 @@ class Qwen3MLP(nn.Module):
         if kappa_bias is None:
             raise RuntimeError("kappa_bias was enabled but no parameter was bound")
         kappa_bias = kappa_bias[kappa_slot]
-        if self.global_kappa_bias_granularity == 'per-gate':
+        if self.global_kappa_param_granularity == 'per-gate':
             return kappa_bias + 0
         return kappa_bias.reshape(1).expand(self.intermediate_size) + 0
 
@@ -1333,7 +1336,7 @@ class Qwen3MLP(nn.Module):
     def _kappa_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
         layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
-        granularity = self.global_kappa_bias_granularity
+        granularity = self.global_kappa_param_granularity
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
@@ -1352,6 +1355,8 @@ class Qwen3MLP(nn.Module):
             )
 
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, kappa_slot=0):
+        if self.disable_kappa_bias:
+            return
         kappa_bias = kappa_bias.float()
         loss = kappa_bias.square().mean()
         ema_loss = torch.zeros((), device=kappa_bias.device, dtype=torch.float32)
@@ -1455,12 +1460,13 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.register_buffer(
             'kappa_slope_max_scale',
             torch.tensor(float(getattr(config, 'moe_kappa_slope_max_scale', 3.0))),
             persistent=False,
         )
-        self.global_kappa_bias_granularity = getattr(config, 'global_kappa_bias_granularity', 'per-gate')
+        self.global_kappa_param_granularity = getattr(config, 'global_kappa_param_granularity', 'per-gate')
         self.gate_stats_threshold = float(getattr(config, 'gate_stats_threshold', 0.1))
         self.gate_stats_topk = int(getattr(config, 'gate_stats_topk', 16))
         self.kappa_bias_ema_rms_reg = bool(getattr(config, 'kappa_bias_ema_rms_reg', False))
@@ -1521,7 +1527,7 @@ class Qwen3MLPExperts(nn.Module):
             self.register_parameter('kappa_bias_alpha', None)
         if self.use_kappa_swiglu:
             kappa_bias_shape = (self.num_kappa_slots, *self._get_kappa_bias_parameter_shape())
-            if self.global_kappa_bias_granularity == 'global':
+            if self.global_kappa_param_granularity == 'global':
                 self.register_parameter('kappa_bias', None)
                 self.register_parameter('kappa_scale', None)
             else:
@@ -1600,23 +1606,23 @@ class Qwen3MLPExperts(nn.Module):
         self.kappa_swiglu_enabled = self.use_kappa_swiglu and bool(enabled)
 
     def _get_kappa_bias_parameter_shape(self):
-        if self.global_kappa_bias_granularity == 'per-gate':
+        if self.global_kappa_param_granularity == 'per-gate':
             return (self.n_exp, self.intermediate_size)
-        if self.global_kappa_bias_granularity == 'per-expert':
+        if self.global_kappa_param_granularity == 'per-expert':
             return (self.n_exp,)
-        if self.global_kappa_bias_granularity in {'per-layer', 'global'}:
+        if self.global_kappa_param_granularity in {'per-layer', 'global'}:
             return (1,)
         raise ValueError(
-              f"Unsupported kappa bias granularity: {self.global_kappa_bias_granularity!r}"
+              f"Unsupported kappa bias granularity: {self.global_kappa_param_granularity!r}"
         )
 
     def bind_shared_kappa_bias(self, kappa_bias):
-        if self.global_kappa_bias_granularity != 'global':
+        if self.global_kappa_param_granularity != 'global':
             raise ValueError("Shared kappa_bias binding is only valid for global granularity")
         self._shared_kappa_bias = kappa_bias
 
     def bind_shared_kappa_scale(self, kappa_scale):
-        if self.global_kappa_bias_granularity != 'global':
+        if self.global_kappa_param_granularity != 'global':
             raise ValueError("Shared kappa_scale binding is only valid for global granularity")
         self._shared_kappa_scale = kappa_scale
 
@@ -1659,6 +1665,8 @@ class Qwen3MLPExperts(nn.Module):
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
     def _materialize_kappa_bias(self, kappa_slot=None, selected_router_scores=None):
+        if self.disable_kappa_bias:
+            return self.gate_proj.new_zeros(self.n_exp, self.intermediate_size)
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
                 self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
@@ -1677,9 +1685,9 @@ class Qwen3MLPExperts(nn.Module):
         if kappa_bias is None:
             raise RuntimeError("kappa_bias was enabled but no parameter was bound")
         kappa_bias = kappa_bias[kappa_slot]
-        if self.global_kappa_bias_granularity == 'per-gate':
+        if self.global_kappa_param_granularity == 'per-gate':
             return kappa_bias + 0
-        if self.global_kappa_bias_granularity == 'per-expert':
+        if self.global_kappa_param_granularity == 'per-expert':
             return kappa_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
@@ -1705,9 +1713,9 @@ class Qwen3MLPExperts(nn.Module):
         if kappa_scale is None:
             raise RuntimeError("kappa_scale was enabled but no parameter was bound")
         kappa_scale = kappa_scale[kappa_slot]
-        if self.global_kappa_bias_granularity == 'per-gate':
+        if self.global_kappa_param_granularity == 'per-gate':
             return kappa_scale + 0
-        if self.global_kappa_bias_granularity == 'per-expert':
+        if self.global_kappa_param_granularity == 'per-expert':
             return kappa_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
@@ -1719,6 +1727,8 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch._dynamo.disable
     def _materialize_kappa_bias_for_eval(self, target_dtype, target_device, kappa_slot=0):
+        if self.disable_kappa_bias:
+            return self._materialize_kappa_bias(kappa_slot).to(device=target_device, dtype=target_dtype)
         if not self.use_kappa_swiglu:
             return self.disabled_kappa_bias.to(device=target_device, dtype=target_dtype)
         if not self.kappa_bias_from_scale and self._get_kappa_bias_parameter() is None:
@@ -1927,7 +1937,7 @@ class Qwen3MLPExperts(nn.Module):
     def _kappa_bias_debug_source(self, suffix):
         owner = self.__class__.__name__
         layer = "unknown" if self.layer_idx is None else str(self.layer_idx)
-        granularity = self.global_kappa_bias_granularity
+        granularity = self.global_kappa_param_granularity
         return f"{owner}(layer={layer}, granularity={granularity}).{suffix}"
 
     @torch._dynamo.disable
@@ -1954,6 +1964,8 @@ class Qwen3MLPExperts(nn.Module):
                 )
 
     def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, kappa_slot=0):
+        if self.disable_kappa_bias:
+            return
         kappa_bias = kappa_bias.float()
         kappa_bias_l2_value = kappa_bias
         if self.kappa_bias_from_scale:
@@ -2670,7 +2682,7 @@ class GPT(nn.Module):
         return self
 
     def _configure_kappa_bias_sharing(self):
-        if getattr(self.config, 'global_kappa_bias_granularity', 'per-gate') != 'global':
+        if getattr(self.config, 'global_kappa_param_granularity', 'per-gate') != 'global':
             return
         bias_enabled_modules = []
         bias_scale_enabled_modules = []

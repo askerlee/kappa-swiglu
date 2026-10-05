@@ -293,6 +293,8 @@ parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity
                     help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
 parser.add_argument("--kappa-bias-from-scale", type=str2bool, nargs='?', const=True, default=False,
                     help="derive MoE kappa_bias as a learned scalar alpha per layer times kappa_scale (alpha starts at one and is shared across UT/task slots)")
+parser.add_argument("--disable-kappa-bias", type=str2bool, nargs='?', const=True, default=False,
+                    help="force effective kappa bias to zero while keeping kappa scale enabled")
 parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
                     help="first transformer layer index where kappa_bias is enabled (default: when omitted and MoE is enabled, use min(moe_start_layer + 2, depth//2, 5); overridden to 0 by --constant-kappa-dense-layers)")
 parser.add_argument("--log-implicit-gate-proj-bias", dest="log_implicit_gate_proj_bias", type=str2bool, nargs='?', const=True, default=False,
@@ -687,8 +689,9 @@ def build_model_meta(depth):
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
-        global_kappa_bias_granularity=args.global_kappa_granularity,
+        global_kappa_param_granularity=args.global_kappa_granularity,
         kappa_bias_from_scale=args.kappa_bias_from_scale,
+        disable_kappa_bias=args.disable_kappa_bias,
         kappa_bias_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
         kappa_bias_ema_rms_reg=args.kappa_ema_rms_reg,
@@ -1708,7 +1711,10 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
             gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(dense_gate_proj_weight)
             losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
         kappa_bias = getattr(mlp, 'kappa_bias', None)
-        if kappa_bias is not None:
+        if getattr(mlp, 'disable_kappa_bias', False):
+            losses[f'kappa_bias_mean_{i}'] = 0
+            losses[f'kappa_bias_abs_mean_{i}'] = 0
+        elif kappa_bias is not None:
             losses[f'kappa_bias_mean_{i}'] = kappa_bias.mean().float().item()
             losses[f'kappa_bias_abs_mean_{i}'] = kappa_bias.abs().mean().float().item()
 

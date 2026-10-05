@@ -32,8 +32,9 @@ class GPTConfig:
         moe_kappa_slope_max_scale: float = 3.0,
         dense_kappa_slope_max_scale: float = 2.0,
         constant_kappa_bias_dense_layers: bool = False,
-        global_kappa_bias_granularity: str = "per-gate",
+        global_kappa_param_granularity: str = "per-gate",
         kappa_bias_from_scale: bool = False,
+        disable_kappa_bias: bool = False,
         kappa_bias_start_layer: int = 0,
         log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
@@ -131,13 +132,14 @@ class GPTConfig:
         self.moe_kappa_slope_max_scale = float(moe_kappa_slope_max_scale)
         self.dense_kappa_slope_max_scale = float(dense_kappa_slope_max_scale)
         valid_kappa_bias_granularities = {"per-gate", "per-expert", "per-layer", "global"}
-        if global_kappa_bias_granularity not in valid_kappa_bias_granularities:
+        if global_kappa_param_granularity not in valid_kappa_bias_granularities:
             raise ValueError(
-                "global_kappa_bias_granularity must be one of "
-                f"{sorted(valid_kappa_bias_granularities)}, got {global_kappa_bias_granularity!r}"
+                "global_kappa_param_granularity must be one of "
+                f"{sorted(valid_kappa_bias_granularities)}, got {global_kappa_param_granularity!r}"
             )
-        self.global_kappa_bias_granularity = global_kappa_bias_granularity
+        self.global_kappa_param_granularity = global_kappa_param_granularity
         self.kappa_bias_from_scale = bool(kappa_bias_from_scale)
+        self.disable_kappa_bias = bool(disable_kappa_bias)
         if self.independent_kappa_router and self.kappa_bias_from_scale:
             raise ValueError("independent_kappa_router and kappa_bias_from_scale are mutually exclusive")
         if self.kappa_bias_from_scale and kappa_input == "constant":

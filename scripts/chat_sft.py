@@ -92,6 +92,8 @@ parser.add_argument("--activation-offload", dest="activation_offload", type=str2
                     help="override storing transformer activations in pinned CPU memory")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=None,
                     help="override the base model's kappa SwiGLU setting (default: inherit)")
+parser.add_argument("--disable-kappa-bias", type=str2bool, nargs='?', const=True, default=None,
+                    help="force effective kappa bias to zero while keeping kappa scale enabled (default: inherit checkpoint)")
 parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_layers", type=str2bool, nargs='?', const=True, default=None,
                     help="override constant kappa bias for dense layers (default: inherit from base model)")
 # Training horizon
@@ -259,6 +261,7 @@ model, tokenizer, meta = load_model(
     activation_checkpointing=args.activation_checkpointing,
     activation_offload=args.activation_offload,
     use_kappa_swiglu=use_kappa_swiglu,
+    disable_kappa_bias=args.disable_kappa_bias,
     independent_kappa_router=args.independent_kappa_router,
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
     refresh_kappa_param_references=refresh_kappa_param_references,

@@ -26,6 +26,22 @@ def load_function_from_script(function_name):
 
 
 @pytest.mark.parametrize('script_name', ['base_train', 'base_train_mix', 'chat_sft'])
+def test_disable_kappa_bias_cli_wires_model_config(script_name):
+    source = (ROOT / 'scripts' / f'{script_name}.py').read_text(encoding='utf-8')
+    assert 'disable_kappa_bias=args.disable_kappa_bias,' in source
+    module = ast.parse(source)
+    option = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'add_argument' and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == '--disable-kappa-bias'
+    )
+    default = next(keyword.value.value for keyword in option.keywords if keyword.arg == 'default')
+    assert default is (None if script_name == 'chat_sft' else False)
+
+
+@pytest.mark.parametrize('script_name', ['base_train', 'base_train_mix', 'chat_sft'])
 def test_independent_kappa_router_cli_wires_model_config(script_name):
     source = (ROOT / 'scripts' / f'{script_name}.py').read_text(encoding='utf-8')
     assert '"--independent-kappa-router"' in source
