@@ -1201,10 +1201,10 @@ class Qwen3MLP(nn.Module):
             and bool(getattr(config, 'constant_kappa_bias_dense_layers', False))
         )
         self.register_buffer('kappa_bias_ema_rms_reg_step', torch.zeros((), dtype=torch.int64), persistent=False)
-        self.has_active_kappa_bias = self.use_kappa_swiglu and (
+        self.has_kappa_swiglu = self.use_kappa_swiglu and (
             layer_idx is None or layer_idx >= kappa_bias_start_layer
         )
-        self.kappa_swiglu_enabled = self.has_active_kappa_bias
+        self.kappa_swiglu_enabled = self.has_kappa_swiglu
         self._shared_kappa_bias = None
         self._eval_kappa_slope_scales_cache = None
         self._eval_kappa_slope_scales_cache_dtype = None
@@ -1214,7 +1214,7 @@ class Qwen3MLP(nn.Module):
         self._eval_kappa_slope_scales_cache_kappa_slot = None
         self.kappa_bias_ema_rms_reg_keeper = None
         self.kappa_scale_ema_rms_reg_keeper = None
-        if self.has_active_kappa_bias:
+        if self.has_kappa_swiglu:
             kappa_bias_shape = (self.num_kappa_slots, *self._get_kappa_bias_parameter_shape())
             if self.global_kappa_param_granularity == 'global':
                 self.register_parameter('kappa_bias', None)
@@ -1254,7 +1254,7 @@ class Qwen3MLP(nn.Module):
         )
 
     def set_kappa_swiglu_enabled(self, enabled):
-        self.kappa_swiglu_enabled = self.has_active_kappa_bias and bool(enabled)
+        self.kappa_swiglu_enabled = self.has_kappa_swiglu and bool(enabled)
 
     def bind_shared_kappa_bias(self, kappa_bias):
         if self.global_kappa_param_granularity != 'global':
@@ -1272,7 +1272,7 @@ class Qwen3MLP(nn.Module):
             return self.gate_proj.weight.new_zeros(self.intermediate_size)
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
-        if not self.has_active_kappa_bias:
+        if not self.has_kappa_swiglu:
             return self.disabled_kappa_bias.detach().requires_grad_(True)
         kappa_bias = self._get_kappa_bias_parameter()
         if kappa_bias is None:
@@ -1296,7 +1296,7 @@ class Qwen3MLP(nn.Module):
 
     @torch._dynamo.disable
     def _materialize_kappa_slope_scales_for_eval(self, target_dtype, target_device, kappa_slot=0):
-        kappa_bias_param = self._get_kappa_bias_parameter() if self.has_active_kappa_bias else None
+        kappa_bias_param = self._get_kappa_bias_parameter() if self.has_kappa_swiglu else None
         bias_version = None if kappa_bias_param is None else kappa_bias_param._version
         scale_version = self.kappa_slope_max_scale._version
         # If kappa_slope_scales is cached, then return the cache.
@@ -1387,7 +1387,7 @@ class Qwen3MLP(nn.Module):
 
     @torch._dynamo.disable
     def _update_kappa_slope_scale_stats(self, slope_scales):
-        if not MANAGER.collect_load_balancing_stats or not self.has_active_kappa_bias:
+        if not MANAGER.collect_load_balancing_stats or not self.has_kappa_swiglu:
             return
 
         slope_scales = slope_scales.detach().float()
@@ -2691,7 +2691,7 @@ class GPT(nn.Module):
                         bias_enabled_modules.append(experts)
                     if experts.use_kappa_scale_param:
                         bias_scale_enabled_modules.append(experts)
-            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
+            elif isinstance(mlp, Qwen3MLP) and mlp.has_kappa_swiglu:
                 bias_enabled_modules.append(mlp)
         if not bias_enabled_modules and not bias_scale_enabled_modules:
             return
@@ -3622,7 +3622,7 @@ class GPT(nn.Module):
                 kappa_bias_layer_indices.append(layer_idx)
             if isinstance(experts, Qwen3MLPExperts) and experts.log_implicit_gate_proj_bias:
                 implicit_gate_proj_bias_layer_indices.append(layer_idx)
-            elif isinstance(mlp, Qwen3MLP) and getattr(mlp, 'has_active_kappa_bias', mlp.use_kappa_swiglu):
+            elif isinstance(mlp, Qwen3MLP) and mlp.has_kappa_swiglu:
                 kappa_bias_layer_indices.append(layer_idx)
         kappa_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_bias_layer_indices)

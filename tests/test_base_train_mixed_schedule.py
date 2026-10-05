@@ -160,14 +160,13 @@ def test_chat_sft_steps_keep_base_train_capacity():
     assert "set_train_capacity" not in source
 
 
-def test_kappa_swiglu_can_run_only_on_mixed_chat_sft_steps():
+def test_kappa_swiglu_uses_explicit_enable_flag_on_both_sources():
     source = BASE_TRAIN_MIX.read_text()
 
-    assert 'parser.add_argument("--use-kappa-swiglu-sft-only"' in source
-    assert "if args.use_kappa_swiglu_sft_only:" in source
+    assert 'parser.add_argument("--use-kappa-swiglu-sft-only"' not in source
+    assert "use_kappa_swiglu_sft_only" not in source
     assert "args.use_kappa_swiglu = True" in source
-    assert "orig_model.set_kappa_swiglu_enabled(" in source
-    assert "is_chat_sft_step if args.use_kappa_swiglu_sft_only else True" in source
+    assert "kappa_swiglu_training_enabled = args.use_kappa_swiglu" in source
 
 
 def test_separate_kappa_routes_mixed_training_and_base_evaluation():
@@ -179,50 +178,56 @@ def test_separate_kappa_routes_mixed_training_and_base_evaluation():
     assert 'group["active_kappa_slot"] = int(is_chat_sft_step)' in source
 
 
-def test_core_eval_temporarily_disables_kappa_swiglu():
+def test_base_evaluation_keeps_kappa_enabled_and_restores_training_phase():
+    tree = ast.parse(BASE_TRAIN_MIX.read_text())
+    training_loop = next(node for node in tree.body if isinstance(node, ast.While))
+    for evaluation_name in ("evaluate_bpb", "evaluate_core"):
+        evaluation_block = next(
+            node for node in training_loop.body
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == evaluation_name
+                for child in ast.walk(node)
+            )
+        )
+        transitions = [
+            node for node in evaluation_block.body
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr in (
+                "set_kappa_training_phase", "set_kappa_swiglu_enabled",
+            )
+        ]
+        for enabled in (False, True):
+            for separate_slots in (False, True):
+                for step in (2500, 2750, 5500, 8250):
+                    events = []
+                    model = SimpleNamespace(
+                        set_kappa_training_phase=lambda phase: events.append(("phase", phase)),
+                        set_kappa_swiglu_enabled=lambda value: events.append(("enabled", value)),
+                    )
+                    namespace = {
+                        "orig_model": model,
+                        "args": SimpleNamespace(separate_base_sft_kappa=separate_slots),
+                        "kappa_swiglu_training_enabled": enabled,
+                        "is_chat_sft_step": step % 11 == 0,
+                    }
+                    exec(compile(ast.Module(body=transitions, type_ignores=[]),
+                                 filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
+                    assert events[:2] == [("phase", False), ("enabled", enabled)]
+                    assert set(events[2:]) == {
+                        ("phase", step % 11 == 0), ("enabled", enabled),
+                    }
+
+
+def test_kappa_logging_uses_current_step_metrics():
     source = BASE_TRAIN_MIX.read_text()
-    core_eval_index = source.index("core_results = evaluate_core(orig_model")
-    disable_index = source.rindex(
-        "orig_model.set_kappa_swiglu_enabled(False)",
-        0,
-        core_eval_index,
-    )
-    restore_index = source.index(
-        "orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)",
-        core_eval_index,
-    )
 
-    assert disable_index < core_eval_index < restore_index
-
-
-def test_base_logging_reuses_last_chat_sft_kappa_metrics():
-    snapshot_kappa_metrics = load_function_from_script("snapshot_kappa_metrics")
-    overlay_metrics = load_function_from_script("overlay_last_chat_sft_kappa_metrics")
-    source_value = torch.tensor(3.0)
-    cached = snapshot_kappa_metrics({
-        "kappa_scale_l2_loss": source_value,
-        "aux_loss": torch.tensor(7.0),
-    })
-    source_value.fill_(9.0)
-    current = {
-        "kappa_scale_l2_loss": torch.tensor(0.0),
-        "aux_loss": torch.tensor(2.0),
-    }
-
-    base_logging = overlay_metrics(current, cached, is_chat_sft_step=False)
-    sft_logging = overlay_metrics(current, cached, is_chat_sft_step=True)
-
-    torch.testing.assert_close(base_logging["kappa_scale_l2_loss"], torch.tensor(3.0))
-    torch.testing.assert_close(base_logging["aux_loss"], torch.tensor(2.0))
-    assert "aux_loss" not in cached
-    assert sft_logging is current
-
-
-def test_sft_only_kappa_collects_stats_on_non_logging_sft_steps():
-    source = BASE_TRAIN_MIX.read_text()
-
-    assert "or (args.use_kappa_swiglu_sft_only and is_chat_sft_step)" in source
-    assert "last_chat_sft_kappa_metrics = snapshot_kappa_metrics(losses)" in source
+    assert "last_chat_sft_kappa_metrics" not in source
+    assert "overlay_last_chat_sft_kappa_metrics" not in source
 
 
 def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():

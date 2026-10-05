@@ -261,10 +261,8 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', const=True, default=True,
-                    help="allocate kappa SwiGLU parameters but use them only on mixed chat-SFT iterations")
 parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
-                    help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources unless SFT-only is explicitly requested")
+                    help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
                     help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=False,
@@ -427,10 +425,6 @@ if (args.kappa_bias_from_scale or args.independent_kappa_router) and not arg_was
     args.kappa_l2_loss_weight = 0.001 if args.independent_kappa_router else 0.002
 
 if args.separate_base_sft_kappa:
-    args.use_kappa_swiglu = True
-    if not arg_was_explicitly_set(sys.argv[1:], '--use-kappa-swiglu-sft-only'):
-        args.use_kappa_swiglu_sft_only = False
-if args.use_kappa_swiglu_sft_only:
     args.use_kappa_swiglu = True
 
 ut_edge_offset = args.depth // 6
@@ -1464,21 +1458,6 @@ def average_step_losses(step_losses, grad_accum_normalizer):
     return averaged_losses
 
 
-def snapshot_kappa_metrics(losses):
-    return {
-        key: value.detach().clone() if torch.is_tensor(value) else value
-        for key, value in losses.items()
-        if key.startswith("kappa_")
-    }
-
-
-def overlay_last_chat_sft_kappa_metrics(losses, cached_metrics, is_chat_sft_step):
-    if is_chat_sft_step or not cached_metrics:
-        return losses
-    logging_losses = dict(losses)
-    logging_losses.update(cached_metrics)
-    return logging_losses
-
 def get_dense_kappa_bias_stat_layer_indices(model):
     start_layer = max(0, int(getattr(model.config, 'kappa_bias_start_layer', 0)))
     return [
@@ -1768,7 +1747,6 @@ if args.mockup_mode:
 
 core_results = {}
 prev_exp_gate_implicit_bias_signs = {}
-last_chat_sft_kappa_metrics = {}
 has_rebuilt_compile_after_eval = False
 throughput_interval_steps = 0
 throughput_interval_time = 0.0
@@ -1787,9 +1765,7 @@ while True:
     is_resume_step = resuming and step == args.resume_from_step
     is_chat_sft_step = should_use_chat_sft_step(step, args.chat_sft_every)
     orig_model.set_kappa_training_phase(is_chat_sft_step)
-    kappa_swiglu_training_enabled = (
-        is_chat_sft_step if args.use_kappa_swiglu_sft_only else True
-    )
+    kappa_swiglu_training_enabled = args.use_kappa_swiglu
     orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
     should_terminate_after_checkpoint = shutdown_requested and not is_last_step
     refresh_compiled_training_model = False
@@ -1850,8 +1826,7 @@ while True:
     ):
         orig_model.eval()
         orig_model.set_kappa_training_phase(False)
-        if args.separate_base_sft_kappa:
-            orig_model.set_kappa_swiglu_enabled(not args.use_kappa_swiglu_sft_only)
+        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with disable_fp8(orig_model), autocast_ctx:
@@ -1873,8 +1848,7 @@ while True:
         }), step=step)
         orig_model.train()
         orig_model.set_kappa_training_phase(is_chat_sft_step)
-        if args.separate_base_sft_kappa:
-            orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
+        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         MANAGER.reset_all()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
@@ -1998,10 +1972,7 @@ while True:
         and (is_last_step or ((not is_resume_step) and step > 0 and step % args.core_metric_every == 0))
     ):
         orig_model.set_kappa_training_phase(False)
-        if args.separate_base_sft_kappa:
-            orig_model.set_kappa_swiglu_enabled(not args.use_kappa_swiglu_sft_only)
-        else:
-            orig_model.set_kappa_swiglu_enabled(False)
+        orig_model.set_kappa_swiglu_enabled(kappa_swiglu_training_enabled)
         model.eval()
         with disable_fp8(orig_model), autocast_ctx:
             # for the final evaluation at the end of training, run on the full set of tasks instead of a subset            
@@ -2136,7 +2107,6 @@ while True:
 
     MANAGER.collect_load_balancing_stats = args.log_grad_stats and (
         step % args.log_interval == 0
-        or (args.use_kappa_swiglu_sft_only and is_chat_sft_step)
     )
     MANAGER.collect_backward_stats = False
 
@@ -2280,9 +2250,6 @@ while True:
         if MANAGER.collect_load_balancing_stats:
             collect_weight_grad_stats(model, losses, moe_layer_indices)
 
-        if args.use_kappa_swiglu_sft_only and is_chat_sft_step:
-            last_chat_sft_kappa_metrics = snapshot_kappa_metrics(losses)
-
         # step the optimizer
         lrm = get_lr_multiplier(step, num_iterations, args.warmup_ratio, args.warmdown_ratio, 
                                 args.final_lr_frac, lr_schedule_restart_at_step=args.lr_schedule_restart_at_step, 
@@ -2355,11 +2322,6 @@ while True:
         epoch = dataloader_state_dict["epoch"]
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | source: {train_source} | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
     if step % args.log_interval == 0:
-        losses = overlay_last_chat_sft_kappa_metrics(
-            losses,
-            last_chat_sft_kappa_metrics,
-            is_chat_sft_step,
-        )
         logged_dt, logged_tok_per_sec, logged_mfu = get_interval_throughput(
             total_batch_size,
             num_flops_per_token,
@@ -2401,10 +2363,7 @@ while True:
             "mfu": logged_mfu,
             "epoch": epoch,
             "train/is_chat_sft_step": 1.0 if train_source == "chat_sft" else 0.0,
-            "train/kappa_swiglu_enabled": 1.0 if (
-                args.use_kappa_swiglu
-                and (not args.use_kappa_swiglu_sft_only or is_chat_sft_step)
-            ) else 0.0,
+            "train/kappa_swiglu_enabled": 1.0 if args.use_kappa_swiglu else 0.0,
         }
         if train_source == "chat_sft":
             log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])

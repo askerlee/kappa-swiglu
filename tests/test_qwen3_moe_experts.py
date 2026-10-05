@@ -62,6 +62,12 @@ def test_disable_kappa_bias_dense_activation_is_standard_silu(monkeypatch, granu
         separate_base_sft_kappa=True, kappa_bias_ema_rms_reg=True,
     )
     mlp = Qwen3MLP(config)
+    assert mlp.has_kappa_swiglu is True
+    assert mlp.kappa_swiglu_enabled is True
+    mlp.set_kappa_swiglu_enabled(False)
+    assert mlp.kappa_swiglu_enabled is False
+    mlp.set_kappa_swiglu_enabled(True)
+    assert mlp.kappa_swiglu_enabled is True
     if granularity == 'global':
         mlp.bind_shared_kappa_bias(torch.nn.Parameter(torch.full((2, 1), 3.0)))
     else:
@@ -1210,7 +1216,9 @@ def test_dense_qwen3_mlp_uses_placeholder_bias_before_start_layer():
     x = torch.randn(3, 5, config.n_embd)
 
     assert mlp.use_kappa_swiglu is True
-    assert mlp.has_active_kappa_bias is False
+    assert mlp.has_kappa_swiglu is False
+    mlp.set_kappa_swiglu_enabled(True)
+    assert mlp.kappa_swiglu_enabled is False
     assert not hasattr(mlp, 'kappa_bias')
 
     with torch.no_grad():
