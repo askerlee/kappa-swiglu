@@ -15,8 +15,11 @@ CHAT_SFT = ROOT / "scripts" / "chat_sft.py"
 CHECKPOINT_MANAGER = ROOT / "nanochat" / "checkpoint_manager.py"
 
 
+@pytest.mark.parametrize("script_name", ["chat_sft", "chat_eval"])
+@pytest.mark.parametrize("run_as_main", [True, False])
 @pytest.mark.parametrize("offline,existing", [(True, None), (True, "0"), (False, None), (False, "1")])
-def test_chat_sft_hf_offline_before_task_imports(monkeypatch, offline, existing):
+def test_chat_hf_offline_before_task_imports(monkeypatch, script_name, run_as_main, offline, existing):
+    script_path = ROOT / "scripts" / f"{script_name}.py"
     for variable in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE"):
         if existing is None:
             monkeypatch.delenv(variable, raising=False)
@@ -24,24 +27,27 @@ def test_chat_sft_hf_offline_before_task_imports(monkeypatch, offline, existing)
             monkeypatch.setenv(variable, existing)
     monkeypatch.setenv("PYTORCH_ALLOC_CONF", "test")
     monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "test")
-    monkeypatch.setattr(sys, "argv", [str(CHAT_SFT), "--device-type", "cpu"] + (["--hf-offline"] if offline else []))
-    module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
+    monkeypatch.setattr(sys, "argv", [str(script_path), "--device-type", "cpu"] + (["--hf-offline"] if offline else []))
+    module = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
     prefix = []
     for node in module.body:
         if isinstance(node, ast.ImportFrom) and node.module == "tasks.arc":
             break
+        if isinstance(node, ast.Import) and any(alias.name == "torch" for alias in node.names):
+            break
         prefix.append(node)
-    namespace = {}
-    exec(compile(ast.Module(body=prefix, type_ignores=[]), filename=str(CHAT_SFT), mode="exec"), namespace)
+    namespace = {"__name__": "__main__" if run_as_main else f"scripts.{script_name}"}
+    exec(compile(ast.Module(body=prefix, type_ignores=[]), filename=str(script_path), mode="exec"), namespace)
+    enabled = offline and (run_as_main or script_name == "chat_sft")
     for variable in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE"):
-        assert os.environ.get(variable) == ("1" if offline else existing)
+        assert os.environ.get(variable) == ("1" if enabled else existing)
 
     parser_assignment = next(
-        node for node in module.body
+        node for node in ast.walk(module)
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "parser" for target in node.targets)
     )
-    exec(compile(ast.Module(body=[parser_assignment], type_ignores=[]), filename=str(CHAT_SFT), mode="exec"), namespace)
+    exec(compile(ast.Module(body=[parser_assignment], type_ignores=[]), filename=str(script_path), mode="exec"), namespace)
     parser = namespace["parser"]
     assert parser.parse_args(["--hf-offline"] if offline else []).hf_offline is offline
     assert "--hf-offline" in parser.format_help()

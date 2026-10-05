@@ -9,8 +9,18 @@ torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 """
 
 import argparse
+import os
 from functools import partial
 from contextlib import nullcontext
+
+offline_parser = argparse.ArgumentParser(add_help=False)
+offline_parser.add_argument("--hf-offline", action="store_true",
+                            help="use cached Hugging Face datasets and files without network requests")
+if __name__ == "__main__":
+    offline_args, _ = offline_parser.parse_known_args()
+    if offline_args.hf_offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import torch
 import torch.distributed as dist
@@ -184,7 +194,7 @@ def run_chat_eval(task_name, model, tokenizer, engine,
 if __name__ == "__main__":
 
     # Parse command-line arguments
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(parents=[offline_parser])
     parser.add_argument('-i', '--source', type=str, required=True, help="Source of the model: sft|rl")
     parser.add_argument('-a', '--task-name', type=str, default=None, help="Task name. Default = all tasks. Use | to split multiple tasks.")
     parser.add_argument('-d', '--dtype', type=str, default='bfloat16', choices=['float32', 'bfloat16'])
