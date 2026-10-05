@@ -264,22 +264,11 @@ def test_chat_sft_global_lr_schedule_warms_holds_and_decays_to_floor():
     assert get_lr_multiplier(1.0, 0.2, 0.01, 0.2, 0.05) == pytest.approx(0.01)
 
 
-def test_gradient_correlation_pairs_matching_kappa_gate_gradients():
-    gradient_correlation = load_function_from_script("gradient_correlation")
-
-    scale_grad = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    bias_grad = torch.tensor([[2.0, 4.0], [6.0, 8.0]])
-
-    assert gradient_correlation(scale_grad, bias_grad) == 1.0
-    assert gradient_correlation(scale_grad, -bias_grad) == -1.0
-    assert gradient_correlation(scale_grad, torch.ones_like(scale_grad)) is None
-
-
-def test_chat_sft_logs_kappa_gradient_correlation_per_layer():
+def test_chat_sft_does_not_monitor_kappa_gradient_correlation():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert "losses[f'kappa_grad_correlation_{i}'] = kappa_grad_correlation" in source
-    assert 'log_data[f"inspect/kappa_grad_correlation_{i}"]' in source
+    assert "kappa_grad_correlation" not in source
+    assert "def gradient_correlation(" not in source
 
 
 def test_chat_sft_interval_throughput_averages_all_steps_since_previous_log():
