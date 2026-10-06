@@ -1,3 +1,4 @@
+import argparse
 import ast
 import csv
 import os
@@ -451,6 +452,48 @@ def test_kappa_bias_lr_schedule_wires_delay_and_warmup_cli_args():
 
     assert 'nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0)' in source
     assert 'warmup_iterations=group.get("lr_scale_warmup_iterations", 1000)' in source
+
+
+@pytest.mark.parametrize("warmup_iterations", [None, 0, 37, -1])
+def test_chat_sft_kappa_bias_warmup_parser_validation_and_optimizer(monkeypatch, warmup_iterations):
+    module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
+    parser_nodes = []
+    collecting = False
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+            if "parser" in names:
+                collecting = True
+            if "user_config" in names:
+                break
+        if collecting:
+            parser_nodes.append(node)
+    str2bool_node = next(
+        node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "str2bool"
+    )
+    namespace = {"argparse": argparse, "offline_parser": argparse.ArgumentParser(add_help=False),
+                 "print0": lambda *args: None}
+    argv = [str(CHAT_SFT)]
+    if warmup_iterations is not None:
+        argv += ["--kappa-bias-lr-warmup-iterations", str(warmup_iterations)]
+    monkeypatch.setattr(sys, "argv", argv)
+    code = compile(ast.Module(body=[str2bool_node, *parser_nodes], type_ignores=[]), str(CHAT_SFT), "exec")
+    if warmup_iterations == -1:
+        with pytest.raises(ValueError, match="--kappa-bias-lr-warmup-iterations must be >= 0"):
+            exec(code, namespace)
+        return
+    exec(code, namespace)
+    expected = 100 if warmup_iterations is None else warmup_iterations
+    assert namespace["args"].kappa_bias_lr_warmup_iterations == expected
+    optimizer_call = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "setup_optimizer"
+    )
+    warmup_value = next(
+        keyword.value for keyword in optimizer_call.keywords if keyword.arg == "kappa_lr_warmup_iterations"
+    )
+    assert eval(compile(ast.Expression(warmup_value), str(CHAT_SFT), "eval"), namespace) == expected
 
 
 def test_chat_sft_uses_schedule_total_iterations_when_applying_kappa_bias_lr_scale():
