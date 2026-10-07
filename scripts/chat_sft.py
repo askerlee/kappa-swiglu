@@ -159,7 +159,7 @@ parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-del
                     dest="kappa_bias_delay_start_min_iterations", type=int, default=100,
                     help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
 parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=100,
-                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale; also warms kappa_router from 0 to its full scheduled LR")
 parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
@@ -1141,8 +1141,11 @@ while True:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
         elif group.get("name") == "kappa_router":
-            group["lr"] = group["initial_lr"] * lrm * float(
-                step >= group.get("kappa_param_delay_start_iterations", 0)
+            group["lr"] = group["initial_lr"] * lrm * get_linear_lr_scale(
+                step,
+                kappa_bias_schedule_total_iterations,
+                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
+                warmup_iterations=args.kappa_bias_lr_warmup_iterations,
             )
         else:
             group["lr"] = group["initial_lr"] * lrm
