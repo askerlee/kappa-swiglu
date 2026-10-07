@@ -61,10 +61,73 @@ def load_function_from_script(function_name):
     for node in module.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             function_module = ast.Module(body=[node], type_ignores=[])
-            namespace = {}
+            namespace = {"torch": torch}
             exec(compile(function_module, filename=str(CHAT_SFT), mode="exec"), namespace)
             return namespace[function_name]
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
+
+
+@pytest.mark.parametrize("coeff", [0.0, 0.25, 0.5, 1.0])
+def test_blend_sft_kappa_params_preserves_base_and_shared_params(coeff):
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(separate_base_sft_kappa=True)
+    model.global_kappa_bias = torch.nn.Parameter(torch.tensor([[2.0], [6.0]]))
+    model.global_kappa_scale = torch.nn.Parameter(torch.tensor([[1.0], [3.0]]))
+    model.mlp = torch.nn.Module()
+    model.mlp.experts = torch.nn.Module()
+    model.mlp.experts.kappa_bias = torch.nn.Parameter(torch.arange(12.0).reshape(2, 2, 3))
+    model.mlp.experts.kappa_scale = torch.nn.Parameter(torch.arange(12.0).reshape(2, 2, 3) + 1)
+    model.mlp.experts.kappa_bias_alpha = torch.nn.Parameter(torch.tensor(2.0))
+    model.mlp.kappa_router = torch.nn.Linear(3, 4)
+    model.mlp.router = torch.nn.Linear(3, 4)
+    original = {name: param.detach().clone() for name, param in model.named_parameters()}
+
+    count = load_function_from_script("blend_sft_kappa_params")(model, coeff)
+
+    assert count == (0 if coeff == 0.0 else 6)
+    for name, param in model.named_parameters():
+        if name.endswith("kappa_bias_alpha") or ".router." in name:
+            torch.testing.assert_close(param, original[name])
+            continue
+        slots = param.reshape(2, -1)
+        old_slots = original[name].reshape(2, -1)
+        torch.testing.assert_close(slots[0], old_slots[0])
+        torch.testing.assert_close(slots[1], old_slots[1].lerp(old_slots[0], coeff))
+
+
+@pytest.mark.parametrize("coeff", [-0.1, 1.1, float("nan"), float("inf")])
+def test_blend_sft_kappa_params_rejects_invalid_coeff(coeff):
+    with pytest.raises(ValueError, match="0 <= coefficient <= 1"):
+        load_function_from_script("blend_sft_kappa_params")(None, coeff)
+
+
+def test_blend_sft_kappa_params_requires_separate_slots_only_when_enabled():
+    model = SimpleNamespace(config=SimpleNamespace(separate_base_sft_kappa=False))
+    blend = load_function_from_script("blend_sft_kappa_params")
+    assert blend(model, 0.0) == 0
+    with pytest.raises(ValueError, match="requires separate base/SFT"):
+        blend(model, 0.5)
+
+
+def test_kappa_blend_cli_and_initial_anchor_order():
+    source = CHAT_SFT.read_text()
+    module = ast.parse(source)
+    option = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument" and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--kappa-blend-coeff"
+    )
+    parser = argparse.ArgumentParser()
+    option_module = ast.fix_missing_locations(ast.Module(body=[ast.Expr(value=option)], type_ignores=[]))
+    exec(compile(option_module, str(CHAT_SFT), "exec"), {"parser": parser})
+    assert parser.parse_args([]).kappa_blend_coeff == 0.0
+    assert parser.parse_args(["--kappa-blend-coeff", "0.5"]).kappa_blend_coeff == 0.5
+    load_position = source.index("model, tokenizer, meta = load_model(")
+    blend_position = source.index("blended_kappa_params = blend_sft_kappa_params(")
+    anchor_position = source.index("model.refresh_kappa_param_references()", blend_position)
+    assert load_position < blend_position < anchor_position < source.index("optimizer = model.setup_optimizer(")
 
 
 @pytest.mark.parametrize("rank,upload", [(0, True), (0, False), (1, True)])
