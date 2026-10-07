@@ -504,8 +504,8 @@ def test_loss_recompute_backward_cli_is_wired_into_loaded_model_config():
 def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert "def get_kappa_bias_lr_scale(optimizer, step, num_iterations):" in source
-    assert 'if group.get("name") == "kappa_params" and group.get("kind") == "adamw":' in source
+    assert 'def get_kappa_lr_scale(optimizer, step, num_iterations, group_name="kappa_params"):' in source
+    assert 'if group_name == "kappa_params" and group.get("kind") == "adamw":' in source
     assert 'end_scale=group.get("lr_scale_end", 1.0)' in source
     assert 'max_scale=group.get("lr_scale_max", 1.0)' in source
 
@@ -518,7 +518,12 @@ def test_kappa_bias_lr_schedule_wires_delay_and_warmup_cli_args():
 
 
 @pytest.mark.parametrize("warmup_iterations", [None, 0, 37, -1])
-def test_chat_sft_kappa_bias_warmup_parser_validation_and_optimizer(monkeypatch, warmup_iterations):
+@pytest.mark.parametrize("option,field,optimizer_keyword", [
+    ("--kappa-lr-warmup-iterations", "kappa_lr_warmup_iterations", "kappa_lr_warmup_iterations"),
+    ("--kappa-delay-start-min-iterations", "kappa_delay_start_min_iterations", "kappa_param_delay_start_iterations"),
+    ("--kappa-delay-start-iterations", "kappa_delay_start_min_iterations", "kappa_param_delay_start_iterations"),
+])
+def test_chat_sft_kappa_warmup_parser_validation_and_optimizer(monkeypatch, warmup_iterations, option, field, optimizer_keyword):
     module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
     parser_nodes = []
     collecting = False
@@ -538,23 +543,23 @@ def test_chat_sft_kappa_bias_warmup_parser_validation_and_optimizer(monkeypatch,
                  "print0": lambda *args: None}
     argv = [str(CHAT_SFT)]
     if warmup_iterations is not None:
-        argv += ["--kappa-bias-lr-warmup-iterations", str(warmup_iterations)]
+        argv += [option, str(warmup_iterations)]
     monkeypatch.setattr(sys, "argv", argv)
     code = compile(ast.Module(body=[str2bool_node, *parser_nodes], type_ignores=[]), str(CHAT_SFT), "exec")
     if warmup_iterations == -1:
-        with pytest.raises(ValueError, match="--kappa-bias-lr-warmup-iterations must be >= 0"):
+        with pytest.raises(ValueError, match=f"--{field.replace('_', '-')} must be >= 0"):
             exec(code, namespace)
         return
     exec(code, namespace)
     expected = 100 if warmup_iterations is None else warmup_iterations
-    assert namespace["args"].kappa_bias_lr_warmup_iterations == expected
+    assert getattr(namespace["args"], field) == expected
     optimizer_call = next(
         node for node in ast.walk(module)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and node.func.attr == "setup_optimizer"
     )
     warmup_value = next(
-        keyword.value for keyword in optimizer_call.keywords if keyword.arg == "kappa_lr_warmup_iterations"
+        keyword.value for keyword in optimizer_call.keywords if keyword.arg == optimizer_keyword
     )
     assert eval(compile(ast.Expression(warmup_value), str(CHAT_SFT), "eval"), namespace) == expected
 
@@ -563,7 +568,8 @@ def test_chat_sft_uses_schedule_total_iterations_when_applying_kappa_bias_lr_sca
     source = CHAT_SFT.read_text(encoding="utf-8")
 
     assert "kappa_bias_schedule_total_iterations = get_kappa_bias_schedule_total_iterations(" in source
-    assert 'kappa_bias_lr_scale = get_kappa_bias_lr_scale(' in source
+    assert 'kappa_bias_lr_scale = get_kappa_lr_scale(' in source
+    assert 'kappa_router_lr_scale = get_kappa_lr_scale(' in source
     assert '        optimizer,' in source
     assert '        kappa_bias_schedule_total_iterations,' in source
 
@@ -590,16 +596,37 @@ def test_chat_sft_kappa_router_lr_warms_up(kind, delay, warmup, step, expected_s
         "name": "kappa_router", "kind": kind, "initial_lr": 0.01,
         "kappa_param_delay_start_iterations": delay,
     }
+    get_kappa_lr_scale = load_function_from_script("get_kappa_lr_scale")
+    get_kappa_lr_scale.__globals__.update({
+        "args": SimpleNamespace(kappa_lr_warmup_iterations=warmup),
+        "get_linear_lr_scale": load_function_from_script("get_linear_lr_scale"),
+    })
+    router_scale = get_kappa_lr_scale(
+        SimpleNamespace(param_groups=[group]), step, 1000, group_name="kappa_router"
+    )
+    assert router_scale == pytest.approx(expected_scale)
     namespace = {
         "group": group,
         "lrm": 0.2,
-        "step": step,
-        "kappa_bias_schedule_total_iterations": 1000,
-        "args": SimpleNamespace(kappa_bias_lr_warmup_iterations=warmup),
-        "get_linear_lr_scale": load_function_from_script("get_linear_lr_scale"),
+        "kappa_router_lr_scale": router_scale,
     }
     exec(compile(ast.Module(body=router_branch.body, type_ignores=[]), str(CHAT_SFT), "exec"), namespace)
     assert group["lr"] == pytest.approx(0.01 * 0.2 * expected_scale)
+
+
+@pytest.mark.parametrize("step,expected_scale", [(99, 0.0), (150, 0.005), (200, 0.01), (1000, 0.005)])
+def test_chat_sft_shared_kappa_schedule_preserves_bias_scales(step, expected_scale):
+    get_kappa_lr_scale = load_function_from_script("get_kappa_lr_scale")
+    get_kappa_lr_scale.__globals__["get_linear_lr_scale"] = load_function_from_script("get_linear_lr_scale")
+    group = {
+        "name": "kappa_params", "kind": "adamw",
+        "lr_scale_max": 0.01, "lr_scale_end": 0.005,
+        "kappa_param_delay_start_iterations": 100,
+        "lr_scale_warmup_iterations": 100,
+    }
+    optimizer = SimpleNamespace(param_groups=[group])
+    assert get_kappa_lr_scale(optimizer, step, 1000) == pytest.approx(expected_scale)
+    assert get_kappa_lr_scale(optimizer, step, 1000, group_name="kappa_router") == 1.0
 
 
 def test_chat_sft_inherits_kappa_slope_max_scale_without_sft_warmup():

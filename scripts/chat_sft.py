@@ -155,10 +155,10 @@ parser.add_argument("--kappa-lr-max-scale",
 parser.add_argument("--kappa-lr-final-scale",
                     dest="kappa_lr_final_scale", type=float, default=0.005,
                     help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-lr-max-scale")
-parser.add_argument("--kappa-bias-delay-start-min-iterations", "--kappa-bias-delay-start-iterations",
-                    dest="kappa_bias_delay_start_min_iterations", type=int, default=100,
-                    help="number of initial iterations to keep kappa_bias LR at 0 before warmup and annealing")
-parser.add_argument("--kappa-bias-lr-warmup-iterations", type=int, default=100,
+parser.add_argument("--kappa-delay-start-min-iterations", "--kappa-delay-start-iterations",
+                    dest="kappa_delay_start_min_iterations", type=int, default=100,
+                    help="number of initial iterations to keep kappa parameter and kappa_router LR at 0 before warmup")
+parser.add_argument("--kappa-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale; also warms kappa_router from 0 to its full scheduled LR")
 parser.add_argument(
     "--kappa-l2-loss-weight",
@@ -218,10 +218,10 @@ if args.warmup_ratio + args.warmdown_ratio > 1.0:
     raise ValueError("--warmup-ratio + --warmdown-ratio must be <= 1")
 if not (0.0 <= args.final_lr_frac <= 1.0):
     raise ValueError("--final-lr-frac must satisfy 0 <= fraction <= 1")
-if args.kappa_bias_delay_start_min_iterations < 0:
-    raise ValueError("--kappa-bias-delay-start-min-iterations must be >= 0")
-if args.kappa_bias_lr_warmup_iterations < 0:
-    raise ValueError("--kappa-bias-lr-warmup-iterations must be >= 0")
+if args.kappa_delay_start_min_iterations < 0:
+    raise ValueError("--kappa-delay-start-min-iterations must be >= 0")
+if args.kappa_lr_warmup_iterations < 0:
+    raise ValueError("--kappa-lr-warmup-iterations must be >= 0")
 if not (0.0 <= args.kappa_blend_coeff <= 1.0):
     raise ValueError("--kappa-blend-coeff must satisfy 0 <= coefficient <= 1")
 user_config = vars(args).copy()
@@ -476,8 +476,8 @@ if not args.eval_only:
         muon_match_rms_adamw=args.muon_match_rms_adamw,
         kappa_lr_final_scale=args.kappa_lr_final_scale,
         kappa_lr_max_scale=args.kappa_lr_max_scale,
-        kappa_param_delay_start_iterations=args.kappa_bias_delay_start_min_iterations,
-        kappa_lr_warmup_iterations=args.kappa_bias_lr_warmup_iterations,
+        kappa_param_delay_start_iterations=args.kappa_delay_start_min_iterations,
+        kappa_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
     )
     # Override the initial learning rate as a fraction of the base learning rate
     for group in optimizer.param_groups:
@@ -741,9 +741,11 @@ def get_kappa_bias_schedule_total_iterations(step, progress):
     return step + 1
 
 
-def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
+def get_kappa_lr_scale(optimizer, step, num_iterations, group_name="kappa_params"):
     for group in optimizer.param_groups:
-        if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
+        if group.get("name") != group_name:
+            continue
+        if group_name == "kappa_params" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
                 step,
                 num_iterations,
@@ -751,6 +753,13 @@ def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
                 max_scale=group.get("lr_scale_max", 1.0),
                 nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
                 warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
+            )
+        if group_name == "kappa_router":
+            return get_linear_lr_scale(
+                step,
+                num_iterations,
+                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
+                warmup_iterations=args.kappa_lr_warmup_iterations,
             )
     return 1.0
 
@@ -1077,10 +1086,16 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
-    kappa_bias_lr_scale = get_kappa_bias_lr_scale(
+    kappa_bias_lr_scale = get_kappa_lr_scale(
         optimizer,
         step,
         kappa_bias_schedule_total_iterations,
+    )
+    kappa_router_lr_scale = get_kappa_lr_scale(
+        optimizer,
+        step,
+        kappa_bias_schedule_total_iterations,
+        group_name="kappa_router",
     )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_bias_lr_scale)
     step_train_loss = 0.0
@@ -1141,12 +1156,7 @@ while True:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
         elif group.get("name") == "kappa_router":
-            group["lr"] = group["initial_lr"] * lrm * get_linear_lr_scale(
-                step,
-                kappa_bias_schedule_total_iterations,
-                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
-                warmup_iterations=args.kappa_bias_lr_warmup_iterations,
-            )
+            group["lr"] = group["initial_lr"] * lrm * kappa_router_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
         if group['kind'] in ('muon', 'muonh'):
