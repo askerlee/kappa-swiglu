@@ -155,8 +155,7 @@ parser.add_argument("--kappa-lr-max-scale",
 parser.add_argument("--kappa-lr-final-scale",
                     dest="kappa_lr_final_scale", type=float, default=0.005,
                     help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-lr-max-scale")
-parser.add_argument("--kappa-delay-start-min-iterations", "--kappa-delay-start-iterations",
-                    dest="kappa_delay_start_min_iterations", type=int, default=100,
+parser.add_argument("--kappa-delay-start-iterations", type=int, default=0,
                     help="number of initial iterations to keep kappa parameter and kappa_router LR at 0 before warmup")
 parser.add_argument("--kappa-lr-warmup-iterations", type=int, default=100,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale; also warms kappa_router from 0 to its full scheduled LR")
@@ -218,8 +217,8 @@ if args.warmup_ratio + args.warmdown_ratio > 1.0:
     raise ValueError("--warmup-ratio + --warmdown-ratio must be <= 1")
 if not (0.0 <= args.final_lr_frac <= 1.0):
     raise ValueError("--final-lr-frac must satisfy 0 <= fraction <= 1")
-if args.kappa_delay_start_min_iterations < 0:
-    raise ValueError("--kappa-delay-start-min-iterations must be >= 0")
+if args.kappa_delay_start_iterations < 0:
+    raise ValueError("--kappa-delay-start-iterations must be >= 0")
 if args.kappa_lr_warmup_iterations < 0:
     raise ValueError("--kappa-lr-warmup-iterations must be >= 0")
 if not (0.0 <= args.kappa_blend_coeff <= 1.0):
@@ -476,7 +475,7 @@ if not args.eval_only:
         muon_match_rms_adamw=args.muon_match_rms_adamw,
         kappa_lr_final_scale=args.kappa_lr_final_scale,
         kappa_lr_max_scale=args.kappa_lr_max_scale,
-        kappa_param_delay_start_iterations=args.kappa_delay_start_min_iterations,
+        kappa_param_delay_start_iterations=args.kappa_delay_start_iterations,
         kappa_lr_warmup_iterations=args.kappa_lr_warmup_iterations,
     )
     # Override the initial learning rate as a fraction of the base learning rate

@@ -520,8 +520,7 @@ def test_kappa_bias_lr_schedule_wires_delay_and_warmup_cli_args():
 @pytest.mark.parametrize("warmup_iterations", [None, 0, 37, -1])
 @pytest.mark.parametrize("option,field,optimizer_keyword", [
     ("--kappa-lr-warmup-iterations", "kappa_lr_warmup_iterations", "kappa_lr_warmup_iterations"),
-    ("--kappa-delay-start-min-iterations", "kappa_delay_start_min_iterations", "kappa_param_delay_start_iterations"),
-    ("--kappa-delay-start-iterations", "kappa_delay_start_min_iterations", "kappa_param_delay_start_iterations"),
+    ("--kappa-delay-start-iterations", "kappa_delay_start_iterations", "kappa_param_delay_start_iterations"),
 ])
 def test_chat_sft_kappa_warmup_parser_validation_and_optimizer(monkeypatch, warmup_iterations, option, field, optimizer_keyword):
     module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
