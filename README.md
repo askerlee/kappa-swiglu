@@ -109,8 +109,10 @@ tail -f exp64-d8-kappa-lin-au-s24.log
 Add `--separate-base-sft-kappa` to `python -m scripts.base_train_mix` to use
 two kappa bias/scale slots: slot 0 for base steps and slot 1 for SFT steps.
 All UT passes share the selected task slot. The option enables kappa on both
-sources. Without the option, `--use-kappa-swiglu` enables kappa on both sources
-with pass-specific parameters as before.
+sources unless `--use-kappa-swiglu-sft-only true` is explicitly supplied.
+With separate slots disabled, SFT-only activation defaults to true; pass
+`--use-kappa-swiglu-sft-only false` to use kappa on both sources. SFT-only mode
+disables kappa during base validation, CORE, and base-prompt sampling.
 
 Base validation and CORE use the base slot in this mode. Standalone chat SFT
 and models loaded from SFT/RL checkpoints use the SFT slot. Each slot has

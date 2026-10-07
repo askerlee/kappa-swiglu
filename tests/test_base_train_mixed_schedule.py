@@ -210,15 +210,42 @@ def test_chat_sft_steps_keep_base_train_capacity():
     assert "set_train_capacity" not in source
 
 
-def test_kappa_swiglu_uses_explicit_enable_flag_on_both_sources():
-    source = BASE_TRAIN_MIX.read_text()
+def test_kappa_swiglu_sft_only_defaults_and_overrides():
+    import argparse
 
-    assert 'parser.add_argument("--use-kappa-swiglu-sft-only"' not in source
-    assert "use_kappa_swiglu_sft_only" not in source
-    assert "args.use_kappa_swiglu = True" in source
-    assert "use_kappa_swiglu=args.use_kappa_swiglu" in source
-    assert "kappa_swiglu_training_enabled" not in source
-    assert "set_kappa_swiglu_enabled" not in source
+    tree = ast.parse(BASE_TRAIN_MIX.read_text())
+    options = ("--use-kappa-swiglu", "--use-kappa-swiglu-sft-only", "--separate-base-sft-kappa")
+    parser = argparse.ArgumentParser()
+    declarations = [
+        node for node in tree.body
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "add_argument"
+        and isinstance(node.value.args[0], ast.Constant)
+        and node.value.args[0].value in options
+    ]
+    namespace = {"parser": parser, "str2bool": load_function_from_script("str2bool")}
+    namespace["str2bool"].__globals__["argparse"] = argparse
+    exec(compile(ast.Module(body=declarations, type_ignores=[]),
+                 filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
+    normalization = [
+        node for node in tree.body
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Attribute)
+        and node.test.attr in ("separate_base_sft_kappa", "use_kappa_swiglu_sft_only")
+    ]
+    for argv, expected in (
+        ([], (True, False)),
+        (["--use-kappa-swiglu-sft-only"], (True, True)),
+        (["--use-kappa-swiglu-sft-only=false"], (True, False)),
+        (["--separate-base-sft-kappa=false"], (True, True)),
+        (["--separate-base-sft-kappa=false", "--use-kappa-swiglu-sft-only=false"], (False, False)),
+    ):
+        args = parser.parse_args(argv)
+        namespace.update(args=args, sys=SimpleNamespace(argv=["script", *argv]),
+                         arg_was_explicitly_set=load_function_from_script("arg_was_explicitly_set"))
+        exec(compile(ast.Module(body=normalization, type_ignores=[]),
+                     filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
+        assert (args.use_kappa_swiglu, args.use_kappa_swiglu_sft_only) == expected
 
 
 def test_separate_kappa_routes_mixed_training_and_base_evaluation():
@@ -230,20 +257,28 @@ def test_separate_kappa_routes_mixed_training_and_base_evaluation():
     assert 'group["active_kappa_slot"] = int(is_chat_sft_step)' in source
 
 
-def test_base_evaluation_keeps_kappa_enabled_and_restores_training_phase():
+def test_base_inference_disables_sft_only_kappa_and_restores_training_phase():
     tree = ast.parse(BASE_TRAIN_MIX.read_text())
     training_loop = next(node for node in tree.body if isinstance(node, ast.While))
-    for evaluation_name in ("evaluate_bpb", "evaluate_core"):
+    for evaluation_name in ("evaluate_bpb", "evaluate_core", "generate_batch"):
         evaluation_block = next(
             node for node in training_loop.body
             if isinstance(node, ast.If)
             and any(
                 isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id == evaluation_name
+                and (
+                    isinstance(child.func, ast.Name) and child.func.id == evaluation_name
+                    or isinstance(child.func, ast.Attribute) and child.func.attr == evaluation_name
+                )
                 for child in ast.walk(node)
             )
         )
+        if evaluation_name == "generate_batch":
+            evaluation_block = next(
+                node for node in evaluation_block.body
+                if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                and node.test.id == "master_process"
+            )
         transitions = [
             node for node in evaluation_block.body
             if isinstance(node, ast.Expr)
@@ -254,7 +289,7 @@ def test_base_evaluation_keeps_kappa_enabled_and_restores_training_phase():
             )
         ]
         for enabled in (False, True):
-            for separate_slots in (False, True):
+            for sft_only in (False, True):
                 for step in (2500, 2750, 5500, 8250):
                     events = []
                     model = SimpleNamespace(
@@ -264,13 +299,17 @@ def test_base_evaluation_keeps_kappa_enabled_and_restores_training_phase():
                     )
                     namespace = {
                         "orig_model": model,
-                        "args": SimpleNamespace(separate_base_sft_kappa=separate_slots),
+                        "args": SimpleNamespace(use_kappa_swiglu=enabled, use_kappa_swiglu_sft_only=sft_only),
+                        "kappa_swiglu_training_enabled": enabled and (not sft_only or step % 11 == 0),
                         "is_chat_sft_step": step % 11 == 0,
                     }
                     exec(compile(ast.Module(body=transitions, type_ignores=[]),
                                  filename=str(BASE_TRAIN_MIX), mode="exec"), namespace)
-                    assert events == [("phase", False), ("phase", step % 11 == 0)]
-                    assert model.kappa_swiglu_enabled is enabled
+                    assert events == [
+                        ("phase", False), ("enabled", enabled and not sft_only),
+                        ("phase", step % 11 == 0),
+                        ("enabled", enabled and (not sft_only or step % 11 == 0)),
+                    ]
 
 
 def test_kappa_logging_uses_current_step_metrics():
