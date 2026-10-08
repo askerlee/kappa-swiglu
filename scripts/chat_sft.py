@@ -72,26 +72,6 @@ def str2bool(v):
 def arg_was_explicitly_set(argv, option_name):
     return any(token == option_name or token.startswith(f"{option_name}=") for token in argv)
 
-def blend_sft_kappa_params(model, coeff):
-    if not (0.0 <= coeff <= 1.0):
-        raise ValueError("--kappa-blend-coeff must satisfy 0 <= coefficient <= 1")
-    if coeff == 0.0:
-        return 0
-    if not getattr(model.config, "separate_base_sft_kappa", False):
-        raise ValueError("--kappa-blend-coeff requires separate base/SFT kappa slots")
-    blended_count = 0
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if name in {"global_kappa_bias", "global_kappa_scale"} or name.endswith((".kappa_bias", ".kappa_scale")):
-                slots = param
-            elif name.endswith((".kappa_router.weight", ".kappa_router.bias")):
-                slots = param.view(2, -1, *param.shape[1:])
-            else:
-                continue
-            slots[1].lerp_(slots[0], coeff)
-            blended_count += 1
-    return blended_count
-
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the model", parents=[offline_parser])
@@ -168,10 +148,10 @@ parser.add_argument(
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
+parser.add_argument("--kappa-router-sft-l2-loss-weight", type=float, default=0.001,
+                    help="L2 weight on the SFT slot of separate independent kappa router weights (0 disables)")
 parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
                     help="anchor expert kappa bias and scale L2 around their loaded initial values or 0; independent kappa routing automatically uses zero because its L2 penalty is on output scores")
-parser.add_argument("--kappa-blend-coeff", type=float, default=0.0,
-                    help="initialize SFT kappa slots as (1-coeff)*SFT + coeff*base; 0 keeps SFT, 0.5 averages, 1 copies base (requires separate base/SFT slots)")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
                     help="predict kappa scales directly with 0.1 input-latent gradients (default: inherit checkpoint)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -221,8 +201,8 @@ if args.kappa_delay_start_iterations < 0:
     raise ValueError("--kappa-delay-start-iterations must be >= 0")
 if args.kappa_lr_warmup_iterations < 0:
     raise ValueError("--kappa-lr-warmup-iterations must be >= 0")
-if not (0.0 <= args.kappa_blend_coeff <= 1.0):
-    raise ValueError("--kappa-blend-coeff must satisfy 0 <= coefficient <= 1")
+if args.kappa_router_sft_l2_loss_weight < 0:
+    raise ValueError("--kappa-router-sft-l2-loss-weight must be >= 0")
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
@@ -310,11 +290,6 @@ if model.config.independent_kappa_router and refresh_kappa_param_references:
         "Using --kappa-params-l2-anchor zero for independent kappa routing "
         "because its L2 penalty is on output scores."
     )
-blended_kappa_params = blend_sft_kappa_params(model, args.kappa_blend_coeff)
-if blended_kappa_params:
-    if refresh_kappa_param_references:
-        model.refresh_kappa_param_references()
-    print0(f"Blended {blended_kappa_params} SFT kappa parameters toward base with coefficient {args.kappa_blend_coeff}")
 model.set_kappa_training_phase(True)
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
@@ -1143,6 +1118,7 @@ while True:
             kappa_scale_l2_loss = 0.0
         loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
         loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
+        loss = loss + args.kappa_router_sft_l2_loss_weight * losses['kappa_router_sft_l2_loss']
 
         loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
         loss.backward()
@@ -1223,12 +1199,14 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_bias_l2_loss_step": scalar_loss_to_item(losses['kappa_bias_l2_loss']),
             "train/kappa_scale_l2_loss_step": scalar_loss_to_item(losses['kappa_scale_l2_loss']),
+            "train/kappa_router_sft_l2_loss_step": scalar_loss_to_item(losses['kappa_router_sft_l2_loss']),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
             "train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight,
             "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
+            "train/kappa_router_sft_l2_loss_weight": args.kappa_router_sft_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": logged_dt,

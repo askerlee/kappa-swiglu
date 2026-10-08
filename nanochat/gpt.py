@@ -2180,6 +2180,10 @@ class MOELayer(nn.Module):
             conditioning_weight = self.kappa_router.weight.view(
                 self.num_kappa_router_slots, self.n_exp, -1
             )[kappa_slot]
+            if kappa_slot == 1:
+                conditioning_weight = conditioning_weight + self.kappa_router.weight.view(
+                    self.num_kappa_router_slots, self.n_exp, -1
+                )[0].detach()
             conditioning_bias = None if self.kappa_router.bias is None else self.kappa_router.bias.view(
                 self.num_kappa_router_slots, self.n_exp
             )[kappa_slot]
@@ -2477,6 +2481,18 @@ class GPT(nn.Module):
             for module in bias_scale_enabled_modules:
                 module.bind_shared_kappa_scale(self.global_kappa_scale)
 
+    def compute_kappa_router_sft_l2_loss(self):
+        if self.kappa_phase != 1 or not getattr(self.config, 'separate_base_sft_kappa', False):
+            return self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
+        router_losses = [
+            block.mlp.kappa_router.weight.view(2, self.config.n_exp, -1)[1].float().square().mean()
+            for block in self.transformer.h
+            if isinstance(block.mlp, MOELayer) and block.mlp.kappa_router is not None
+        ]
+        if not router_losses:
+            return self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
+        return torch.stack(router_losses).mean()
+
     def compute_kappa_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
@@ -2569,7 +2585,7 @@ class GPT(nn.Module):
                         getattr(self.config, 'separate_base_sft_kappa', False)
                         and router_weight.shape == (param.size(0) // 2, param.size(1))
                     ):
-                        router_weight = router_weight.repeat(2, 1)
+                        router_weight = torch.cat((router_weight, torch.zeros_like(router_weight)), dim=0)
                     state_dict[name] = router_weight.detach().clone()
         load_result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         if self._should_refresh_kappa_param_references():
@@ -2620,6 +2636,8 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(block.mlp.router.w_g.weight)
                 if block.mlp.kappa_router is not None:
                     torch.nn.init.uniform_(block.mlp.kappa_router.weight, -s, s)
+                    if block.mlp.num_kappa_router_slots == 2:
+                        block.mlp.kappa_router.weight.view(2, self.config.n_exp, -1)[1].zero_()
                     if block.mlp.kappa_router.bias is not None:
                         torch.nn.init.zeros_(block.mlp.kappa_router.bias)
                 if block.mlp.router.w_noise is not None:
@@ -3018,7 +3036,8 @@ class GPT(nn.Module):
         for shape in sorted({p.shape for p in kappa_router_params}):
             group_params = [p for p in kappa_router_params if p.shape == shape]
             param_groups.append(dict(
-                kind=matrix_kind, name='kappa_router', params=group_params,
+                kind='muon' if matrix_kind == 'muonh' and getattr(self.config, 'separate_base_sft_kappa', False) else matrix_kind,
+                name='kappa_router', params=group_params,
                 debug_param_names=[param_names[id(p)] for p in group_params],
                 lr=matrix_lr,
                 kappa_param_delay_start_iterations=kappa_param_delay_start_iterations,
@@ -3440,6 +3459,7 @@ class GPT(nn.Module):
             assert ntp_loss_total is not None
             loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
+            losses['kappa_router_sft_l2_loss'] = self.compute_kappa_router_sft_l2_loss()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = (

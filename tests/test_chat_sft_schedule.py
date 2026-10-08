@@ -67,67 +67,55 @@ def load_function_from_script(function_name):
     raise AssertionError(f"Function {function_name} not found in {CHAT_SFT}")
 
 
-@pytest.mark.parametrize("coeff", [0.0, 0.25, 0.5, 1.0])
-def test_blend_sft_kappa_params_preserves_base_and_shared_params(coeff):
-    model = torch.nn.Module()
-    model.config = SimpleNamespace(separate_base_sft_kappa=True)
-    model.global_kappa_bias = torch.nn.Parameter(torch.tensor([[2.0], [6.0]]))
-    model.global_kappa_scale = torch.nn.Parameter(torch.tensor([[1.0], [3.0]]))
-    model.mlp = torch.nn.Module()
-    model.mlp.experts = torch.nn.Module()
-    model.mlp.experts.kappa_bias = torch.nn.Parameter(torch.arange(12.0).reshape(2, 2, 3))
-    model.mlp.experts.kappa_scale = torch.nn.Parameter(torch.arange(12.0).reshape(2, 2, 3) + 1)
-    model.mlp.experts.kappa_bias_alpha = torch.nn.Parameter(torch.tensor(2.0))
-    model.mlp.kappa_router = torch.nn.Linear(3, 4)
-    model.mlp.router = torch.nn.Linear(3, 4)
-    original = {name: param.detach().clone() for name, param in model.named_parameters()}
-
-    count = load_function_from_script("blend_sft_kappa_params")(model, coeff)
-
-    assert count == (0 if coeff == 0.0 else 6)
-    for name, param in model.named_parameters():
-        if name.endswith("kappa_bias_alpha") or ".router." in name:
-            torch.testing.assert_close(param, original[name])
-            continue
-        slots = param.reshape(2, -1)
-        old_slots = original[name].reshape(2, -1)
-        torch.testing.assert_close(slots[0], old_slots[0])
-        torch.testing.assert_close(slots[1], old_slots[1].lerp(old_slots[0], coeff))
-
-
-@pytest.mark.parametrize("coeff", [-0.1, 1.1, float("nan"), float("inf")])
-def test_blend_sft_kappa_params_rejects_invalid_coeff(coeff):
-    with pytest.raises(ValueError, match="0 <= coefficient <= 1"):
-        load_function_from_script("blend_sft_kappa_params")(None, coeff)
-
-
-def test_blend_sft_kappa_params_requires_separate_slots_only_when_enabled():
-    model = SimpleNamespace(config=SimpleNamespace(separate_base_sft_kappa=False))
-    blend = load_function_from_script("blend_sft_kappa_params")
-    assert blend(model, 0.0) == 0
-    with pytest.raises(ValueError, match="requires separate base/SFT"):
-        blend(model, 0.5)
-
-
-def test_kappa_blend_cli_and_initial_anchor_order():
+def test_kappa_phase_is_set_before_optimizer_setup():
     source = CHAT_SFT.read_text()
+    assert "kappa-blend-coeff" not in source
+    assert "blend_sft_kappa_params" not in source
+    load_position = source.index("model, tokenizer, meta = load_model(")
+    phase_position = source.index("model.set_kappa_training_phase(True)")
+    assert load_position < phase_position < source.index("optimizer = model.setup_optimizer(")
+
+
+@pytest.mark.parametrize("script_name", ["base_train_mix", "chat_sft"])
+def test_kappa_router_sft_weight_l2_cli_and_training_loss(script_name):
+    script_path = ROOT / "scripts" / f"{script_name}.py"
+    source = script_path.read_text()
     module = ast.parse(source)
     option = next(
         node for node in ast.walk(module)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and node.func.attr == "add_argument" and node.args
         and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "--kappa-blend-coeff"
+        and node.args[0].value == "--kappa-router-sft-l2-loss-weight"
     )
     parser = argparse.ArgumentParser()
     option_module = ast.fix_missing_locations(ast.Module(body=[ast.Expr(value=option)], type_ignores=[]))
-    exec(compile(option_module, str(CHAT_SFT), "exec"), {"parser": parser})
-    assert parser.parse_args([]).kappa_blend_coeff == 0.0
-    assert parser.parse_args(["--kappa-blend-coeff", "0.5"]).kappa_blend_coeff == 0.5
-    load_position = source.index("model, tokenizer, meta = load_model(")
-    blend_position = source.index("blended_kappa_params = blend_sft_kappa_params(")
-    anchor_position = source.index("model.refresh_kappa_param_references()", blend_position)
-    assert load_position < blend_position < anchor_position < source.index("optimizer = model.setup_optimizer(")
+    exec(compile(option_module, str(script_path), "exec"), {"parser": parser})
+    assert parser.parse_args([]).kappa_router_sft_l2_loss_weight == 0.001
+    assert parser.parse_args(["--kappa-router-sft-l2-loss-weight", "0"]).kappa_router_sft_l2_loss_weight == 0.0
+    guard = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "args.kappa_router_sft_l2_loss_weight < 0"
+    )
+    with pytest.raises(ValueError, match="must be >= 0"):
+        exec(compile(ast.Module(body=[guard], type_ignores=[]), str(script_path), "exec"), {
+            "args": parser.parse_args(["--kappa-router-sft-l2-loss-weight", "-1"]),
+        })
+    addition = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Assign) and "args.kappa_router_sft_l2_loss_weight *" in ast.unparse(node)
+    )
+    weights = torch.tensor([1.0, 2.0], requires_grad=True)
+    losses = {"kappa_router_sft_l2_loss": weights.square().mean()}
+    namespace = {"loss": torch.tensor(1.0), "args": parser.parse_args([]), "losses": losses, "micro_losses": losses}
+    exec(compile(ast.Module(body=[addition], type_ignores=[]), str(script_path), "exec"), namespace)
+    torch.testing.assert_close(namespace["loss"], torch.tensor(1.0025))
+    namespace["loss"].backward()
+    torch.testing.assert_close(weights.grad, torch.tensor([0.001, 0.002]))
+    assert source.index(ast.get_source_segment(source, addition)) < source.index("loss = loss * micro_weight / grad_accum_normalizer")
+    assert '"train/kappa_router_sft_l2_loss_step"' in source
+    assert '"train/kappa_router_sft_l2_loss_weight"' in source
 
 
 @pytest.mark.parametrize("rank,upload", [(0, True), (0, False), (1, True)])
@@ -708,8 +696,8 @@ def test_independent_kappa_router_uses_zero_l2_anchor(independent_router, anchor
         torch.testing.assert_close(model.experts.initial_kappa_scale, torch.ones(2))
     load_index = source.index("model, tokenizer, meta = load_model(")
     guard_index = source.index(f"if {condition}:")
-    blend_index = source.index("blended_kappa_params = blend_sft_kappa_params(")
-    assert load_index < guard_index < blend_index
+    phase_index = source.index("model.set_kappa_training_phase(True)")
+    assert load_index < guard_index < phase_index
 
 
 def test_matrix_optimizer_inherits_from_base_checkpoint_unless_explicitly_set():

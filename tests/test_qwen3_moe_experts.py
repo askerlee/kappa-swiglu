@@ -10,6 +10,81 @@ from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Rout
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('is_sft', [False, True])
+@pytest.mark.parametrize('separate_slots', [False, True])
+@pytest.mark.parametrize('independent_router', [False, True])
+def test_kappa_router_sft_weight_l2_only_penalizes_residual(
+    monkeypatch, is_sft, separate_slots, independent_router,
+):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        independent_kappa_router=independent_router, separate_base_sft_kappa=separate_slots,
+    )
+    model = GPT(config)
+    model.init_weights()
+    model.set_kappa_training_phase(is_sft)
+    weights = []
+    if independent_router:
+        with torch.no_grad():
+            for block in model.transformer.h:
+                weight = block.mlp.kappa_router.weight
+                weight.fill_(2.0)
+                if separate_slots:
+                    weight.view(2, config.n_exp, -1)[1].fill_(0.3)
+                weights.append(weight)
+    penalty = model.compute_kappa_router_sft_l2_loss()
+    tokens = torch.randint(0, config.vocab_size, (1, 4))
+    _, losses = model(tokens, tokens)
+    torch.testing.assert_close(losses['kappa_router_sft_l2_loss'], penalty)
+    if not (is_sft and separate_slots and independent_router):
+        assert penalty.item() == 0.0
+        assert not penalty.requires_grad
+        return
+    torch.testing.assert_close(penalty, torch.tensor(0.09))
+    penalty.backward()
+    for weight in weights:
+        slot_grads = weight.grad.view(2, config.n_exp, -1)
+        assert slot_grads[0].count_nonzero() == 0
+        expected_grad = torch.full_like(slot_grads[1], 0.6 / (slot_grads[1].numel() * len(weights)))
+        torch.testing.assert_close(slot_grads[1], expected_grad)
+
+
+@pytest.mark.parametrize('is_sft', [False, True])
+def test_independent_sft_kappa_router_is_detached_base_plus_residual(is_sft):
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        independent_kappa_router=True, separate_base_sft_kappa=True,
+    )
+    model = GPT(config)
+    model.init_weights()
+    layer = model.transformer.h[0].mlp
+    weights = layer.kappa_router.weight.view(2, config.n_exp, config.n_embd)
+    assert weights[0].count_nonzero() > 0
+    assert weights[1].count_nonzero() == 0
+    inputs = torch.randn(2, config.n_embd, requires_grad=True)
+    indices = torch.tensor([[0, 1], [1, 2]])
+    model.set_kappa_training_phase(True)
+    initial_scores = layer._select_gate_confidence(None, None, inputs, indices)
+    torch.testing.assert_close(initial_scores, F.linear(inputs, weights[0]).gather(-1, indices))
+    with torch.no_grad():
+        weights[1].fill_(0.2)
+    model.set_kappa_training_phase(is_sft)
+    actual = layer._select_gate_confidence(None, None, inputs, indices)
+    expected_weight = weights[0].detach() + weights[1] if is_sft else weights[0]
+    expected = F.linear(scale_grad(inputs, 0.1), expected_weight).gather(-1, indices)
+    torch.testing.assert_close(actual, expected)
+    actual_grads = torch.autograd.grad(actual.sum(), (inputs, layer.kappa_router.weight), retain_graph=True)
+    expected_grads = torch.autograd.grad(expected.sum(), (inputs, layer.kappa_router.weight))
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual_grad, expected_grad)
+    slot_grads = actual_grads[1].view_as(weights)
+    assert slot_grads[1 - int(is_sft)].count_nonzero() == 0
+    assert slot_grads[int(is_sft)].count_nonzero() > 0
+
+
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
 @pytest.mark.parametrize(('bias_from_scale', 'independent_router'), [(False, False), (True, False), (False, True)])
 def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_from_scale, independent_router):
@@ -244,7 +319,8 @@ def test_independent_kappa_router_scale_l2_uses_output_scores(
     )
     with torch.no_grad():
         _, _, _, indices, ranks = layer.router(inputs)
-    scores = F.linear(scale_grad(inputs.reshape(-1, config.n_embd), 0.1), weight[active_slice])
+    effective_weight = weight[:config.n_exp].detach() + weight[active_slice] if is_sft else weight[active_slice]
+    scores = F.linear(scale_grad(inputs.reshape(-1, config.n_embd), 0.1), effective_weight)
     selected_scores = scores.gather(-1, indices)
     valid_assignments = ranks < layer.router.get_capacity(inputs.size(0) * inputs.size(1))
     expected_loss = selected_scores[valid_assignments].square().mean()
@@ -309,7 +385,10 @@ def test_independent_kappa_router_scales_only_latent_gradients(
     reference_config.independent_kappa_router = False
     reference = MOELayer(reference_config, layer_idx=0)
     with torch.no_grad():
-        reference.router.w_g.weight.copy_(predictor_weights[kappa_slot])
+        effective_weight = predictor_weights[kappa_slot]
+        if separate_base_sft_kappa and is_sft:
+            effective_weight = effective_weight + predictor_weights[0]
+        reference.router.w_g.weight.copy_(effective_weight)
     latent = torch.randn(2, 4, requires_grad=True)
     reference_latent = latent.detach().clone().requires_grad_(True)
     indices = torch.tensor([[2, 0], [1, 2]])
@@ -439,8 +518,10 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
     model.init_weights()
     model.load_state_dict(state_dict, strict=True, assign=True)
     predictor = model.transformer.h[0].mlp.kappa_router.weight
-    for slot_weight in predictor.view(-1, config.n_exp, config.n_embd):
-        torch.testing.assert_close(slot_weight, expected_weight)
+    slot_weights = predictor.view(-1, config.n_exp, config.n_embd)
+    torch.testing.assert_close(slot_weights[0], expected_weight)
+    if separate_base_sft_kappa:
+        torch.testing.assert_close(slot_weights[1], torch.zeros_like(expected_weight))
     layer = model.transformer.h[0].mlp
     assert layer.experts.initial_kappa_scale is None
     inputs = torch.randn(2, config.n_embd)
@@ -557,7 +638,7 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
     predictor = reference.transformer.h[0].mlp.kappa_router.weight
     optimizer = reference.setup_optimizer(matrix_optimizer=matrix_optimizer, matrix_lr=0.01, weight_decay=0.1)
     predictor_group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_router')
-    assert predictor_group['kind'] == matrix_optimizer
+    assert predictor_group['kind'] == ('muon' if matrix_optimizer == 'muonh' else matrix_optimizer)
     assert predictor_group['lr'] == 0.01
     assert predictor_group['active_kappa_slot'] == int(is_sft)
     before = predictor.detach().clone().view(2, 3, 32)
