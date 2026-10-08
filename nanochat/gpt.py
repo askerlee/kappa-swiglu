@@ -2181,9 +2181,10 @@ class MOELayer(nn.Module):
                 self.num_kappa_router_slots, self.n_exp, -1
             )[kappa_slot]
             if kappa_slot == 1:
-                conditioning_weight = conditioning_weight + self.kappa_router.weight.view(
-                    self.num_kappa_router_slots, self.n_exp, -1
-                )[0].detach()
+                conditioning_weight = conditioning_weight + scale_grad(
+                    self.kappa_router.weight.view(self.num_kappa_router_slots, self.n_exp, -1)[0],
+                    0.1,
+                )
             conditioning_bias = None if self.kappa_router.bias is None else self.kappa_router.bias.view(
                 self.num_kappa_router_slots, self.n_exp
             )[kappa_slot]

@@ -52,7 +52,7 @@ def test_kappa_router_sft_weight_l2_only_penalizes_residual(
 
 
 @pytest.mark.parametrize('is_sft', [False, True])
-def test_independent_sft_kappa_router_is_detached_base_plus_residual(is_sft):
+def test_independent_sft_kappa_router_is_scaled_base_plus_residual(is_sft):
     config = GPTConfig(
         n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
@@ -73,7 +73,7 @@ def test_independent_sft_kappa_router_is_detached_base_plus_residual(is_sft):
         weights[1].fill_(0.2)
     model.set_kappa_training_phase(is_sft)
     actual = layer._select_gate_confidence(None, None, inputs, indices)
-    expected_weight = weights[0].detach() + weights[1] if is_sft else weights[0]
+    expected_weight = scale_grad(weights[0], 0.1) + weights[1] if is_sft else weights[0]
     expected = F.linear(scale_grad(inputs, 0.1), expected_weight).gather(-1, indices)
     torch.testing.assert_close(actual, expected)
     actual_grads = torch.autograd.grad(actual.sum(), (inputs, layer.kappa_router.weight), retain_graph=True)
@@ -81,7 +81,10 @@ def test_independent_sft_kappa_router_is_detached_base_plus_residual(is_sft):
     for actual_grad, expected_grad in zip(actual_grads, expected_grads):
         torch.testing.assert_close(actual_grad, expected_grad)
     slot_grads = actual_grads[1].view_as(weights)
-    assert slot_grads[1 - int(is_sft)].count_nonzero() == 0
+    if is_sft:
+        torch.testing.assert_close(slot_grads[0], 0.1 * slot_grads[1])
+    else:
+        assert slot_grads[1].count_nonzero() == 0
     assert slot_grads[int(is_sft)].count_nonzero() > 0
 
 

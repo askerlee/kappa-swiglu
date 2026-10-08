@@ -124,6 +124,53 @@ def test_should_use_chat_sft_step_runs_only_on_positive_multiples():
     assert should_use_chat_sft_step(10, -1) is False
 
 
+def test_kappa_router_sft_l2_logging_retains_latest_sft_value():
+    tree = ast.parse(BASE_TRAIN_MIX.read_text())
+    cache_name = "latest_kappa_router_sft_l2_loss"
+    initialization = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == cache_name for target in node.targets)
+    )
+    training_loop = next(node for node in tree.body if isinstance(node, ast.While))
+    cache_update = next(
+        node for node in training_loop.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name) and node.test.id == "is_chat_sft_step"
+        and any(
+            isinstance(statement, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == cache_name for target in statement.targets)
+            for statement in node.body
+        )
+    )
+    log_value = next(
+        value for node in ast.walk(training_loop) if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and key.value == "train/kappa_router_sft_l2_loss_step"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body=[initialization], type_ignores=[]), str(BASE_TRAIN_MIX), "exec"), namespace)
+    update_code = compile(ast.Module(body=[cache_update], type_ignores=[]), str(BASE_TRAIN_MIX), "exec")
+    log_code = compile(ast.Expression(body=log_value), str(BASE_TRAIN_MIX), "eval")
+    for is_sft, current_value, expected_value in (
+        (False, 0.0, 0.0),
+        (True, 0.25, 0.25),
+        (False, 0.0, 0.25),
+        (True, 0.5, 0.5),
+        (False, 0.0, 0.5),
+        (True, 0.0, 0.0),
+    ):
+        current_loss = torch.tensor(current_value, requires_grad=True)
+        namespace.update(is_chat_sft_step=is_sft, losses={"kappa_router_sft_l2_loss": current_loss})
+        exec(update_code, namespace)
+        logged_value = eval(log_code, namespace)
+        assert float(logged_value) == expected_value
+        assert float(current_loss.detach()) == current_value
+        if torch.is_tensor(logged_value):
+            assert not logged_value.requires_grad
+            assert logged_value.data_ptr() != current_loss.data_ptr()
+
+
 def test_kappa_delay_freezes_lr_and_delays_slope_scale_warmup():
     get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
     get_kappa_slope_max_scale.__globals__["math"] = math

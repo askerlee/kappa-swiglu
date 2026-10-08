@@ -1651,6 +1651,7 @@ else:
 
 core_results = {}
 prev_exp_gate_implicit_bias_signs = {}
+latest_kappa_router_sft_l2_loss = 0.0
 has_rebuilt_compile_after_eval = False
 throughput_interval_steps = 0
 throughput_interval_time = 0.0
@@ -2124,6 +2125,8 @@ while True:
             trace_rank(f"step {step}: micro_step {micro_step + 1}/{grad_accum_steps} fetched next batch")
 
     losses = average_step_losses(step_losses, grad_accum_normalizer)
+    if is_chat_sft_step:
+        latest_kappa_router_sft_l2_loss = losses['kappa_router_sft_l2_loss'].detach().clone()
 
     if MANAGER.collect_load_balancing_stats:
         collect_weight_grad_stats(model, losses, moe_layer_indices)
@@ -2224,7 +2227,7 @@ while True:
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
             "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
-            "train/kappa_router_sft_l2_loss_step": losses['kappa_router_sft_l2_loss'],
+            "train/kappa_router_sft_l2_loss_step": latest_kappa_router_sft_l2_loss,
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
