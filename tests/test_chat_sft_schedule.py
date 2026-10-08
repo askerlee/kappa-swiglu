@@ -659,13 +659,57 @@ def test_final_checkpoint_is_saved_before_final_chat_eval():
     assert save_index < chat_eval_index
 
 
-def test_kappa_params_l2_anchor_cli_defaults_to_zero_and_wires_load_behavior():
+def test_kappa_params_l2_anchor_cli_defaults_to_initial_and_wires_load_behavior():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="zero"' in source
+    assert 'parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial"' in source
     assert '--use-kappa-swiglu-as-lr-scaler' not in source
     assert 'refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"' in source
     assert 'refresh_kappa_param_references=refresh_kappa_param_references' in source
+
+
+@pytest.mark.parametrize("independent_router", [False, True])
+@pytest.mark.parametrize("anchor", ["initial", "zero"])
+def test_independent_kappa_router_uses_zero_l2_anchor(independent_router, anchor):
+    source = CHAT_SFT.read_text(encoding="utf-8")
+    module = ast.parse(source, filename=str(CHAT_SFT))
+    condition = "model.config.independent_kappa_router and refresh_kappa_param_references"
+    guard = next(
+        node for node in module.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == condition
+    )
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(
+        independent_kappa_router=independent_router,
+        refresh_kappa_param_references=anchor == "initial",
+    )
+    model.experts = torch.nn.Module()
+    for name in ("initial_kappa_bias", "initial_kappa_scale"):
+        model.experts.register_buffer(name, torch.ones(2) if anchor == "initial" else None)
+    namespace = {
+        "model": model,
+        "args": SimpleNamespace(kappa_params_l2_anchor=anchor),
+        "user_config": {"kappa_params_l2_anchor": anchor},
+        "refresh_kappa_param_references": anchor == "initial",
+        "print0": lambda message: None,
+    }
+    guard_code = compile(ast.Module(body=[guard], type_ignores=[]), str(CHAT_SFT), "exec")
+    exec(guard_code, namespace)
+    expected_anchor = "zero" if independent_router else anchor
+    assert namespace["args"].kappa_params_l2_anchor == expected_anchor
+    assert namespace["user_config"]["kappa_params_l2_anchor"] == expected_anchor
+    assert namespace["refresh_kappa_param_references"] is (expected_anchor == "initial")
+    assert model.config.refresh_kappa_param_references is (expected_anchor == "initial")
+    if expected_anchor == "zero":
+        assert model.experts.initial_kappa_bias is None
+        assert model.experts.initial_kappa_scale is None
+    else:
+        torch.testing.assert_close(model.experts.initial_kappa_bias, torch.ones(2))
+        torch.testing.assert_close(model.experts.initial_kappa_scale, torch.ones(2))
+    load_index = source.index("model, tokenizer, meta = load_model(")
+    guard_index = source.index(f"if {condition}:")
+    blend_index = source.index("blended_kappa_params = blend_sft_kappa_params(")
+    assert load_index < guard_index < blend_index
 
 
 def test_matrix_optimizer_inherits_from_base_checkpoint_unless_explicitly_set():

@@ -163,13 +163,13 @@ parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
     type=float,
-    default=0,
-    help="L2 base weight on kappa_bias and kappa_scale parameters (kappa router weights for independent routing); independent kappa routing uses 10x this weight for kappa_bias",
+    default=1e-2,
+    help="L2 base weight on kappa_bias and kappa_scale parameters (kappa router output scores for independent routing); independent kappa routing uses 10x this weight for kappa_bias",
 )
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
-                    help="anchor expert kappa bias and scale L2 (kappa router weights for independent routing) around their loaded initial values or 0")
+                    help="anchor expert kappa bias and scale L2 around their loaded initial values or 0; independent kappa routing automatically uses zero because its L2 penalty is on output scores")
 parser.add_argument("--kappa-blend-coeff", type=float, default=0.0,
                     help="initialize SFT kappa slots as (1-coeff)*SFT + coeff*base; 0 keeps SFT, 0.5 averages, 1 copies base (requires separate base/SFT slots)")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
@@ -297,6 +297,19 @@ model, tokenizer, meta = load_model(
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
     refresh_kappa_param_references=refresh_kappa_param_references,
 )
+if model.config.independent_kappa_router and refresh_kappa_param_references:
+    args.kappa_params_l2_anchor = "zero"
+    user_config["kappa_params_l2_anchor"] = "zero"
+    refresh_kappa_param_references = False
+    model.config.refresh_kappa_param_references = False
+    for module in model.modules():
+        for name in ("initial_kappa_bias", "initial_kappa_scale"):
+            if hasattr(module, name):
+                setattr(module, name, None)
+    print0(
+        "Using --kappa-params-l2-anchor zero for independent kappa routing "
+        "because its L2 penalty is on output scores."
+    )
 blended_kappa_params = blend_sft_kappa_params(model, args.kappa_blend_coeff)
 if blended_kappa_params:
     if refresh_kappa_param_references:
