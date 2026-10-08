@@ -219,7 +219,7 @@ class GateBiasStatsCollector:
         self,
         layer: MOELayer,
         expert_inputs: torch.Tensor,
-        expert_router_scores: torch.Tensor,
+        expert_gate_scores: torch.Tensor,
         expert_slot_mask: torch.Tensor,
         top_k_indices: torch.Tensor,
         all_router_probs: torch.Tensor,
@@ -273,7 +273,7 @@ class GateBiasStatsCollector:
             gate_base.dtype,
             gate_base.device,
         )
-        router_score = expert_router_scores.unsqueeze(-1)
+        router_score = expert_gate_scores.unsqueeze(-1)
         if experts.kappa_input in {"top_logits", "router_probs"}:
             slope_input = kappa_bias.unsqueeze(1) + router_score * kappa_scale.unsqueeze(1)
         else:
@@ -459,7 +459,7 @@ class GateBiasObserverHost:
         self,
         layer: MOELayer,
         expert_inputs: torch.Tensor,
-        expert_router_scores: torch.Tensor,
+        expert_gate_scores: torch.Tensor,
         expert_slot_mask: torch.Tensor,
         top_k_indices: torch.Tensor,
         all_router_probs: torch.Tensor,
@@ -469,7 +469,7 @@ class GateBiasObserverHost:
         self.collector.observe(
             layer,
             expert_inputs,
-            expert_router_scores,
+            expert_gate_scores,
             expert_slot_mask,
             top_k_indices,
             all_router_probs,
@@ -505,7 +505,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
             x_flat=x_flat,
             top_k_indices=top_k_indices,
         )
-        expert_router_scores = torch.zeros(
+        expert_gate_scores = torch.zeros(
             self.n_exp,
             exp_capacity,
             dtype=selected_gate_confidence.dtype,
@@ -519,7 +519,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
             flat_top_k_indices,
             selected_gate_confidence.view(-1),
             expert_inputs,
-            expert_router_scores,
+            expert_gate_scores,
         )
 
         valid_mask = flat_rank < exp_capacity
@@ -540,7 +540,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
             observer_host.observe(
                 self,
                 expert_inputs,
-                expert_router_scores,
+                expert_gate_scores,
                 expert_slot_mask,
                 top_k_indices,
                 all_router_probs,
@@ -548,7 +548,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
 
         expert_outputs = self.experts(
             expert_inputs,
-            selected_router_scores=expert_router_scores,
+            selected_gate_scores=expert_gate_scores,
             router_weight=self.router.w_g.weight,
         )
         output_flat = self._combine_expert_outputs(

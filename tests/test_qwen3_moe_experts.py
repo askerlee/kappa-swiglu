@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.engine import KVCache
-from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _chunked_cross_entropy, _save_activations_on_cpu, scale_grad
+from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Router, _UTLossAccum, _UT_LOSS_NAMES, _chunked_cross_entropy, _save_activations_on_cpu, scale_grad
 from nanochat.manager import MOEManager
 
 
@@ -33,7 +33,7 @@ def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_fr
     scores = torch.full((2, 3), 0.7, requires_grad=True)
     raw_gate = torch.randn(2, 3, 16)
     for slot in (0, 1):
-        bias = experts._materialize_kappa_bias(slot, selected_router_scores=scores)
+        bias = experts._materialize_kappa_bias(slot, selected_gate_scores=scores)
         torch.testing.assert_close(bias, torch.zeros(2, 16))
         experts._accumulate_kappa_bias_l2_losses(bias, kappa_slot=slot)
         scale = None if independent_router else experts._materialize_kappa_scale(slot)
@@ -126,7 +126,7 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
         bias_param[int(is_sft)].fill_(0.2)
     raw_gate = torch.randn(3, 2, 16)
     predicted_scale = torch.randn(3, 2, requires_grad=True)
-    bias = experts._materialize_kappa_bias(selected_router_scores=predicted_scale)
+    bias = experts._materialize_kappa_bias(selected_gate_scores=predicted_scale)
     conditioning = 0.2 + predicted_scale.unsqueeze(-1)
     slope = experts.kappa_slope_max_scale ** torch.tanh(conditioning)
     expected = raw_gate * torch.sigmoid(raw_gate * slope)
@@ -240,9 +240,12 @@ def test_independent_kappa_router_scale_l2_uses_router_weights(
     with torch.no_grad():
         weight[active_slice].add_(0.2)
     inputs = torch.randn(1, 3, config.n_embd, requires_grad=True)
-    accum = MOEManager() if use_loss_accum else manager
-    layer(inputs, loss_accum=accum if use_loss_accum else None)
-    scale_loss = accum.aggregate('kappa_scale_l2_loss')
+    accum = _UTLossAccum(inputs, config.n_layer, config.n_exp) if use_loss_accum else None
+    layer(inputs, loss_accum=accum, router_layer_idx=0)
+    scale_loss = (
+        accum.losses[_UT_LOSS_NAMES.index('kappa_scale_l2_loss')]
+        if use_loss_accum else manager.aggregate('kappa_scale_l2_loss')
+    )
     delta = weight.detach()[active_slice]
     if initial_anchor:
         delta = delta - initial_weight[active_slice]
@@ -268,7 +271,7 @@ def test_independent_kappa_router_materialized_scale_cache():
         experts._materialize_kappa_scale()
     logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]], requires_grad=True)
     mask = torch.tensor([[True, True, False], [True, False, False]])
-    live_scale = experts._materialize_kappa_scale(selected_router_scores=logits, valid_score_mask=mask)
+    live_scale = experts._materialize_kappa_scale(selected_gate_scores=logits, valid_score_mask=mask)
     assert live_scale is logits
     live_scale.sum().backward()
     torch.testing.assert_close(logits.grad, torch.ones_like(logits))
@@ -283,7 +286,7 @@ def test_independent_kappa_router_materialized_scale_cache():
     experts.kappa_phase = 1
     with pytest.raises(RuntimeError, match='this slot'):
         experts._materialize_kappa_scale()
-    experts._materialize_kappa_scale(selected_router_scores=logits + 1)
+    experts._materialize_kappa_scale(selected_gate_scores=logits + 1)
     torch.testing.assert_close(experts._materialize_kappa_scale(), logits.detach() + 1)
 
 
@@ -370,18 +373,14 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     assert valid_assignments.sum() < valid_mask.sum() * config.moe_top_k
     assert not cached.requires_grad
     assert output[:, -2:].count_nonzero() == 0
-    expected_logits = F.linear(
-        scale_grad(latent.reshape(-1, 4), 0.1), layer.kappa_router.weight,
-    ).gather(-1, indices)
-    expected_scale_loss = expected_logits[valid_assignments].square().mean()
+    expected_scale_loss = layer.kappa_router.weight.float().square().mean()
     torch.testing.assert_close(scale_loss, expected_scale_loss)
     actual_scale_grad = torch.autograd.grad(
         scale_loss, layer.kappa_router.weight, retain_graph=True,
     )[0]
-    expected_scale_grad = torch.autograd.grad(
-        expected_scale_loss, layer.kappa_router.weight,
-    )[0]
+    expected_scale_grad = 2 * layer.kappa_router.weight.detach() / layer.kappa_router.weight.numel()
     torch.testing.assert_close(actual_scale_grad, expected_scale_grad)
+    assert torch.autograd.grad(scale_loss, latent, allow_unused=True, retain_graph=True)[0] is None
     assert actual_scale_grad.abs().sum() > 0
     output.square().sum().backward()
     reference_output.square().sum().backward()
@@ -690,7 +689,7 @@ def test_kappa_bias_can_rescale_kappa_slope_from_router_probs():
         fc_out = torch.bmm(x, experts.c_fc)
         expected = torch.bmm(expected_gate_out_acts * fc_out, experts.c_proj)
 
-    actual = experts(x, selected_router_scores=router_probs)
+    actual = experts(x, selected_gate_scores=router_probs)
     torch.testing.assert_close(actual, expected)
 
 @pytest.mark.parametrize("granularity", ["per-gate", "per-expert", "per-layer", "global"])
@@ -818,7 +817,7 @@ def test_gate_activation_stats_match_logged_formulas():
     torch.testing.assert_close(experts.last_gate_stats['entropy'], expected_entropy)
 
 
-def test_dynamic_kappa_bias_backprops_into_selected_router_scores():
+def test_dynamic_kappa_bias_backprops_into_selected_gate_scores():
     torch.manual_seed(0)
     config = GPTConfig(
         n_exp=2,
@@ -829,11 +828,11 @@ def test_dynamic_kappa_bias_backprops_into_selected_router_scores():
     experts = Qwen3MLPExperts(config)
 
     x = torch.randn(config.n_exp, 5, config.n_embd, requires_grad=True)
-    selected_router_scores = torch.randn(config.n_exp, 5, requires_grad=True)
-    out = experts(x, selected_router_scores=selected_router_scores).sum()
+    selected_gate_scores = torch.randn(config.n_exp, 5, requires_grad=True)
+    out = experts(x, selected_gate_scores=selected_gate_scores).sum()
     out.backward()
 
-    assert selected_router_scores.grad is not None
+    assert selected_gate_scores.grad is not None
 
 
 def test_dynamic_kappa_bias_scales_selected_router_score_gradients():
@@ -853,18 +852,18 @@ def test_dynamic_kappa_bias_scales_selected_router_score_gradients():
         experts.kappa_bias.fill_(0.05)
 
     x = torch.randn(config.n_exp, 5, config.n_embd)
-    selected_router_scores = torch.randn(config.n_exp, 5)
+    selected_gate_scores = torch.randn(config.n_exp, 5)
 
     experts.router_confidence_gate_bias_grad_scale.fill_(1.0)
-    selected_router_scores_full = selected_router_scores.clone().requires_grad_(True)
-    experts(x, selected_router_scores=selected_router_scores_full).sum().backward()
-    grad_full = selected_router_scores_full.grad.clone()
+    selected_gate_scores_full = selected_gate_scores.clone().requires_grad_(True)
+    experts(x, selected_gate_scores=selected_gate_scores_full).sum().backward()
+    grad_full = selected_gate_scores_full.grad.clone()
 
     experts.zero_grad(set_to_none=True)
     experts.router_confidence_gate_bias_grad_scale.fill_(0.25)
-    selected_router_scores_scaled = selected_router_scores.clone().requires_grad_(True)
-    experts(x, selected_router_scores=selected_router_scores_scaled).sum().backward()
-    grad_scaled = selected_router_scores_scaled.grad.clone()
+    selected_gate_scores_scaled = selected_gate_scores.clone().requires_grad_(True)
+    experts(x, selected_gate_scores=selected_gate_scores_scaled).sum().backward()
+    grad_scaled = selected_gate_scores_scaled.grad.clone()
 
     torch.testing.assert_close(grad_scaled, grad_full * 0.25, rtol=1e-4, atol=1e-6)
 
@@ -1588,7 +1587,7 @@ def test_gpt_total_ut_steps_moe_training_backward_uses_no_persistent_grad_buffer
     assert losses['ntp_loss'].item() >= 0.0
     for block in model.transformer.h:
         assert block.mlp._expert_inputs_cache is None
-        assert block.mlp._expert_router_scores_cache is None
+        assert block.mlp._expert_gate_scores_cache is None
 
 
 def test_gpt_total_ut_steps_averages_ntp_loss_from_each_loop(monkeypatch):
@@ -2032,7 +2031,7 @@ def test_moe_functional_dispatch_drops_overflow_without_dynamic_shapes():
     flat_top_k_indices = torch.tensor([0, 1, 0, 1, 0, 1, 0, 1])
     flat_router_scores = torch.arange(1, 9, dtype=torch.float32, requires_grad=True)
 
-    expert_inputs, expert_router_scores = layer._build_expert_inputs_functional(
+    expert_inputs, expert_gate_scores = layer._build_expert_inputs_functional(
         x_flat,
         flat_rank,
         2,
@@ -2044,9 +2043,9 @@ def test_moe_functional_dispatch_drops_overflow_without_dynamic_shapes():
     expected_inputs = torch.stack((x_flat[:2], x_flat[:2]))
     expected_scores = torch.tensor([[1.0, 3.0], [2.0, 4.0]])
     torch.testing.assert_close(expert_inputs, expected_inputs)
-    torch.testing.assert_close(expert_router_scores, expected_scores)
+    torch.testing.assert_close(expert_gate_scores, expected_scores)
 
-    (expert_inputs.sum() + expert_router_scores.sum()).backward()
+    (expert_inputs.sum() + expert_gate_scores.sum()).backward()
     torch.testing.assert_close(x_flat.grad[:2], torch.full((2, 4), 2.0))
     torch.testing.assert_close(x_flat.grad[2:], torch.zeros(2, 4))
     torch.testing.assert_close(
@@ -2431,7 +2430,7 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
 
     MANAGER.reset("kappa_slope_scale_abs_mean")
 
-    selected_router_scores = torch.tensor([
+    selected_gate_scores = torch.tensor([
         [1.0, 0.5],
         [0.0, 0.0],
     ], requires_grad=True)
@@ -2444,7 +2443,7 @@ def test_kappa_slope_scale_stats_are_logged_and_detached_in_slope_scaler_mode():
     old_collect = MANAGER.collect_load_balancing_stats
     MANAGER.collect_load_balancing_stats = True
     try:
-        experts._update_kappa_slope_scale_stats(slope_scales, selected_router_scores)
+        experts._update_kappa_slope_scale_stats(slope_scales, selected_gate_scores)
     finally:
         MANAGER.collect_load_balancing_stats = old_collect
 

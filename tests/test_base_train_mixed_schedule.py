@@ -91,7 +91,7 @@ def test_cached_independent_kappa_statistics():
     logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]])
     mask = torch.tensor([[True, True, False], [True, False, False]])
     for script_name in ('base_train_mix.py', 'base_train.py', 'chat_sft.py'):
-        experts._materialize_kappa_scale(0, selected_router_scores=logits, valid_score_mask=mask)
+        experts._materialize_kappa_scale(0, selected_gate_scores=logits, valid_score_mask=mask)
         collect_stats = load_function_from_script('collect_weight_grad_stats', ROOT / 'scripts' / script_name)
         collect_stats.__globals__.update({
             'math': math,

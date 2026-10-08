@@ -1070,7 +1070,7 @@ class MLPExperts(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(config.n_exp, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(torch.empty(config.n_exp, 4 * config.n_embd, config.n_embd))
 
-    def forward(self, x, selected_router_scores=None, loss_accum=None, router_layer_idx=None, current_ut=0):
+    def forward(self, x, selected_gate_scores=None, loss_accum=None, router_layer_idx=None, current_ut=0):
         fc_out = torch.bmm(x, self.c_fc)
         x = F.relu(fc_out).square()
         proj_out = torch.bmm(x, self.c_proj)
@@ -1493,7 +1493,7 @@ class Qwen3MLPExperts(nn.Module):
     @torch._dynamo.disable keeps Dynamo from tracing across those representation
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
-    def _materialize_kappa_bias(self, kappa_slot=None, selected_router_scores=None):
+    def _materialize_kappa_bias(self, kappa_slot=None, selected_gate_scores=None):
         if self.disable_kappa_bias:
             return self.gate_proj.new_zeros(self.n_exp, self.intermediate_size)
         if kappa_slot is None:
@@ -1504,10 +1504,10 @@ class Qwen3MLPExperts(nn.Module):
             return self.disabled_kappa_bias.detach().requires_grad_(True)
         if self.kappa_bias_from_scale:
             if self.independent_kappa_router:
-                if selected_router_scores is None:
-                    selected_router_scores = self._materialize_kappa_scale(kappa_slot)
+                if selected_gate_scores is None:
+                    selected_gate_scores = self._materialize_kappa_scale(kappa_slot)
                 return (
-                    self.kappa_bias_alpha * selected_router_scores.float().unsqueeze(-1)
+                    self.kappa_bias_alpha * selected_gate_scores.float().unsqueeze(-1)
                 ).expand(-1, -1, self.intermediate_size)
             return self.kappa_bias_alpha * self._materialize_kappa_scale(kappa_slot)
         kappa_bias = self._get_kappa_bias_parameter()
@@ -1520,19 +1520,19 @@ class Qwen3MLPExperts(nn.Module):
             return kappa_bias.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_bias.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    def _materialize_kappa_scale(self, kappa_slot=None, selected_router_scores=None, valid_score_mask=None):
+    def _materialize_kappa_scale(self, kappa_slot=None, selected_gate_scores=None, valid_score_mask=None):
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
                 self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
             )
         if self.use_kappa_swiglu and self.independent_kappa_router:
-            if selected_router_scores is not None:
-                cached = selected_router_scores.detach().clone()
+            if selected_gate_scores is not None:
+                cached = selected_gate_scores.detach().clone()
                 if valid_score_mask is not None:
                     cached.masked_fill_(~valid_score_mask, float('nan'))
                 self._cached_kappa_scale = cached
                 self._cached_kappa_scale_slot = kappa_slot
-                return selected_router_scores
+                return selected_gate_scores
             if self._cached_kappa_scale is None or self._cached_kappa_scale_slot != kappa_slot:
                 raise RuntimeError("Independent kappa_scale requires cached kappa router logits for this slot")
             return self._cached_kappa_scale
@@ -1671,14 +1671,14 @@ class Qwen3MLPExperts(nn.Module):
         self,
         gate_out_raw,
         kappa_bias,
-        selected_router_scores,
+        selected_gate_scores,
         kappa_scale=None,
     ):
         target_dtype = torch.float32
         kappa_bias = kappa_bias.to(dtype=target_dtype)
         if kappa_bias.ndim == 2:
             kappa_bias = kappa_bias.unsqueeze(1)
-        slope_work = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
+        slope_work = selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
         if self.independent_kappa_router:
             slope_work = kappa_bias + slope_work
@@ -1692,25 +1692,25 @@ class Qwen3MLPExperts(nn.Module):
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         if MANAGER.collect_load_balancing_stats:
-            self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
+            self._update_kappa_slope_scale_stats(slope_work, selected_gate_scores)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)
 
     def _apply_kappa_slope_scaled_activation_inference(
         self,
         gate_out_raw,
-        selected_router_scores,
+        selected_gate_scores,
         kappa_slot=0,
     ):
         target_dtype = gate_out_raw.dtype
         if self.independent_kappa_router and self.kappa_bias_from_scale:
             kappa_bias = self._materialize_kappa_bias(
-                kappa_slot, selected_router_scores=selected_router_scores
+                kappa_slot, selected_gate_scores=selected_gate_scores
             ).to(dtype=target_dtype)
         else:
             kappa_bias = self._get_kappa_bias_unsqueezed_for_eval(
                 target_dtype, gate_out_raw.device, kappa_slot
             )
-        slope_work = selected_router_scores.to(dtype=target_dtype).unsqueeze(-1)
+        slope_work = selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
         log_kappa_slope_max_scale = self._get_log_kappa_slope_max_scale_for_eval(
             target_dtype,
             kappa_bias.device,
@@ -1727,14 +1727,14 @@ class Qwen3MLPExperts(nn.Module):
         slope_work.tanh_()
         slope_work.mul_(log_kappa_slope_max_scale)
         slope_work.exp_()
-        self._update_kappa_slope_scale_stats(slope_work, selected_router_scores)
+        self._update_kappa_slope_scale_stats(slope_work, selected_gate_scores)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)
 
     def _apply_kappa_slope_scaled_activation(
         self,
         gate_out_raw,
         kappa_bias,
-        selected_router_scores,
+        selected_gate_scores,
         kappa_scale=None,
         kappa_slot=0,
     ):
@@ -1742,12 +1742,12 @@ class Qwen3MLPExperts(nn.Module):
             return self._apply_kappa_slope_scaled_activation_training(
                 gate_out_raw,
                 kappa_bias,
-                selected_router_scores,
+                selected_gate_scores,
                 kappa_scale=kappa_scale,
             )
         return self._apply_kappa_slope_scaled_activation_inference(
             gate_out_raw,
-            selected_router_scores,
+            selected_gate_scores,
             kappa_slot=kappa_slot,
         )
 
@@ -1813,15 +1813,15 @@ class Qwen3MLPExperts(nn.Module):
             }
 
     @torch._dynamo.disable
-    def _update_kappa_slope_scale_stats(self, slope_scales, selected_router_scores):
+    def _update_kappa_slope_scale_stats(self, slope_scales, selected_gate_scores):
         if (
             not MANAGER.collect_load_balancing_stats
             or not self.use_kappa_swiglu
-            or selected_router_scores is None
+            or selected_gate_scores is None
         ):
             return
 
-        active_mask = selected_router_scores.detach().ne(0)
+        active_mask = selected_gate_scores.detach().ne(0)
         if not active_mask.any():
             return
 
@@ -1863,16 +1863,16 @@ class Qwen3MLPExperts(nn.Module):
         )
 
     @torch._dynamo.disable
-    def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_router_scores):
+    def _update_implicit_gate_proj_bias_stats(self, x, router_weight, selected_gate_scores):
         if (
             not MANAGER.collect_load_balancing_stats
             or not self.log_implicit_gate_proj_bias
-            or selected_router_scores is None
+            or selected_gate_scores is None
             or router_weight is None
         ):
             return
 
-        active_mask = selected_router_scores.detach().float().abs() > 0
+        active_mask = selected_gate_scores.detach().float().abs() > 0
         if not active_mask.any():
             return
 
@@ -1924,22 +1924,22 @@ class Qwen3MLPExperts(nn.Module):
             ),
         )
 
-    def forward(self, x, selected_router_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None):
+    def forward(self, x, selected_gate_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None):
         kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else current_ut
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        if selected_router_scores is not None and self.kappa_swiglu_enabled:
+        if selected_gate_scores is not None and self.kappa_swiglu_enabled:
             if self.independent_kappa_router:
-                selected_router_scores = self._materialize_kappa_scale(
-                    kappa_slot, selected_router_scores=selected_router_scores,
+                selected_gate_scores = self._materialize_kappa_scale(
+                    kappa_slot, selected_gate_scores=selected_gate_scores,
                     valid_score_mask=valid_score_mask,
                 )
             if self.training:
                 kappa_bias = self._materialize_kappa_bias(
-                    kappa_slot, selected_router_scores=selected_router_scores
+                    kappa_slot, selected_gate_scores=selected_gate_scores
                 )
                 self._accumulate_kappa_bias_l2_losses(
                     kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
@@ -1953,21 +1953,24 @@ class Qwen3MLPExperts(nn.Module):
                     kappa_slot,
                 )
             kappa_scale = None
+            # use_kappa_scale_param implies not independent_kappa_router.
+            # If not independent_kappa_router, we apply l2 loss on the kappa scale parameters.
+            # Otherwise, we apply l2 loss on the kappa router weights.
             if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
                 self._accumulate_kappa_scale_l2_losses(
                     kappa_scale, loss_accum=loss_accum, kappa_slot=kappa_slot
                 )
-            scaled_selected_router_scores = selected_router_scores
+            scaled_selected_gate_scores = selected_gate_scores
             if not self.independent_kappa_router:
-                scaled_selected_router_scores = scale_grad(
-                    selected_router_scores,
+                scaled_selected_gate_scores = scale_grad(
+                    selected_gate_scores,
                     self.router_confidence_gate_bias_grad_scale,
                 )
             gate_out_acts = self._apply_kappa_slope_scaled_activation(
                 gate_out_raw,
                 kappa_bias,
-                scaled_selected_router_scores,
+                scaled_selected_gate_scores,
                 kappa_scale=kappa_scale,
                 kappa_slot=kappa_slot,
             )
@@ -1975,8 +1978,8 @@ class Qwen3MLPExperts(nn.Module):
             self._cached_kappa_scale = None
             self._cached_kappa_scale_slot = None
             gate_out_acts = self._apply_gate_activation(gate_out_raw)
-        if selected_router_scores is not None and MANAGER.collect_load_balancing_stats:
-            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_router_scores)
+        if selected_gate_scores is not None and MANAGER.collect_load_balancing_stats:
+            self._update_implicit_gate_proj_bias_stats(x, router_weight, selected_gate_scores)
         if MANAGER.collect_load_balancing_stats:
             self._update_gate_stats(gate_out_acts)
 
@@ -2025,10 +2028,10 @@ class MOELayer(nn.Module):
         self._expert_inputs_cache_dtype = None
         self._expert_inputs_cache_device = None
         self._expert_inputs_cache_capacity = None
-        self._expert_router_scores_cache = None
-        self._expert_router_scores_cache_dtype = None
-        self._expert_router_scores_cache_device = None
-        self._expert_router_scores_cache_capacity = None
+        self._expert_gate_scores_cache = None
+        self._expert_gate_scores_cache_dtype = None
+        self._expert_gate_scores_cache_device = None
+        self._expert_gate_scores_cache_capacity = None
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
@@ -2051,40 +2054,40 @@ class MOELayer(nn.Module):
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, 
                              flat_top_k_indices, flat_router_scores, expert_inputs, 
-                             expert_router_scores):
+                             expert_gate_scores):
         valid_mask = flat_rank < exp_capacity
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
-        if expert_router_scores is not None:
-            expert_router_scores[valid_expert_indices, valid_ranks] = flat_router_scores[valid_mask]
+        if expert_gate_scores is not None:
+            expert_gate_scores[valid_expert_indices, valid_ranks] = flat_router_scores[valid_mask]
 
     @torch._dynamo.disable
-    def _get_expert_router_scores_buffer(self, exp_capacity, target_dtype, target_device):
+    def _get_expert_gate_scores_buffer(self, exp_capacity, target_dtype, target_device):
         # Safe only when each forward using this buffer is backpropped before reuse.
         if (
-            self._expert_router_scores_cache is None
-            or self._expert_router_scores_cache_dtype != target_dtype
-            or self._expert_router_scores_cache_device != target_device
-            or self._expert_router_scores_cache_capacity != exp_capacity
+            self._expert_gate_scores_cache is None
+            or self._expert_gate_scores_cache_dtype != target_dtype
+            or self._expert_gate_scores_cache_device != target_device
+            or self._expert_gate_scores_cache_capacity != exp_capacity
         ):
-            self._expert_router_scores_cache = torch.empty(
+            self._expert_gate_scores_cache = torch.empty(
                 self.n_exp,
                 exp_capacity,
                 dtype=target_dtype,
                 device=target_device,
             )
-            self._expert_router_scores_cache_dtype = target_dtype
-            self._expert_router_scores_cache_device = target_device
-            self._expert_router_scores_cache_capacity = exp_capacity
+            self._expert_gate_scores_cache_dtype = target_dtype
+            self._expert_gate_scores_cache_device = target_device
+            self._expert_gate_scores_cache_capacity = exp_capacity
         else:
             # The cache becomes graph-connected after the indexed writes below.
             # Reuse must start from a detached tensor so the next micro-step does
             # not try to continue the previous autograd graph through this buffer.
-            self._expert_router_scores_cache = self._expert_router_scores_cache.detach()
-        self._expert_router_scores_cache.zero_()
-        return self._expert_router_scores_cache
+            self._expert_gate_scores_cache = self._expert_gate_scores_cache.detach()
+        self._expert_gate_scores_cache.zero_()
+        return self._expert_gate_scores_cache
 
     @torch._dynamo.disable
     def _get_expert_inputs_buffer(self, exp_capacity, target_dtype, target_device, hidden_size):
@@ -2107,7 +2110,7 @@ class MOELayer(nn.Module):
             self._expert_inputs_cache_device = target_device
             self._expert_inputs_cache_capacity = exp_capacity
         else:
-            # See _get_expert_router_scores_buffer: the cached dispatch tensor can
+            # See _get_expert_gate_scores_buffer: the cached dispatch tensor can
             # retain autograd history from the previous forward unless we detach it
             # before overwriting it for the next micro-step.
             self._expert_inputs_cache = self._expert_inputs_cache.detach()
@@ -2143,20 +2146,20 @@ class MOELayer(nn.Module):
             exp_capacity,
             x_flat.size(1),
         )
-        expert_router_scores = None
+        expert_gate_scores = None
         if self.use_qwen3_moe_mlp:
             valid_router_scores = flat_router_scores * valid_mask.to(dtype=flat_router_scores.dtype)
-            expert_router_scores_flat = torch.scatter_add(
+            expert_gate_scores_flat = torch.scatter_add(
                 flat_router_scores.new_zeros(num_expert_slots + 1),
                 0,
                 flat_expert_slots,
                 valid_router_scores,
             )
-            expert_router_scores = expert_router_scores_flat[:num_expert_slots].view(
+            expert_gate_scores = expert_gate_scores_flat[:num_expert_slots].view(
                 self.n_exp,
                 exp_capacity,
             )
-        return expert_inputs, expert_router_scores
+        return expert_inputs, expert_gate_scores
 
     def _combine_expert_outputs(
         self, x_flat, expert_outputs, flat_rank, exp_capacity, flat_token_indices,
@@ -2291,7 +2294,7 @@ class MOELayer(nn.Module):
             top_k_indices=top_k_indices,
         )
         if torch.is_grad_enabled():
-            expert_inputs, expert_router_scores = self._build_expert_inputs_functional(
+            expert_inputs, expert_gate_scores = self._build_expert_inputs_functional(
                 x_flat,
                 flat_rank,
                 exp_capacity,
@@ -2306,9 +2309,9 @@ class MOELayer(nn.Module):
                 x_flat.device,
                 x_flat.size(1),
             )
-            expert_router_scores = None
+            expert_gate_scores = None
             if self.use_qwen3_moe_mlp:
-                expert_router_scores = self._get_expert_router_scores_buffer(
+                expert_gate_scores = self._get_expert_gate_scores_buffer(
                     exp_capacity,
                     selected_gate_confidence.dtype,
                     selected_gate_confidence.device,
@@ -2321,7 +2324,7 @@ class MOELayer(nn.Module):
                 flat_top_k_indices,
                 selected_gate_confidence.view(-1),
                 expert_inputs,
-                expert_router_scores,
+                expert_gate_scores,
             )
 
         # --- Run experts ---
@@ -2333,7 +2336,7 @@ class MOELayer(nn.Module):
             valid_score_mask = torch.arange(exp_capacity, device=x.device).unsqueeze(0) < expert_counts.unsqueeze(1)
         expert_outputs = self.experts(
             expert_inputs,
-            selected_router_scores=expert_router_scores,
+            selected_gate_scores=expert_gate_scores,
             router_weight=self.router.w_g.weight,
             loss_accum=loss_accum,
             current_ut=current_ut,
