@@ -215,7 +215,7 @@ def test_kappa_router_bias_initialization_loading_and_optimizer(matrix_optimizer
 @pytest.mark.parametrize('initial_anchor', [False, True])
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('use_loss_accum', [False, True])
-def test_independent_kappa_router_scale_l2_uses_router_weights(
+def test_independent_kappa_router_scale_l2_uses_output_scores(
     monkeypatch, initial_anchor, is_sft, use_loss_accum,
 ):
     manager = MOEManager()
@@ -225,18 +225,14 @@ def test_independent_kappa_router_scale_l2_uses_router_weights(
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
         independent_kappa_router=True, separate_base_sft_kappa=True,
         refresh_kappa_param_references=initial_anchor,
+        router_tie_noise_steps=0,
     )
     model = GPT(config)
     model.init_weights()
     model.set_kappa_training_phase(is_sft)
     layer = model.transformer.h[0].mlp
     weight = layer.kappa_router.weight
-    initial_weight = weight.detach().clone()
     active_slice = slice(int(is_sft) * config.n_exp, (int(is_sft) + 1) * config.n_exp)
-    if initial_anchor:
-        layer._accumulate_kappa_router_l2_loss()
-        torch.testing.assert_close(manager.aggregate('kappa_scale_l2_loss'), torch.tensor(0.0))
-        manager.reset_all()
     with torch.no_grad():
         weight[active_slice].add_(0.2)
     inputs = torch.randn(1, 3, config.n_embd, requires_grad=True)
@@ -246,15 +242,18 @@ def test_independent_kappa_router_scale_l2_uses_router_weights(
         accum.losses[_UT_LOSS_NAMES.index('kappa_scale_l2_loss')]
         if use_loss_accum else manager.aggregate('kappa_scale_l2_loss')
     )
-    delta = weight.detach()[active_slice]
-    if initial_anchor:
-        delta = delta - initial_weight[active_slice]
-    torch.testing.assert_close(scale_loss, delta.square().mean())
+    with torch.no_grad():
+        _, _, _, indices, ranks = layer.router(inputs)
+    scores = F.linear(scale_grad(inputs.reshape(-1, config.n_embd), 0.1), weight[active_slice])
+    selected_scores = scores.gather(-1, indices)
+    valid_assignments = ranks < layer.router.get_capacity(inputs.size(0) * inputs.size(1))
+    expected_loss = selected_scores[valid_assignments].square().mean()
+    torch.testing.assert_close(scale_loss, expected_loss)
+    expected_weight_grad, expected_input_grad = torch.autograd.grad(expected_loss, (weight, inputs))
     scale_loss.backward()
-    expected_gradient = torch.zeros_like(weight)
-    expected_gradient[active_slice] = 2 * delta / delta.numel()
-    torch.testing.assert_close(weight.grad, expected_gradient)
-    assert inputs.grad is None
+    torch.testing.assert_close(weight.grad, expected_weight_grad)
+    torch.testing.assert_close(inputs.grad, expected_input_grad)
+    assert inputs.grad.abs().sum() > 0
     assert layer.router.w_g.weight.grad is None
     assert layer.experts.kappa_scale is None
     assert 'transformer.h.0.mlp.initial_kappa_router_weight' not in model.state_dict()
@@ -373,14 +372,20 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     assert valid_assignments.sum() < valid_mask.sum() * config.moe_top_k
     assert not cached.requires_grad
     assert output[:, -2:].count_nonzero() == 0
-    expected_scale_loss = layer.kappa_router.weight.float().square().mean()
+    expected_logits = F.linear(
+        scale_grad(latent.reshape(-1, 4), 0.1), layer.kappa_router.weight,
+    ).gather(-1, indices)
+    expected_scale_loss = expected_logits[valid_assignments].square().mean()
     torch.testing.assert_close(scale_loss, expected_scale_loss)
     actual_scale_grad = torch.autograd.grad(
         scale_loss, layer.kappa_router.weight, retain_graph=True,
     )[0]
-    expected_scale_grad = 2 * layer.kappa_router.weight.detach() / layer.kappa_router.weight.numel()
+    expected_scale_grad, expected_latent_grad = torch.autograd.grad(
+        expected_scale_loss, (layer.kappa_router.weight, latent),
+    )
     torch.testing.assert_close(actual_scale_grad, expected_scale_grad)
-    assert torch.autograd.grad(scale_loss, latent, allow_unused=True, retain_graph=True)[0] is None
+    actual_latent_grad = torch.autograd.grad(scale_loss, latent, retain_graph=True)[0]
+    torch.testing.assert_close(actual_latent_grad, expected_latent_grad)
     assert actual_scale_grad.abs().sum() > 0
     output.square().sum().backward()
     reference_output.square().sum().backward()
@@ -437,18 +442,22 @@ def test_independent_kappa_router_loads_legacy_checkpoint_and_roundtrips(
     for slot_weight in predictor.view(-1, config.n_exp, config.n_embd):
         torch.testing.assert_close(slot_weight, expected_weight)
     layer = model.transformer.h[0].mlp
-    torch.testing.assert_close(layer.initial_kappa_router_weight, predictor)
-    assert layer.initial_kappa_router_weight.data_ptr() != predictor.data_ptr()
+    assert layer.experts.initial_kappa_scale is None
+    inputs = torch.randn(2, config.n_embd)
+    indices = torch.tensor([[0, 1], [1, 2]])
+    scores = layer._select_gate_confidence(
+        torch.zeros(2, 2), torch.ones(2, 2), inputs, indices,
+    )
     accum = MOEManager()
-    layer._accumulate_kappa_router_l2_loss(loss_accum=accum)
-    torch.testing.assert_close(accum.aggregate('kappa_scale_l2_loss'), torch.tensor(0.0))
+    layer.experts._accumulate_kappa_scale_l2_losses(scores, loss_accum=accum)
+    torch.testing.assert_close(accum.aggregate('kappa_scale_l2_loss'), scores.square().mean())
     assert predictor.data_ptr() != model.transformer.h[0].mlp.router.w_g.weight.data_ptr()
     with torch.no_grad():
         predictor[:config.n_exp].add_(0.2)
     reloaded = GPT(new_config)
     reloaded.load_state_dict(model.state_dict())
     torch.testing.assert_close(reloaded.transformer.h[0].mlp.kappa_router.weight, predictor)
-    torch.testing.assert_close(reloaded.transformer.h[0].mlp.initial_kappa_router_weight, predictor)
+    assert reloaded.transformer.h[0].mlp.experts.initial_kappa_scale is None
     optimizer = model.setup_optimizer()
     assert any(predictor is param for group in optimizer.param_groups for param in group['params'])
 

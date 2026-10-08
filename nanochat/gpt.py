@@ -1955,11 +1955,16 @@ class Qwen3MLPExperts(nn.Module):
             kappa_scale = None
             # use_kappa_scale_param implies not independent_kappa_router.
             # If not independent_kappa_router, we apply l2 loss on the kappa scale parameters.
-            # Otherwise, we apply l2 loss on the kappa router weights.
+            # Otherwise, we apply l2 loss on the live kappa router output scores.
             if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
                 self._accumulate_kappa_scale_l2_losses(
                     kappa_scale, loss_accum=loss_accum, kappa_slot=kappa_slot
+                )
+            elif self.training and self.independent_kappa_router:
+                self._accumulate_kappa_scale_l2_losses(
+                    selected_gate_scores, loss_accum=loss_accum,
+                    kappa_slot=kappa_slot, valid_score_mask=valid_score_mask,
                 )
             scaled_selected_gate_scores = selected_gate_scores
             if not self.independent_kappa_router:
@@ -2023,7 +2028,6 @@ class MOELayer(nn.Module):
             and self.use_qwen3_moe_mlp and self.experts.use_kappa_swiglu
             else None
         )
-        self.register_buffer('initial_kappa_router_weight', None, persistent=False)
         self._expert_inputs_cache = None
         self._expert_inputs_cache_dtype = None
         self._expert_inputs_cache_device = None
@@ -2035,21 +2039,6 @@ class MOELayer(nn.Module):
 
     def update_aux_free_load_balancing(self):
         self.router.update_aux_free_load_balancing()
-
-    def _accumulate_kappa_router_l2_loss(self, loss_accum=None):
-        kappa_slot = self.experts.kappa_phase if self.num_kappa_router_slots == 2 else 0
-        weight = self.kappa_router.weight.view(
-            self.num_kappa_router_slots, self.n_exp, -1
-        )[kappa_slot].float()
-        if self.initial_kappa_router_weight is not None:
-            weight = weight - self.initial_kappa_router_weight.view(
-                self.num_kappa_router_slots, self.n_exp, -1
-            )[kappa_slot].float()
-        loss = weight.square().mean()
-        if loss_accum is not None:
-            loss_accum.add('kappa_scale_l2_loss', loss)
-        else:
-            MANAGER.add('kappa_scale_l2_loss', loss)
 
     @torch._dynamo.disable
     def _build_expert_inputs(self, x_flat, flat_rank, exp_capacity, flat_token_indices, 
@@ -2330,8 +2319,6 @@ class MOELayer(nn.Module):
         # --- Run experts ---
         valid_score_mask = None
         if self.kappa_router is not None:
-            if self.training and self.experts.kappa_swiglu_enabled:
-                self._accumulate_kappa_router_l2_loss(loss_accum=loss_accum)
             expert_counts = expert_mask.sum(dim=(0, 1))
             valid_score_mask = torch.arange(exp_capacity, device=x.device).unsqueeze(0) < expert_counts.unsqueeze(1)
         expert_outputs = self.experts(
@@ -2550,8 +2537,6 @@ class GPT(nn.Module):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts):
                     experts.snapshot_kappa_param_references()
-                    if mlp.kappa_router is not None:
-                        mlp.initial_kappa_router_weight = mlp.kappa_router.weight.detach().clone()
 
     def _should_refresh_kappa_param_references(self):
         return bool(getattr(self.config, 'refresh_kappa_param_references', False))
