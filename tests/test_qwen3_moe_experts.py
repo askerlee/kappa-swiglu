@@ -322,7 +322,7 @@ def test_independent_kappa_router_scale_l2_uses_output_scores(
     )
     with torch.no_grad():
         _, _, _, indices, ranks = layer.router(inputs)
-    effective_weight = weight[:config.n_exp].detach() + weight[active_slice] if is_sft else weight[active_slice]
+    effective_weight = scale_grad(weight[:config.n_exp], 0.1) + weight[active_slice] if is_sft else weight[active_slice]
     scores = F.linear(scale_grad(inputs.reshape(-1, config.n_embd), 0.1), effective_weight)
     selected_scores = scores.gather(-1, indices)
     valid_assignments = ranks < layer.router.get_capacity(inputs.size(0) * inputs.size(1))
@@ -637,7 +637,10 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
             checkpoint_logits = checkpoint_model(tokens)
             torch.testing.assert_close(reference_logits, checkpoint_logits)
     predictor_grads = reference.transformer.h[0].mlp.kappa_router.weight.grad.view(2, 3, 32)
-    assert predictor_grads[1 - int(is_sft)].count_nonzero() == 0
+    if is_sft:
+        torch.testing.assert_close(predictor_grads[0], 0.1 * predictor_grads[1])
+    else:
+        assert predictor_grads[1].count_nonzero() == 0
     predictor = reference.transformer.h[0].mlp.kappa_router.weight
     optimizer = reference.setup_optimizer(matrix_optimizer=matrix_optimizer, matrix_lr=0.01, weight_decay=0.1)
     predictor_group = next(group for group in optimizer.param_groups if group.get('name') == 'kappa_router')
@@ -646,7 +649,10 @@ def test_independent_kappa_router_checkpointed_ut_matches_gradients(monkeypatch,
     assert predictor_group['active_kappa_slot'] == int(is_sft)
     before = predictor.detach().clone().view(2, 3, 32)
     optimizer.step()
-    torch.testing.assert_close(predictor.view(2, 3, 32)[1 - int(is_sft)], before[1 - int(is_sft)], rtol=0, atol=0)
+    if is_sft:
+        assert not torch.equal(predictor.view(2, 3, 32)[0], before[0])
+    else:
+        torch.testing.assert_close(predictor.view(2, 3, 32)[1], before[1], rtol=0, atol=0)
     assert not torch.equal(predictor.view(2, 3, 32)[int(is_sft)], before[int(is_sft)])
 
 

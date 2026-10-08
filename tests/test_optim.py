@@ -98,7 +98,8 @@ def test_distributed_kappa_slots_use_replicated_state_and_skip_missing_grad(opti
     (MuonAdamW, 'muon'), (MuonAdamW, 'muonh'), (AuroraAdamW, 'aurora'),
     (DistMuonAdamW, 'muon'), (DistMuonAdamW, 'muonh'), (DistAuroraAdamW, 'aurora'),
 ])
-def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimizer_class, kind, monkeypatch):
+@pytest.mark.parametrize('update_base_on_sft', [False, True])
+def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimizer_class, kind, monkeypatch, update_base_on_sft):
     monkeypatch.setattr(optim_module.dist, 'get_rank', lambda: 0)
     monkeypatch.setattr(optim_module.dist, 'get_world_size', lambda: 2)
     monkeypatch.setattr(optim_module.dist, 'all_reduce', lambda *args, **kwargs: None)
@@ -107,6 +108,8 @@ def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimize
     group = dict(kind=kind, params=[param], lr=0.01, momentum=0.95, beta2=0.95,
                  weight_decay=0.1, ns_steps=5, pp_iterations=2, pp_beta=0.5,
                  nesterov=True, chunk_size=2, active_kappa_slot=0)
+    if update_base_on_sft:
+        group['name'] = 'kappa_router'
     optimizer = optimizer_class([group])
     reference_params = [torch.nn.Parameter(weight.clone()) for weight in param.detach().view(2, 3, 4)]
     reference_class = AuroraAdamW if kind == 'aurora' else MuonAdamW
@@ -121,12 +124,18 @@ def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimize
         param.grad = torch.zeros_like(param)
         param.grad.view(2, 3, 4)[slot].copy_(grad)
         reference_params[slot].grad = grad.clone()
+        active_slots = (0, 1) if update_base_on_sft and slot == 1 else (slot,)
+        if len(active_slots) == 2:
+            param.grad.view(2, 3, 4)[0].copy_(0.1 * grad)
+            reference_params[0].grad = 0.1 * grad
         optimizer.step()
-        reference_optimizers[slot].step()
-        torch.testing.assert_close(param.view(2, 3, 4)[slot], reference_params[slot])
-        torch.testing.assert_close(param.view(2, 3, 4)[1 - slot], inactive_before, rtol=0, atol=0)
-        for name, value in inactive_state_before.items():
-            torch.testing.assert_close(optimizer.state[param]['slot_states'][1 - slot][name], value, rtol=0, atol=0)
+        for active_slot in active_slots:
+            reference_optimizers[active_slot].step()
+            torch.testing.assert_close(param.view(2, 3, 4)[active_slot], reference_params[active_slot])
+        if len(active_slots) == 1:
+            torch.testing.assert_close(param.view(2, 3, 4)[1 - slot], inactive_before, rtol=0, atol=0)
+            for name, value in inactive_state_before.items():
+                torch.testing.assert_close(optimizer.state[param]['slot_states'][1 - slot][name], value, rtol=0, atol=0)
     assert len(optimizer.state) == 1
     restored_param = torch.nn.Parameter(param.detach().clone())
     restored = optimizer_class([dict(group, params=[restored_param])])
@@ -136,10 +145,17 @@ def test_separate_kappa_router_matrix_preserves_inactive_slot_and_state(optimize
     restored_param.grad = torch.zeros_like(restored_param)
     restored_param.grad.view(2, 3, 4)[1].copy_(grad)
     reference_params[1].grad = grad.clone()
+    if update_base_on_sft:
+        restored_param.grad.view(2, 3, 4)[0].copy_(0.1 * grad)
+        reference_params[0].grad = 0.1 * grad
     restored.step()
     reference_optimizers[1].step()
     torch.testing.assert_close(restored_param.view(2, 3, 4)[1], reference_params[1])
-    torch.testing.assert_close(restored_param.view(2, 3, 4)[0], param.view(2, 3, 4)[0], rtol=0, atol=0)
+    if update_base_on_sft:
+        reference_optimizers[0].step()
+        torch.testing.assert_close(restored_param.view(2, 3, 4)[0], reference_params[0])
+    else:
+        torch.testing.assert_close(restored_param.view(2, 3, 4)[0], param.view(2, 3, 4)[0], rtol=0, atol=0)
     restored_param.grad = None
     before = restored_param.detach().clone()
     restored.step()

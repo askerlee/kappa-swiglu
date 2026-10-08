@@ -121,7 +121,8 @@ def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
 
 def _step_kappa_slot_matrix(optimizer, group, distributed=False):
     slot = group['active_kappa_slot']
-    active_params = []
+    slots = (0, 1) if slot == 1 and group.get('name') == 'kappa_router' else (slot,)
+    slot_params = {active_slot: [] for active_slot in slots}
     active_names = []
     param_names = group.get('debug_param_names', [])
     for index, param in enumerate(group['params']):
@@ -135,22 +136,25 @@ def _step_kappa_slot_matrix(optimizer, group, distributed=False):
             dist.all_reduce(grad, op=dist.ReduceOp.AVG)
         elif grad is None:
             continue
-        active_param = param.view(2, param.size(0) // 2, param.size(1))[slot]
-        active_param.grad = grad.view(2, param.size(0) // 2, param.size(1))[slot]
         state = optimizer.state[param]
         slot_states = state.setdefault('slot_states', [{}, {}])
-        optimizer.state[active_param] = slot_states[slot]
-        active_params.append(active_param)
+        for active_slot in slots:
+            active_param = param.view(2, param.size(0) // 2, param.size(1))[active_slot]
+            active_param.grad = grad.view(2, param.size(0) // 2, param.size(1))[active_slot]
+            optimizer.state[active_param] = slot_states[active_slot]
+            slot_params[active_slot].append(active_param)
         active_names.append(param_names[index] if index < len(param_names) else None)
-    active_group = dict(group, params=active_params, debug_param_names=active_names)
     try:
-        if group['kind'] == 'aurora':
-            AuroraAdamW._step_aurora(optimizer, active_group)
-        else:
-            MuonAdamW._step_muon(optimizer, active_group)
+        for active_params in slot_params.values():
+            active_group = dict(group, params=active_params, debug_param_names=active_names)
+            if group['kind'] == 'aurora':
+                AuroraAdamW._step_aurora(optimizer, active_group)
+            else:
+                MuonAdamW._step_muon(optimizer, active_group)
     finally:
-        for active_param in active_params:
-            del optimizer.state[active_param]
+        for active_params in slot_params.values():
+            for active_param in active_params:
+                del optimizer.state[active_param]
 
 
 def _use_bf16_matmuls(tensor: Tensor) -> bool:
