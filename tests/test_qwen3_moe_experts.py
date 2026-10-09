@@ -167,13 +167,13 @@ def test_independent_sft_kappa_router_is_scaled_base_plus_residual(is_sft):
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
-@pytest.mark.parametrize(('bias_from_scale', 'independent_router'), [(False, False), (True, False), (False, True)])
-def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_from_scale, independent_router):
+@pytest.mark.parametrize('independent_router', [False, True])
+def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, independent_router):
     manager = MOEManager()
     monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True, disable_kappa_bias=True,
-        global_kappa_param_granularity=granularity, kappa_bias_from_scale=bias_from_scale,
+        global_kappa_param_granularity=granularity,
         independent_kappa_router=independent_router, separate_base_sft_kappa=True,
     )
     experts = Qwen3MLPExperts(config)
@@ -189,7 +189,7 @@ def test_disable_kappa_bias_keeps_scale_active(monkeypatch, granularity, bias_fr
     scores = torch.full((2, 3), 0.7, requires_grad=True)
     raw_gate = torch.randn(2, 3, 16)
     for slot in (0, 1):
-        bias = experts._materialize_kappa_bias(slot, selected_gate_scores=scores)
+        bias = experts._materialize_kappa_bias(slot)
         torch.testing.assert_close(bias, torch.zeros(2, 16))
         experts._accumulate_kappa_bias_l2_losses(bias, kappa_slot=slot)
         scale = None if independent_router else experts._materialize_kappa_scale(slot)
@@ -282,7 +282,7 @@ def test_independent_kappa_router_direct_scale_activation(monkeypatch, kappa_inp
         bias_param[int(is_sft)].fill_(0.2)
     raw_gate = torch.randn(3, 2, 16)
     predicted_scale = torch.randn(3, 2, requires_grad=True)
-    bias = experts._materialize_kappa_bias(selected_gate_scores=predicted_scale)
+    bias = experts._materialize_kappa_bias()
     conditioning = 0.2 + predicted_scale.unsqueeze(-1)
     slope = experts.kappa_slope_max_scale ** torch.tanh(conditioning)
     expected = raw_gate * torch.sigmoid(raw_gate * slope)
@@ -871,83 +871,59 @@ def test_kappa_bias_can_rescale_kappa_slope_from_router_probs():
 
 @pytest.mark.parametrize("granularity", ["per-gate", "per-expert", "per-layer", "global"])
 @pytest.mark.parametrize("separate_base_sft_kappa", [False, True])
-def test_kappa_bias_from_scale_materialization_gradients_and_eval_cache(granularity, separate_base_sft_kappa):
+def test_kappa_bias_is_independent_of_scale_and_eval_cache(granularity, separate_base_sft_kappa):
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True,
-        kappa_bias_from_scale=True, global_kappa_param_granularity=granularity,
+        global_kappa_param_granularity=granularity,
         total_ut_steps=3, separate_base_sft_kappa=separate_base_sft_kappa,
     )
     experts = Qwen3MLPExperts(config, layer_idx=1)
     if granularity == "global":
+        experts.bind_shared_kappa_bias(torch.nn.Parameter(torch.zeros(experts.num_kappa_slots, 1)))
         experts.bind_shared_kappa_scale(torch.nn.Parameter(torch.ones(experts.num_kappa_slots, 1)))
     scale = experts._get_kappa_scale_parameter()
-    assert experts.kappa_bias is None
-    assert experts.kappa_bias_alpha.shape == torch.Size([])
-    assert experts.kappa_bias_alpha.item() == 1.0
-    assert "kappa_bias" not in experts.state_dict()
+    bias_parameter = experts._get_kappa_bias_parameter()
+    assert bias_parameter is not scale
     with torch.no_grad():
-        experts.kappa_bias_alpha.fill_(2.0)
+        bias_parameter.fill_(2.0)
         scale.fill_(3.0)
     for slot in range(experts.num_kappa_slots):
         bias = experts._materialize_kappa_bias(slot)
-        torch.testing.assert_close(bias, 2.0 * experts._materialize_kappa_scale(slot))
+        torch.testing.assert_close(bias, torch.full_like(bias, 4.0 if slot == 1 else 2.0))
     bias.sum().backward()
-    expected_scale = 6.0 if separate_base_sft_kappa else 3.0
-    torch.testing.assert_close(experts.kappa_bias_alpha.grad, torch.tensor(expected_scale * bias.numel()))
-    assert scale.grad[-1].abs().sum() > 0
+    assert bias_parameter.grad[-1].abs().sum() > 0
+    assert scale.grad is None
     experts.eval()
     with torch.no_grad():
         cached = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
-        torch.testing.assert_close(cached, torch.full_like(cached, 6.0))
-        experts.kappa_bias_alpha.fill_(4.0)
+        torch.testing.assert_close(cached, torch.full_like(cached, 2.0))
+        bias_parameter.fill_(4.0)
         updated = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
-        torch.testing.assert_close(updated, torch.full_like(updated, 12.0))
+        torch.testing.assert_close(updated, torch.full_like(updated, 4.0))
         scale.fill_(5.0)
-        updated = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
-        torch.testing.assert_close(updated, torch.full_like(updated, 20.0))
+        unchanged = experts._get_kappa_bias_unsqueezed_for_eval(torch.float32, scale.device, 0)
+        assert unchanged is updated
+        torch.testing.assert_close(unchanged, torch.full_like(unchanged, 4.0))
 
 
-def test_kappa_bias_from_scale_rejects_constant_input():
-    with pytest.raises(ValueError, match="kappa_bias_from_scale"):
-        GPTConfig(kappa_bias_from_scale=True, kappa_input="constant")
-
-
-@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits"])
-def test_independent_kappa_router_rejects_bias_from_scale(kappa_input):
-    with pytest.raises(ValueError, match="independent_kappa_router and kappa_bias_from_scale"):
-        GPTConfig(
-            use_kappa_swiglu=True, independent_kappa_router=True,
-            kappa_bias_from_scale=True, kappa_input=kappa_input,
-        )
-
-
-@pytest.mark.parametrize("derived_bias", [False, True])
-def test_kappa_bias_from_scale_skips_bias_regularization_but_keeps_scale(derived_bias):
+def test_kappa_bias_and_scale_are_regularized_independently():
     config = GPTConfig(
         n_exp=2, n_embd=4, use_kappa_swiglu=True,
-        kappa_bias_from_scale=derived_bias,
     )
     experts = Qwen3MLPExperts(config)
     with torch.no_grad():
         experts.kappa_scale.fill_(3.0)
-        if derived_bias:
-            experts.kappa_bias_alpha.fill_(2.0)
-        else:
-            experts.kappa_bias.fill_(6.0)
+        experts.kappa_bias.fill_(6.0)
     accum = MOEManager()
     experts._accumulate_kappa_bias_l2_losses(experts._materialize_kappa_bias(), loss_accum=accum)
     experts._accumulate_kappa_scale_l2_losses(experts._materialize_kappa_scale(), loss_accum=accum)
     bias_loss = accum.aggregate("kappa_bias_l2_loss")
-    if derived_bias:
-        assert bias_loss == 0
-    else:
-        assert bias_loss.item() == 36.0
+    assert bias_loss.item() == 36.0
     scale_loss = accum.aggregate("kappa_scale_l2_loss")
     assert scale_loss.item() == 9.0
     scale_loss.backward()
     assert experts.kappa_scale.grad.abs().sum() > 0
-    if derived_bias:
-        assert experts.kappa_bias_alpha.grad is None
+    assert experts.kappa_bias.grad is None
 
 
 def test_gate_activation_stats_match_logged_formulas():

@@ -68,22 +68,21 @@ def test_task_kappa_checkpoint_keeps_two_slots_when_loop_count_changes(total_ut_
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
 @pytest.mark.parametrize('dense_kappa', [False, True])
-def test_kappa_bias_from_scale_checkpoint_round_trip(granularity, dense_kappa):
+def test_kappa_bias_and_scale_checkpoint_round_trip(granularity, dense_kappa):
     from nanochat.gpt import GPT
 
     config = GPTConfig(
         n_layer=3, n_head=2, n_embd=16, vocab_size=32, n_exp=2,
         moe_start_layer=1, total_ut_steps=3, use_kappa_swiglu=True,
-        kappa_bias_from_scale=True, constant_kappa_bias_dense_layers=dense_kappa,
+        constant_kappa_bias_dense_layers=dense_kappa,
         separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
     )
     model = GPT(config)
     model.init_weights()
     for layer_idx in (1, 2):
         experts = model.transformer.h[layer_idx].mlp.experts
-        assert experts.kappa_bias_alpha.item() == 1.0
         with torch.no_grad():
-            experts.kappa_bias_alpha.fill_(float(layer_idx))
+            experts._get_kappa_bias_parameter().fill_(float(layer_idx))
             experts._get_kappa_scale_parameter().fill_(3.0)
     model_data = model.state_dict()
     _patch_missing_keys(model_data, config)
@@ -94,15 +93,14 @@ def test_kappa_bias_from_scale_checkpoint_round_trip(granularity, dense_kappa):
         experts = restored.transformer.h[layer_idx].mlp.experts
         torch.testing.assert_close(
             experts._materialize_kappa_bias(1),
-            torch.full((2, 64), 3.0 * layer_idx),
+            torch.full((2, 64), 4.0 if granularity == 'global' else 2.0 * layer_idx),
         )
+        torch.testing.assert_close(experts._materialize_kappa_scale(1), torch.full((2, 64), 6.0))
     missing_data = {}
     _patch_missing_keys(missing_data, config)
-    assert "transformer.h.1.mlp.experts.kappa_bias" not in missing_data
-    assert missing_data["transformer.h.1.mlp.experts.kappa_bias_alpha"].ndim == 0
-    assert missing_data["transformer.h.1.mlp.experts.kappa_bias_alpha"].item() == 1.0
-    if granularity == 'global' and not dense_kappa:
-        assert 'global_kappa_bias' not in missing_data
+    bias_key = 'global_kappa_bias' if granularity == 'global' else "transformer.h.1.mlp.experts.kappa_bias"
+    assert missing_data[bias_key].shape[0] == 2
+    assert missing_data[bias_key].count_nonzero() == 0
 
 
 def test_task_kappa_optimizer_state_stays_replicated_when_world_size_changes():

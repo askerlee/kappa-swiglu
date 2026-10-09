@@ -61,26 +61,23 @@ def test_kappa_uses_same_slot_for_all_ut_passes(separate_base_sft_kappa, trainin
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
-@pytest.mark.parametrize('independent_router,bias_from_scale', [(False, False), (False, True), (True, False)])
-def test_task_kappa_residual_values_and_gradients(granularity, independent_router, bias_from_scale):
+@pytest.mark.parametrize('independent_router', [False, True])
+def test_task_kappa_residual_values_and_gradients(granularity, independent_router):
     config = GPTConfig(
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, use_kappa_swiglu=True,
         constant_kappa_bias_dense_layers=True, separate_base_sft_kappa=True,
         global_kappa_param_granularity=granularity,
-        independent_kappa_router=independent_router, kappa_bias_from_scale=bias_from_scale,
+        independent_kappa_router=independent_router,
     )
     model = GPT(config)
     model.init_weights()
     dense = model.transformer.h[0].mlp
     experts = model.transformer.h[1].mlp.experts
     materializers = [(dense._get_kappa_bias_parameter(), dense._materialize_kappa_bias)]
-    if not bias_from_scale:
-        materializers.append((experts._get_kappa_bias_parameter(), experts._materialize_kappa_bias))
+    materializers.append((experts._get_kappa_bias_parameter(), experts._materialize_kappa_bias))
     if not independent_router:
         materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_scale))
-        if bias_from_scale:
-            materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_bias))
     for parameter, materialize in materializers:
         with torch.no_grad():
             parameter[0].fill_(0.3)

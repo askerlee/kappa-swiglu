@@ -287,8 +287,6 @@ parser.add_argument("--constant-kappa-dense-layers", dest="constant_kappa_dense_
 parser.add_argument("--global-kappa-granularity", dest="global_kappa_granularity", type=str, default="per-gate",
                     choices=["per-gate", "per-expert", "per-layer", "global"],
                     help="sharing granularity for MoE kappa_bias: per-gate (default), per-expert, per-layer, or global")
-parser.add_argument("--kappa-bias-from-scale", type=str2bool, nargs='?', const=True, default=False,
-                    help="derive MoE kappa_bias as a learned scalar alpha per layer times kappa_scale (alpha starts at one and is shared across UT/task slots)")
 parser.add_argument("--disable-kappa-bias", type=str2bool, nargs='?', const=True, default=False,
                     help="force effective kappa bias to zero while keeping kappa scale enabled")
 parser.add_argument("--kappa-start-layer", dest="kappa_start_layer", type=int, default=2,
@@ -311,7 +309,7 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
-                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.001 with --independent-kappa-router, which uses 10x this weight for kappa_bias; otherwise 0.002 with --kappa-bias-from-scale; derived kappa_bias is not regularized)")
+                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.001 with --independent-kappa-router, which uses 10x this weight for kappa_bias)")
 parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1,
                     help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
 parser.add_argument("--kappa-router-sft-l2-loss-weight", type=float, default=0.001,
@@ -413,8 +411,8 @@ parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=Fal
 args = parser.parse_args()
 if args.kappa_router_sft_l2_loss_weight < 0:
     raise ValueError("--kappa-router-sft-l2-loss-weight must be >= 0")
-if (args.kappa_bias_from_scale or args.independent_kappa_router) and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
-    args.kappa_l2_loss_weight = 0.001 if args.independent_kappa_router else 0.002
+if args.independent_kappa_router and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
+    args.kappa_l2_loss_weight = 0.001
 
 if args.separate_base_sft_kappa:
     args.use_kappa_swiglu = True
@@ -670,7 +668,6 @@ def build_model_meta(depth):
         dense_kappa_slope_max_scale=args.dense_kappa_slope_max_scale,
         constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
         global_kappa_param_granularity=args.global_kappa_granularity,
-        kappa_bias_from_scale=args.kappa_bias_from_scale,
         disable_kappa_bias=args.disable_kappa_bias,
         kappa_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
@@ -1479,10 +1476,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
                 has_cached_scale = experts._cached_kappa_scale is not None
-                has_bias_stats = experts.use_kappa_swiglu and (
-                    not (experts.independent_kappa_router and experts.kappa_bias_from_scale)
-                    or has_cached_scale
-                )
+                has_bias_stats = experts.use_kappa_swiglu
                 has_scale_stats = experts.use_kappa_scale_param or has_cached_scale
                 if has_bias_stats:
                     exp_kappa_bias = experts._materialize_kappa_bias()

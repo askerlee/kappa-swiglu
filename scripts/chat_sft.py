@@ -820,10 +820,7 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 router_row_norms.append(router_row_norm)
                 losses[f'router_row_norm_{i}'] = router_row_norm.mean().item()
                 exp_gate_weight = layer.mlp.experts.gate_proj
-                has_bias_stats = layer.mlp.experts.use_kappa_swiglu and (
-                    not (layer.mlp.experts.independent_kappa_router and layer.mlp.experts.kappa_bias_from_scale)
-                    or layer.mlp.experts._cached_kappa_scale is not None
-                )
+                has_bias_stats = layer.mlp.experts.use_kappa_swiglu
                 if has_bias_stats:
                     exp_kappa_bias = layer.mlp.experts._materialize_kappa_bias()
                     losses[f'kappa_bias_mean_{i}'] = exp_kappa_bias.float().nanmean().item()

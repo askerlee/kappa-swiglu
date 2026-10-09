@@ -129,11 +129,7 @@ outputs. The predictor gathers raw outputs for those selected experts and
 uses `kappa_bias + predicted_kappa_scale` as the activation conditioning.
 There is no additional learned `kappa_scale` multiplier, softmax, or logit
 normalization in this mode; `top_logits` and `router_probs` behave identically.
-With `--kappa-bias-from-scale`, bias is `kappa_bias_alpha * predicted_kappa_scale`,
-so conditioning is `(1 + kappa_bias_alpha) * predicted_kappa_scale`.
-The scalar alpha remains learnable; no separate bias or scale parameter is
-allocated. Static bias/scale regularization is skipped for this token-dependent
-bias. Diagnostics use detached predictor logits cached from the latest forward,
+Diagnostics use detached predictor logits cached from the latest forward,
 excluding padding and unused expert slots. Constant conditioning is unsupported.
 
 Predictor weights receive full gradients. Only the predictor's gradient path

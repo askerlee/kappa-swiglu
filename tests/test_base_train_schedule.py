@@ -48,10 +48,10 @@ def test_kappa_router_lr_delay_is_applied_in_all_training_scripts():
             assert parameter.grad is not None
 
 
-def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
+def test_independent_kappa_router_overrides_only_implicit_default_l2_weight():
     cases = [
         (False, [], 0.01, 0.01),
-        (True, [], 0.01, 0.002),
+        (True, [], 0.01, 0.001),
         (True, ["--kappa-l2-loss-weight", "0.01"], 0.01, 0.01),
         (True, ["--kappa-l2-loss-weight=0.01"], 0.01, 0.01),
         (True, ["--kappa-l2-loss-weight", "0.02"], 0.02, 0.02),
@@ -72,25 +72,42 @@ def test_kappa_bias_from_scale_overrides_only_implicit_default_l2_weight():
             node for node in module.body
             if isinstance(node, ast.If)
             and any(
-                isinstance(child, ast.Attribute) and child.attr == "kappa_bias_from_scale"
+                isinstance(child, ast.Attribute) and child.attr == "independent_kappa_router"
                 for child in ast.walk(node.test)
             )
+            and any(isinstance(child, ast.Name) and child.id == "arg_was_explicitly_set" for child in ast.walk(node.test))
         )
         adjustment_module = ast.Module(body=[adjustment], type_ignores=[])
-        for independent_router in (False, True):
-            for enabled, argv, weight, expected in cases:
-                args = SimpleNamespace(
-                    kappa_bias_from_scale=enabled,
-                    independent_kappa_router=independent_router,
-                    kappa_l2_loss_weight=weight,
-                )
-                namespace = {
-                    "args": args,
-                    "sys": SimpleNamespace(argv=[str(script), *argv]),
-                    "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
-                }
-                exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
-                assert args.kappa_l2_loss_weight == (0.001 if independent_router and not argv else expected)
+        for enabled, argv, weight, expected in cases:
+            args = SimpleNamespace(
+                independent_kappa_router=enabled,
+                kappa_l2_loss_weight=weight,
+            )
+            namespace = {
+                "args": args,
+                "sys": SimpleNamespace(argv=[str(script), *argv]),
+                "arg_was_explicitly_set": load_function_from_script("arg_was_explicitly_set", script),
+            }
+            exec(compile(adjustment_module, filename=str(script), mode="exec"), namespace)
+            assert args.kappa_l2_loss_weight == expected
+
+
+def test_removed_bias_from_scale_option_is_rejected():
+    import argparse
+
+    for script in (BASE_TRAIN, BASE_TRAIN_MIX):
+        module = ast.parse(script.read_text(), filename=str(script))
+        parser = argparse.ArgumentParser()
+        for node in module.body:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "add_argument"
+            ):
+                parser.add_argument(ast.literal_eval(node.value.args[0]))
+        _, unknown = parser.parse_known_args(["--kappa-bias-from-scale"])
+        assert unknown == ["--kappa-bias-from-scale"]
 
 
 def test_independent_kappa_router_bias_l2_weight_is_ten_times_base_weight():

@@ -843,10 +843,10 @@ def test_setup_optimizer_places_kappa_params_in_scaled_adamw_group():
     assert kappa_bias_group['lr_scale_warmup_iterations'] == 1000
 
 
-def test_kappa_bias_from_scale_shared_alpha_optimizer_updates_both_phases():
+def test_kappa_bias_optimizer_updates_residual_task_slots():
     config = GPTConfig(
         n_layer=2, moe_start_layer=1, n_exp=2, n_embd=8, n_head=2,
-        use_kappa_swiglu=True, kappa_bias_from_scale=True, separate_base_sft_kappa=True,
+        use_kappa_swiglu=True, separate_base_sft_kappa=True,
     )
     model = GPT(config)
     model.init_weights()
@@ -860,16 +860,20 @@ def test_kappa_bias_from_scale_shared_alpha_optimizer_updates_both_phases():
     assert group['kind'] == 'adamw'
     group['lr'] = 0.01
     experts = model.transformer.h[1].mlp.experts
-    alpha = experts.kappa_bias_alpha
+    bias = experts.kappa_bias
     for slot in (0, 1):
         optimizer.zero_grad(set_to_none=True)
         group['active_kappa_slot'] = slot
-        alpha.grad = torch.ones_like(alpha)
-        previous = alpha.detach().clone()
+        bias.grad = torch.ones_like(bias)
+        previous = bias.detach().clone()
         optimizer.step()
-        assert alpha.item() < previous.item()
-    assert optimizer.state[alpha]['step'] == 2
-    assert optimizer.state[alpha]['slot_steps'] == [1, 1]
+        assert torch.all(bias[slot] < previous[slot])
+        if slot == 0:
+            torch.testing.assert_close(bias[1], previous[1])
+        else:
+            assert torch.all(bias[0] < previous[0])
+    assert optimizer.state[bias]['step'] == 3
+    assert optimizer.state[bias]['slot_steps'] == [2, 1]
 
 
 def test_kappa_bias_lr_schedule_warms_then_decays_to_final_scale():
