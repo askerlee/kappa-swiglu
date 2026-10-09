@@ -261,8 +261,8 @@ parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', con
                     help="allocate kappa SwiGLU parameters but use them only on mixed chat-SFT iterations")
 parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=True,
                     help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources unless SFT-only is explicitly requested")
-parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
-                    help="router confidence signal used by kappa_bias: raw selected logits, top-k router probabilities, or a constant value")
+parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant", "gate_proj"],
+                    help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=False,
                     help="predict kappa scales directly with a separate projection; scale only its input-latent gradients by 0.1")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,

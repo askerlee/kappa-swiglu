@@ -10,6 +10,84 @@ from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Rout
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('training', [False, True])
+@pytest.mark.parametrize('kappa_slot', [0, 1])
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+def test_gate_proj_kappa_formula_and_gradients(monkeypatch, training, kappa_slot, granularity):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True, kappa_input='gate_proj',
+        separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
+    )
+    experts = Qwen3MLPExperts(config)
+    if granularity == 'global':
+        experts.bind_shared_kappa_bias(torch.nn.Parameter(torch.empty(2, 1)))
+        experts.bind_shared_kappa_scale(torch.nn.Parameter(torch.empty(2, 1)))
+    experts.kappa_phase = kappa_slot
+    experts.train(training)
+    with torch.no_grad():
+        for parameter in experts.parameters():
+            parameter.uniform_(-0.3, 0.3)
+        experts._get_kappa_bias_parameter().uniform_(-0.3, 0.3)
+        experts._get_kappa_scale_parameter().uniform_(-0.3, 0.3)
+    inputs = torch.randn(2, 3, 4, requires_grad=True)
+    scores = torch.randn(2, 3, requires_grad=True)
+    raw = torch.bmm(inputs, experts.gate_proj)
+    bias = experts._materialize_kappa_bias(kappa_slot)
+    scale = experts._materialize_kappa_scale(kappa_slot)
+    kappa_raw = scale_grad(raw, 0.1)
+    kappa = torch.exp(torch.log(experts.kappa_slope_max_scale) * torch.tanh(
+        scale.unsqueeze(1) * kappa_raw + bias.unsqueeze(1)
+    ))
+    expected = torch.bmm(
+        raw * torch.sigmoid(raw * kappa) * torch.bmm(inputs, experts.c_fc),
+        experts.c_proj,
+    )
+    actual = experts(inputs, selected_gate_scores=scores)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(experts(inputs, selected_gate_scores=scores * 7), actual)
+    torch.testing.assert_close(experts(inputs), actual)
+    parameters = (
+        inputs, experts.gate_proj,
+        experts._get_kappa_scale_parameter(), experts._get_kappa_bias_parameter(),
+    )
+    actual_grads = torch.autograd.grad(actual.sum(), (*parameters, scores), retain_graph=True, allow_unused=True)
+    expected_grads = torch.autograd.grad(expected.sum(), parameters)
+    assert actual_grads[-1] is None
+    for actual_grad, expected_grad in zip(actual_grads[:-1], expected_grads):
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+
+def test_gate_proj_kappa_dispatch_and_router_rejection(monkeypatch):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    with pytest.raises(ValueError, match='incompatible with independent_kappa_router'):
+        GPTConfig(use_kappa_swiglu=True, kappa_input='gate_proj', independent_kappa_router=True)
+    config = GPTConfig(
+        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
+        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
+        kappa_input='gate_proj',
+    )
+    model = GPT(config)
+    model.init_weights()
+    layer = model.transformer.h[0].mlp
+    assert layer.kappa_router is None
+    logits = torch.randn(4, config.moe_top_k, requires_grad=True)
+    probabilities = torch.randn_like(logits, requires_grad=True)
+    scores = layer._select_gate_confidence(logits, probabilities)
+    torch.testing.assert_close(scores, torch.ones_like(probabilities))
+    assert not scores.requires_grad
+    tokens = torch.randint(0, config.vocab_size, (1, 4))
+    with torch.no_grad():
+        layer.experts.kappa_scale.fill_(0.2)
+    loss, _ = model(tokens, tokens)
+    loss.backward()
+    assert layer.experts.kappa_scale.grad.abs().sum() > 0
+    assert layer.experts.gate_proj.grad.abs().sum() > 0
+    model.eval()
+    with torch.no_grad():
+        assert torch.isfinite(model(tokens)).all()
+
+
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('separate_slots', [False, True])
 @pytest.mark.parametrize('independent_router', [False, True])

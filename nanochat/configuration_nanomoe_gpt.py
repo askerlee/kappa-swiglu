@@ -94,7 +94,7 @@ class GPTConfig:
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
         self.separate_base_sft_kappa = bool(separate_base_sft_kappa)
-        valid_kappa_inputs = {"top_logits", "router_probs", "constant"}
+        valid_kappa_inputs = {"top_logits", "router_probs", "constant", "gate_proj"}
         if kappa_input not in valid_kappa_inputs:
             raise ValueError(
                 "kappa_input must be one of "
@@ -107,6 +107,8 @@ class GPTConfig:
         self.constant_kappa_bias_dense_layers = bool(constant_kappa_bias_dense_layers)
         self.kappa_input = kappa_input
         self.independent_kappa_router = bool(independent_kappa_router)
+        if self.independent_kappa_router and kappa_input == "gate_proj":
+            raise ValueError("gate_proj kappa_input is incompatible with independent_kappa_router")
         if self.independent_kappa_router and (
             not self.use_kappa_swiglu or not use_qwen3_moe_mlp or kappa_input == "constant"
         ):
