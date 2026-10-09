@@ -1167,7 +1167,10 @@ class Qwen3MLP(nn.Module):
         kappa_bias = self._get_kappa_bias_parameter()
         if kappa_bias is None:
             raise RuntimeError("kappa_bias was enabled but no parameter was bound")
-        kappa_bias = kappa_bias[kappa_slot]
+        if self.separate_base_sft_kappa and not getattr(self.config, 'independent_kappa_router', False) and kappa_slot == 1:
+            kappa_bias = scale_grad(kappa_bias[0], 0.1) + kappa_bias[1]
+        else:
+            kappa_bias = kappa_bias[kappa_slot]
         if self.global_kappa_param_granularity == 'per-gate':
             return kappa_bias + 0
         return kappa_bias.reshape(1).expand(self.intermediate_size) + 0
@@ -1513,7 +1516,10 @@ class Qwen3MLPExperts(nn.Module):
         kappa_bias = self._get_kappa_bias_parameter()
         if kappa_bias is None:
             raise RuntimeError("kappa_bias was enabled but no parameter was bound")
-        kappa_bias = kappa_bias[kappa_slot]
+        if self.separate_base_sft_kappa and not self.independent_kappa_router and kappa_slot == 1:
+            kappa_bias = scale_grad(kappa_bias[0], 0.1) + kappa_bias[1]
+        else:
+            kappa_bias = kappa_bias[kappa_slot]
         if self.global_kappa_param_granularity == 'per-gate':
             return kappa_bias + 0
         if self.global_kappa_param_granularity == 'per-expert':
@@ -1541,7 +1547,10 @@ class Qwen3MLPExperts(nn.Module):
         kappa_scale = self._get_kappa_scale_parameter()
         if kappa_scale is None:
             raise RuntimeError("kappa_scale was enabled but no parameter was bound")
-        kappa_scale = kappa_scale[kappa_slot]
+        if self.separate_base_sft_kappa and not self.independent_kappa_router and kappa_slot == 1:
+            kappa_scale = scale_grad(kappa_scale[0], 0.1) + kappa_scale[1]
+        else:
+            kappa_scale = kappa_scale[kappa_slot]
         if self.global_kappa_param_granularity == 'per-gate':
             return kappa_scale + 0
         if self.global_kappa_param_granularity == 'per-expert':
@@ -3006,6 +3015,7 @@ class GPT(nn.Module):
         )
         if getattr(self.config, 'separate_base_sft_kappa', False):
             param_groups[-1]['active_kappa_slot'] = self.kappa_phase
+            param_groups[-1]['residual_kappa_slots'] = not getattr(self.config, 'independent_kappa_router', False)
         param_groups.append(
             dict(
                 kind='adamw',

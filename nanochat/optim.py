@@ -71,6 +71,14 @@ def adamw_grad_delta_fused(
 
 
 def _step_kappa_slot_adamw(optimizer, group, param, grad, param_name):
+    if group.get('residual_kappa_slots') and group['active_kappa_slot'] == 1 and param.ndim > 0:
+        for slot in (0, 1):
+            _step_single_kappa_slot_adamw(optimizer, dict(group, active_kappa_slot=slot), param, grad, param_name)
+    else:
+        _step_single_kappa_slot_adamw(optimizer, group, param, grad, param_name)
+
+
+def _step_single_kappa_slot_adamw(optimizer, group, param, grad, param_name):
     state = optimizer.state[param]
     if not state:
         state['step'] = 0

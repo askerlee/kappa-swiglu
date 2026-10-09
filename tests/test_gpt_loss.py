@@ -45,9 +45,49 @@ def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
             for output in outputs[1:]:
                 torch.testing.assert_close(output, outputs[0])
             outputs[0].sum().backward()
-            inactive_slot = 1 - int(is_sft)
-            assert module.kappa_bias.grad[inactive_slot].count_nonzero() == 0
+            if is_sft:
+                torch.testing.assert_close(module.kappa_bias.grad[0], module.kappa_bias.grad[1] * 0.1)
+            else:
+                assert module.kappa_bias.grad[1].count_nonzero() == 0
             assert module.kappa_bias.grad[int(is_sft)].count_nonzero() > 0
+
+
+@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
+@pytest.mark.parametrize('independent_router,bias_from_scale', [(False, False), (False, True), (True, False)])
+def test_task_kappa_residual_values_and_gradients(granularity, independent_router, bias_from_scale):
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
+        n_exp=2, moe_start_layer=1, use_kappa_swiglu=True,
+        constant_kappa_bias_dense_layers=True, separate_base_sft_kappa=True,
+        global_kappa_param_granularity=granularity,
+        independent_kappa_router=independent_router, kappa_bias_from_scale=bias_from_scale,
+    )
+    model = GPT(config)
+    model.init_weights()
+    dense = model.transformer.h[0].mlp
+    experts = model.transformer.h[1].mlp.experts
+    materializers = [(dense._get_kappa_bias_parameter(), dense._materialize_kappa_bias)]
+    if not bias_from_scale:
+        materializers.append((experts._get_kappa_bias_parameter(), experts._materialize_kappa_bias))
+    if not independent_router:
+        materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_scale))
+        if bias_from_scale:
+            materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_bias))
+    for parameter, materialize in materializers:
+        with torch.no_grad():
+            parameter[0].fill_(0.3)
+            parameter[1].fill_(0.2)
+        for is_sft in (False, True):
+            model.set_kappa_training_phase(is_sft)
+            model.zero_grad(set_to_none=True)
+            actual = materialize()
+            expected = 0.2 if independent_router and is_sft else (0.5 if is_sft else 0.3)
+            torch.testing.assert_close(actual, torch.full_like(actual, expected))
+            actual.sum().backward()
+            if is_sft and not independent_router:
+                torch.testing.assert_close(parameter.grad[0], parameter.grad[1] * 0.1)
+            else:
+                assert parameter.grad[1 - int(is_sft)].count_nonzero() == 0
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
@@ -104,7 +144,7 @@ def test_default_kappa_layout_remains_per_ut_pass():
 
 
 @pytest.mark.parametrize('checkpointed', [False, True])
-def test_task_kappa_full_model_training_preserves_other_task(checkpointed):
+def test_task_kappa_full_model_training_updates_residual_and_base(checkpointed):
     config = GPTConfig(
         n_layer=2, n_head=2, n_embd=32, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, total_ut_steps=3,
@@ -129,13 +169,19 @@ def test_task_kappa_full_model_training_preserves_other_task(checkpointed):
         assert loss.isfinite()
         loss.backward()
         for param in group['params']:
-            assert param.grad[1 - slot].count_nonzero() == 0
+            if is_sft:
+                torch.testing.assert_close(param.grad[0], param.grad[1] * 0.1)
+            else:
+                assert param.grad[1].count_nonzero() == 0
         optimizer.step()
         model.zero_grad(set_to_none=True)
         for param, inactive_before in zip(group['params'], before):
-            torch.testing.assert_close(param[1 - slot], inactive_before, rtol=0, atol=0)
+            if is_sft:
+                assert not torch.equal(param[0], inactive_before)
+            else:
+                torch.testing.assert_close(param[1], inactive_before, rtol=0, atol=0)
     for param in group['params']:
-        assert optimizer.state[param]['slot_steps'] == [1, 1]
+        assert optimizer.state[param]['slot_steps'] == [2, 1]
 
 
 def _full_softcapped_cross_entropy(hidden_states, targets, lm_head, vocab_size, softcap, reduction):

@@ -892,7 +892,8 @@ def test_kappa_bias_from_scale_materialization_gradients_and_eval_cache(granular
         bias = experts._materialize_kappa_bias(slot)
         torch.testing.assert_close(bias, 2.0 * experts._materialize_kappa_scale(slot))
     bias.sum().backward()
-    torch.testing.assert_close(experts.kappa_bias_alpha.grad, torch.tensor(3.0 * bias.numel()))
+    expected_scale = 6.0 if separate_base_sft_kappa else 3.0
+    torch.testing.assert_close(experts.kappa_bias_alpha.grad, torch.tensor(expected_scale * bias.numel()))
     assert scale.grad[-1].abs().sum() > 0
     experts.eval()
     with torch.no_grad():

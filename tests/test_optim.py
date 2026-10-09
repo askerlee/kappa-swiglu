@@ -25,10 +25,12 @@ def load_base_train_function(name: str):
 
 
 @pytest.mark.parametrize('optimizer_class', [MuonAdamW, AuroraAdamW])
-def test_separate_kappa_adamw_preserves_inactive_slot_and_state(optimizer_class):
+@pytest.mark.parametrize('residual_slots', [False, True])
+def test_separate_kappa_adamw_preserves_inactive_slot_and_state(optimizer_class, residual_slots):
     param = torch.nn.Parameter(torch.ones(2, 4))
     group = dict(kind='adamw', params=[param], lr=0.1, betas=(0.9, 0.95),
-                 eps=1e-8, weight_decay=0.01, active_kappa_slot=0)
+                 eps=1e-8, weight_decay=0.01, active_kappa_slot=0,
+                 residual_kappa_slots=residual_slots, debug_param_names=['kappa_bias'])
     optimizer = optimizer_class([group])
     for slot in (0, 1, 0):
         optimizer.param_groups[0]['active_kappa_slot'] = slot
@@ -38,11 +40,16 @@ def test_separate_kappa_adamw_preserves_inactive_slot_and_state(optimizer_class)
         moments_before = None if not previous_state else previous_state['exp_avg'][inactive].clone()
         param.grad = torch.zeros_like(param)
         param.grad[slot].fill_(0.2)
+        if residual_slots and slot == 1:
+            param.grad[0].fill_(0.02)
         optimizer.step()
-        torch.testing.assert_close(param[inactive], before, rtol=0, atol=0)
-        if moments_before is not None:
-            torch.testing.assert_close(optimizer.state[param]['exp_avg'][inactive], moments_before, rtol=0, atol=0)
-    assert optimizer.state[param]['slot_steps'] == [2, 1]
+        if residual_slots and slot == 1:
+            assert not torch.equal(param[0], before)
+        else:
+            torch.testing.assert_close(param[inactive], before, rtol=0, atol=0)
+            if moments_before is not None:
+                torch.testing.assert_close(optimizer.state[param]['exp_avg'][inactive], moments_before, rtol=0, atol=0)
+    assert optimizer.state[param]['slot_steps'] == [3 if residual_slots else 2, 1]
 
     restored_param = torch.nn.Parameter(param.detach().clone())
     restored = optimizer_class([dict(group, params=[restored_param])])
@@ -51,17 +58,24 @@ def test_separate_kappa_adamw_preserves_inactive_slot_and_state(optimizer_class)
     before = restored_param[0].detach().clone()
     restored_param.grad = torch.zeros_like(restored_param)
     restored_param.grad[1].fill_(0.2)
+    if residual_slots:
+        restored_param.grad[0].fill_(0.02)
     restored.step()
-    torch.testing.assert_close(restored_param[0], before, rtol=0, atol=0)
-    assert restored.state[restored_param]['slot_steps'] == [2, 2]
+    if residual_slots:
+        assert not torch.equal(restored_param[0], before)
+    else:
+        torch.testing.assert_close(restored_param[0], before, rtol=0, atol=0)
+    assert restored.state[restored_param]['slot_steps'] == [4 if residual_slots else 2, 2]
 
 
 @pytest.mark.parametrize('optimizer_class', [DistMuonAdamW, DistAuroraAdamW])
-def test_distributed_kappa_slots_use_replicated_state_and_skip_missing_grad(optimizer_class, monkeypatch):
+@pytest.mark.parametrize('residual_slots', [False, True])
+def test_distributed_kappa_slots_use_replicated_state_and_skip_missing_grad(optimizer_class, monkeypatch, residual_slots):
     param = torch.nn.Parameter(torch.ones(2, 1024))
     optimizer = optimizer_class([
         dict(kind='adamw', params=[param], lr=0.1, betas=(0.9, 0.95),
-             eps=1e-8, weight_decay=0.0, active_kappa_slot=0),
+               eps=1e-8, weight_decay=0.0, active_kappa_slot=0,
+               residual_kappa_slots=residual_slots, debug_param_names=['kappa_bias']),
     ])
 
     class DoneFuture:
@@ -78,20 +92,25 @@ def test_distributed_kappa_slots_use_replicated_state_and_skip_missing_grad(opti
         group['active_kappa_slot'] = slot
         param.grad = torch.zeros_like(param)
         param.grad[slot].fill_(0.2)
+        if residual_slots and slot == 1:
+            param.grad[0].fill_(0.02)
         before = param[1 - slot].detach().clone()
         info = optimizer._reduce_adamw(group, world_size=4)
         assert info['param_infos'][param]['is_small']
         with torch.no_grad():
             optimizer._compute_adamw(group, info, [], rank=3, world_size=4)
-        torch.testing.assert_close(param[1 - slot], before, rtol=0, atol=0)
-    assert optimizer.state[param]['slot_steps'] == [2, 1]
+        if residual_slots and slot == 1:
+            assert not torch.equal(param[0], before)
+        else:
+            torch.testing.assert_close(param[1 - slot], before, rtol=0, atol=0)
+    assert optimizer.state[param]['slot_steps'] == [3 if residual_slots else 2, 1]
     param.grad = None
     before = param.detach().clone()
     info = optimizer._reduce_adamw(group, world_size=4)
     with torch.no_grad():
         optimizer._compute_adamw(group, info, [], rank=3, world_size=4)
     torch.testing.assert_close(param, before, rtol=0, atol=0)
-    assert optimizer.state[param]['slot_steps'] == [2, 1]
+    assert optimizer.state[param]['slot_steps'] == [3 if residual_slots else 2, 1]
 
 
 @pytest.mark.parametrize('optimizer_class,kind', [
