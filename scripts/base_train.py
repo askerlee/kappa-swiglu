@@ -238,7 +238,7 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
-parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=True,
+parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
                     help="allocate base/SFT kappa slots shared across UT passes; base training uses slot 0")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant", "gate_proj"],
                     help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")

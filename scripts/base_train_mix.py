@@ -259,7 +259,7 @@ parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, 
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
 parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', const=True, default=False,
                     help="allocate kappa SwiGLU parameters but use them only on mixed chat-SFT iterations")
-parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=True,
+parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
                     help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources unless SFT-only is explicitly requested")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant", "gate_proj"],
                     help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")
