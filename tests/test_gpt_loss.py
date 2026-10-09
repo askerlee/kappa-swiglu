@@ -7,29 +7,33 @@ from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, _UTLossAccum, _chunked_cross_entropy, _get_loss_chunk_tokens, SoftcapInPlace
 
 
-def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
+@pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
+@pytest.mark.parametrize('training', [False, True])
+def test_kappa_uses_same_slot_for_all_ut_passes(separate_base_sft_kappa, training):
     config = GPTConfig(
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, total_ut_steps=3,
         use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
-        separate_base_sft_kappa=True,
+        separate_base_sft_kappa=separate_base_sft_kappa,
     )
     model = GPT(config)
     model.init_weights()
+    model.train(training)
     dense = model.transformer.h[0].mlp
     experts = model.transformer.h[1].mlp.experts
     inputs = torch.randn(2, 2, 16)
     for module in (dense, experts):
-        assert module.kappa_bias.shape[0] == 2
+        assert module.kappa_bias.shape[0] == (2 if separate_base_sft_kappa else 1)
         assert not any('ema_rms' in name for name in module.state_dict())
         with torch.no_grad():
             module.kappa_bias[0].fill_(-0.4)
-            module.kappa_bias[1].fill_(0.4)
+            if separate_base_sft_kappa:
+                module.kappa_bias[1].fill_(0.4)
             if module is dense:
                 module.c_proj.weight.fill_(0.1)
             else:
                 module.c_proj.fill_(0.1)
-    assert experts.kappa_scale.shape[0] == 2
+    assert experts.kappa_scale.shape[0] == (2 if separate_base_sft_kappa else 1)
     for is_sft in (False, True):
         model.set_kappa_training_phase(is_sft)
         model.zero_grad(set_to_none=True)
@@ -37,19 +41,23 @@ def test_separate_base_sft_kappa_uses_same_slot_for_all_ut_passes():
             outputs = []
             for current_ut in range(3):
                 accum = _UTLossAccum(inputs, 2, 2)
-                if module is dense:
-                    output = module(inputs, loss_accum=accum, current_ut=current_ut)
-                else:
-                    output = module(inputs, torch.ones(2, 2), loss_accum=accum, current_ut=current_ut)
+                with torch.set_grad_enabled(training):
+                    if module is dense:
+                        output = module(inputs, loss_accum=accum, current_ut=current_ut)
+                    else:
+                        output = module(inputs, torch.ones(2, 2), loss_accum=accum, current_ut=current_ut)
                 outputs.append(output)
             for output in outputs[1:]:
                 torch.testing.assert_close(output, outputs[0])
+            if not training:
+                continue
             outputs[0].sum().backward()
-            if is_sft:
+            if separate_base_sft_kappa and is_sft:
                 torch.testing.assert_close(module.kappa_bias.grad[0], module.kappa_bias.grad[1] * 0.1)
-            else:
+            elif separate_base_sft_kappa:
                 assert module.kappa_bias.grad[1].count_nonzero() == 0
-            assert module.kappa_bias.grad[int(is_sft)].count_nonzero() > 0
+            slot = int(is_sft) if separate_base_sft_kappa else 0
+            assert module.kappa_bias.grad[slot].count_nonzero() > 0
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
@@ -133,14 +141,15 @@ def test_separate_kappa_eval_cache_and_reference_slots(granularity):
     assert restored.transformer.h[1].mlp.experts._get_kappa_bias_parameter().shape[0] == 2
 
 
-def test_default_kappa_layout_remains_per_ut_pass():
+def test_default_kappa_layout_is_shared_across_ut_passes():
     config = GPTConfig(
         n_layer=2, n_head=2, n_embd=16, n_exp=2, moe_start_layer=1,
         total_ut_steps=3, use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
     )
     model = GPT(config)
-    assert model.transformer.h[0].mlp.kappa_bias.shape[0] == 3
-    assert model.transformer.h[1].mlp.experts.kappa_bias.shape[0] == 3
+    assert model.transformer.h[0].mlp.kappa_bias.shape[0] == 1
+    assert model.transformer.h[1].mlp.experts.kappa_bias.shape[0] == 1
+    assert model.transformer.h[1].mlp.experts.kappa_scale.shape[0] == 1
 
 
 @pytest.mark.parametrize('checkpointed', [False, True])

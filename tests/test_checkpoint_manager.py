@@ -613,9 +613,9 @@ def test_patch_missing_keys_initializes_newly_enabled_kappa_parameters_to_zero()
     dense_bias = model_data["transformer.h.0.mlp.kappa_bias"]
     expert_bias = model_data["transformer.h.1.mlp.experts.kappa_bias"]
     expert_scale = model_data["transformer.h.1.mlp.experts.kappa_scale"]
-    assert dense_bias.shape == (2, 16)
-    assert expert_bias.shape == (2, 2, 16)
-    assert expert_scale.shape == (2, 2, 16)
+    assert dense_bias.shape == (1, 16)
+    assert expert_bias.shape == (1, 2, 16)
+    assert expert_scale.shape == (1, 2, 16)
     assert torch.count_nonzero(dense_bias) == 0
     assert torch.count_nonzero(expert_bias) == 0
     assert torch.count_nonzero(expert_scale) == 0
@@ -675,7 +675,7 @@ def test_override_kappa_bias_fill_value_keeps_rank1_residual_checkpoint_loadable
     )
 
 
-def test_patch_missing_keys_resizes_kappa_parameters_for_ut_passes():
+def test_patch_missing_keys_collapses_legacy_ut_kappa_parameters_to_first_slot():
     config = GPTConfig(
         n_layer=2,
         moe_start_layer=1,
@@ -699,21 +699,21 @@ def test_patch_missing_keys_resizes_kappa_parameters_for_ut_passes():
     _patch_missing_keys(model_data, config)
 
     torch.testing.assert_close(
-        model_data["transformer.h.0.mlp.kappa_bias"], dense_bias.repeat(3, 1)
+        model_data["transformer.h.0.mlp.kappa_bias"], dense_bias.unsqueeze(0)
     )
     torch.testing.assert_close(
         model_data["transformer.h.1.mlp.experts.kappa_bias"],
-        torch.cat((moe_bias, moe_bias[-1:])),
+        moe_bias[:1],
     )
     torch.testing.assert_close(
         model_data["transformer.h.1.mlp.experts.kappa_scale"],
-        torch.cat((moe_scale, moe_scale[-1:])),
+        moe_scale[:1],
     )
     torch.testing.assert_close(
-        model_data["global_kappa_bias"], torch.full((3, 1), 0.25)
+        model_data["global_kappa_bias"], torch.full((1, 1), 0.25)
     )
     torch.testing.assert_close(
-        model_data["global_kappa_scale"], torch.full((3, 1), 0.5)
+        model_data["global_kappa_scale"], torch.full((1, 1), 0.5)
     )
 
 

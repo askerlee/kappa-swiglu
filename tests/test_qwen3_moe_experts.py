@@ -2146,7 +2146,6 @@ def test_gpt_total_ut_steps_averages_kappa_l2_from_model_forward():
     with torch.no_grad():
         kappa_bias = model.transformer.h[0].mlp.experts.kappa_bias
         kappa_bias[0].fill_(2.0)
-        kappa_bias[1].fill_(-2.0)
 
     idx = torch.randint(0, config.vocab_size, (2, 4))
     targets = torch.randint(0, config.vocab_size, (2, 4))
@@ -2883,7 +2882,7 @@ def test_kappa_bias_has_expected_shape_when_enabled():
     assert experts.kappa_bias is not None
     assert experts.kappa_bias.ndim == 3
     assert experts.kappa_bias.shape == (
-        config.total_ut_steps,
+        1,
         config.n_exp,
         4 * config.n_embd,
     )
@@ -2913,7 +2912,7 @@ def test_kappa_bias_materializes_expected_shape_for_local_granularities(
     experts = Qwen3MLPExperts(config)
 
     assert experts.kappa_bias is not None
-    assert tuple(experts.kappa_bias.shape) == (config.total_ut_steps, *parameter_shape)
+    assert tuple(experts.kappa_bias.shape) == (1, *parameter_shape)
     assert tuple(experts._materialize_kappa_bias().shape) == expected_materialized_shape
 
 
@@ -2937,7 +2936,7 @@ def test_kappa_bias_materialization_broadcasts_per_expert_values():
     torch.testing.assert_close(materialized[2], torch.full((16,), 3.0))
 
 
-def test_kappa_bias_selects_and_backprops_only_the_current_ut_pass():
+def test_kappa_parameters_accumulate_gradients_in_one_shared_ut_slot():
     config = GPTConfig(
         n_exp=2,
         n_embd=4,
@@ -2948,24 +2947,23 @@ def test_kappa_bias_selects_and_backprops_only_the_current_ut_pass():
     )
     experts = Qwen3MLPExperts(config)
     with torch.no_grad():
-        experts.kappa_bias.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
-        experts.kappa_scale.copy_(torch.tensor([[5.0, 6.0], [7.0, 8.0]]))
+        experts.kappa_bias.copy_(torch.tensor([[1.0, 2.0]]))
+        experts.kappa_scale.copy_(torch.tensor([[5.0, 6.0]]))
 
-    materialized_bias = experts._materialize_kappa_bias(kappa_slot=1)
-    materialized_scale = experts._materialize_kappa_scale(kappa_slot=1)
-    torch.testing.assert_close(materialized_bias[0], torch.full((16,), 3.0))
-    torch.testing.assert_close(materialized_bias[1], torch.full((16,), 4.0))
-    torch.testing.assert_close(materialized_scale[0], torch.full((16,), 7.0))
-    torch.testing.assert_close(materialized_scale[1], torch.full((16,), 8.0))
+    for current_ut in range(config.total_ut_steps):
+        materialized_bias = experts._materialize_kappa_bias()
+        materialized_scale = experts._materialize_kappa_scale()
+        torch.testing.assert_close(materialized_bias[0], torch.full((16,), 1.0))
+        torch.testing.assert_close(materialized_bias[1], torch.full((16,), 2.0))
+        torch.testing.assert_close(materialized_scale[0], torch.full((16,), 5.0))
+        torch.testing.assert_close(materialized_scale[1], torch.full((16,), 6.0))
+        (materialized_bias.sum() + materialized_scale.sum()).backward()
 
-    (materialized_bias.sum() + materialized_scale.sum()).backward()
-    torch.testing.assert_close(experts.kappa_bias.grad[0], torch.zeros(2))
-    torch.testing.assert_close(experts.kappa_bias.grad[1], torch.full((2,), 16.0))
-    torch.testing.assert_close(experts.kappa_scale.grad[0], torch.zeros(2))
-    torch.testing.assert_close(experts.kappa_scale.grad[1], torch.full((2,), 16.0))
+    torch.testing.assert_close(experts.kappa_bias.grad, torch.full((1, 2), 32.0))
+    torch.testing.assert_close(experts.kappa_scale.grad, torch.full((1, 2), 32.0))
 
 
-def test_dense_kappa_bias_selects_only_the_current_ut_pass():
+def test_dense_kappa_bias_has_one_shared_ut_slot():
     config = GPTConfig(
         n_embd=4,
         total_ut_steps=2,
@@ -2976,14 +2974,14 @@ def test_dense_kappa_bias_selects_only_the_current_ut_pass():
     )
     mlp = Qwen3MLP(config)
     with torch.no_grad():
-        mlp.kappa_bias.copy_(torch.tensor([[1.0], [2.0]]))
+        mlp.kappa_bias.fill_(2.0)
 
-    materialized = mlp._materialize_kappa_bias(kappa_slot=1)
+    assert mlp.kappa_bias.shape == (1, 1)
+    materialized = mlp._materialize_kappa_bias()
     torch.testing.assert_close(materialized, torch.full((16,), 2.0))
 
     materialized.sum().backward()
-    torch.testing.assert_close(mlp.kappa_bias.grad[0], torch.zeros(1))
-    torch.testing.assert_close(mlp.kappa_bias.grad[1], torch.full((1,), 16.0))
+    torch.testing.assert_close(mlp.kappa_bias.grad, torch.full((1, 1), 16.0))
 
 
 def test_kappa_bias_global_granularity_shares_one_parameter_across_layers():
@@ -2997,6 +2995,7 @@ def test_kappa_bias_global_granularity_shares_one_parameter_across_layers():
         n_exp=2,
         n_embd=8,
         n_head=2,
+        total_ut_steps=3,
         use_aux_loss=False,
         use_router_z_loss=False,
         use_kappa_swiglu=True,
@@ -3012,7 +3011,8 @@ def test_kappa_bias_global_granularity_shares_one_parameter_across_layers():
     ]
 
     assert model.global_kappa_bias is not None
-    assert tuple(model.global_kappa_bias.shape) == (config.total_ut_steps, 1)
+    assert tuple(model.global_kappa_bias.shape) == (1, 1)
+    assert tuple(model.global_kappa_scale.shape) == (1, 1)
     assert all(experts.kappa_bias is None for experts in moe_experts)
     assert all(experts._get_kappa_bias_parameter() is model.global_kappa_bias for experts in moe_experts)
     assert all(tuple(experts._materialize_kappa_bias().shape) == (config.n_exp, 4 * config.n_embd) for experts in moe_experts)

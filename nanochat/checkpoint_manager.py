@@ -241,8 +241,7 @@ def _resize_ut_kappa_parameter(value, base_shape, total_ut_steps, name):
 
 
 def _resize_ut_kappa_parameters(model_data, model_config, total_ut_steps):
-    if getattr(model_config, "separate_base_sft_kappa", False):
-        total_ut_steps = 2
+    total_ut_steps = 2 if getattr(model_config, "separate_base_sft_kappa", False) else 1
     granularity = getattr(model_config, "global_kappa_param_granularity", "per-gate")
     intermediate_size = 4 * model_config.n_embd
     moe_layer_indices = set(get_moe_layer_indices(model_config))
@@ -281,7 +280,7 @@ def _patch_missing_keys(model_data, model_config):
     )
     n_layer = model_config.n_layer
     total_ut_steps = int(getattr(model_config, "total_ut_steps", 1) or 1)
-    num_kappa_slots = 2 if getattr(model_config, "separate_base_sft_kappa", False) else total_ut_steps
+    num_kappa_slots = 2 if getattr(model_config, "separate_base_sft_kappa", False) else 1
     granularity = getattr(model_config, "global_kappa_param_granularity", "per-gate")
     intermediate_size = 4 * model_config.n_embd
     moe_layer_indices = set(get_moe_layer_indices(model_config))

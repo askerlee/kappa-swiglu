@@ -1083,9 +1083,8 @@ class Qwen3MLP(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.config = config
-        self.total_ut_steps = int(getattr(config, 'total_ut_steps', 1) or 1)
         self.separate_base_sft_kappa = bool(getattr(config, 'separate_base_sft_kappa', False))
-        self.num_kappa_slots = 2 if self.separate_base_sft_kappa else self.total_ut_steps
+        self.num_kappa_slots = 2 if self.separate_base_sft_kappa else 1
         self.kappa_phase = 0
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
@@ -1269,7 +1268,7 @@ class Qwen3MLP(nn.Module):
         )
 
     def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
-        kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else current_ut
+        kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         gate_out_raw = self.gate_proj(x)
         if not self.kappa_swiglu_enabled:
             gate_out = self.act_fn(gate_out_raw)
@@ -1300,9 +1299,8 @@ class Qwen3MLPExperts(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.debug = config.debug
-        self.total_ut_steps = int(getattr(config, 'total_ut_steps', 1) or 1)
         self.separate_base_sft_kappa = bool(getattr(config, 'separate_base_sft_kappa', False))
-        self.num_kappa_slots = 2 if self.separate_base_sft_kappa else self.total_ut_steps
+        self.num_kappa_slots = 2 if self.separate_base_sft_kappa else 1
         self.kappa_phase = 0
         self.n_exp = config.n_exp
         self.hidden_size = config.n_embd
@@ -1500,9 +1498,7 @@ class Qwen3MLPExperts(nn.Module):
         if self.disable_kappa_bias:
             return self.gate_proj.new_zeros(self.n_exp, self.intermediate_size)
         if kappa_slot is None:
-            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
-                self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
-            )
+            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         if not self.use_kappa_swiglu:
             return self.disabled_kappa_bias.detach().requires_grad_(True)
         if self.kappa_bias_from_scale:
@@ -1528,9 +1524,7 @@ class Qwen3MLPExperts(nn.Module):
 
     def _materialize_kappa_scale(self, kappa_slot=None, selected_gate_scores=None, valid_score_mask=None):
         if kappa_slot is None:
-            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else (
-                self._cached_kappa_scale_slot if self._cached_kappa_scale is not None else 0
-            )
+            kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         if self.use_kappa_swiglu and self.independent_kappa_router:
             if selected_gate_scores is not None:
                 cached = selected_gate_scores.detach().clone()
@@ -1942,7 +1936,7 @@ class Qwen3MLPExperts(nn.Module):
         )
 
     def forward(self, x, selected_gate_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None):
-        kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else current_ut
+        kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
         # gate_out_acts: [n_exp, capacity, intermediate_size]
@@ -2493,7 +2487,7 @@ class GPT(nn.Module):
                 bias_enabled_modules.append(mlp)
         if not bias_enabled_modules and not bias_scale_enabled_modules:
             return
-        num_kappa_slots = 2 if getattr(self.config, 'separate_base_sft_kappa', False) else self.total_ut_steps
+        num_kappa_slots = 2 if getattr(self.config, 'separate_base_sft_kappa', False) else 1
         if bias_enabled_modules:
             self.global_kappa_bias = nn.Parameter(torch.empty(num_kappa_slots, 1))
             for module in bias_enabled_modules:
