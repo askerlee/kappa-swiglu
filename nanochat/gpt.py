@@ -1357,7 +1357,7 @@ class Qwen3MLPExperts(nn.Module):
         self.use_kappa_scale_param = (
             self.use_kappa_swiglu
             and self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}
-            and not self.independent_kappa_router
+            and (not self.independent_kappa_router or self.kappa_input == 'gate_proj')
         )
         if self.use_kappa_swiglu:
             kappa_bias_shape = (self.num_kappa_slots, *self._get_kappa_bias_parameter_shape())
@@ -1365,7 +1365,10 @@ class Qwen3MLPExperts(nn.Module):
                 self.register_parameter('kappa_bias', None)
                 self.register_parameter('kappa_scale', None)
             else:
-                self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
+                if self.independent_kappa_router and self.kappa_input == 'gate_proj':
+                    self.register_parameter('kappa_bias', None)
+                else:
+                    self.kappa_bias = nn.Parameter(torch.empty(*kappa_bias_shape))
                 if self.use_kappa_scale_param:
                     self.kappa_scale = nn.Parameter(torch.empty(*kappa_bias_shape))
                 else:
@@ -1481,7 +1484,7 @@ class Qwen3MLPExperts(nn.Module):
     differences and treats the materialized bias matrix as an input tensor instead.
     '''
     def _materialize_kappa_bias(self, kappa_slot=None):
-        if self.disable_kappa_bias:
+        if self.disable_kappa_bias or (self.independent_kappa_router and self.kappa_input == 'gate_proj'):
             return self.gate_proj.new_zeros(self.n_exp, self.intermediate_size)
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
@@ -1503,7 +1506,8 @@ class Qwen3MLPExperts(nn.Module):
     def _materialize_kappa_scale(self, kappa_slot=None, selected_gate_scores=None, valid_score_mask=None):
         if kappa_slot is None:
             kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
-        if self.use_kappa_swiglu and self.independent_kappa_router:
+        #  This branch excludes gate_proj, so it belongs to the original independent-router scheme
+        if self.use_kappa_swiglu and self.independent_kappa_router and self.kappa_input != 'gate_proj':
             if selected_gate_scores is not None:
                 cached = selected_gate_scores.detach().clone()
                 if valid_score_mask is not None:
@@ -1535,7 +1539,8 @@ class Qwen3MLPExperts(nn.Module):
 
     @torch._dynamo.disable
     def _materialize_kappa_bias_for_eval(self, target_dtype, target_device, kappa_slot=0):
-        if self.disable_kappa_bias:
+        # This branch always returns a zero tensor.
+        if self.disable_kappa_bias or (self.independent_kappa_router and self.kappa_input == 'gate_proj'):
             return self._materialize_kappa_bias(kappa_slot).to(device=target_device, dtype=target_dtype)
         if not self.use_kappa_swiglu:
             return self.disabled_kappa_bias.to(device=target_device, dtype=target_dtype)
@@ -1663,7 +1668,15 @@ class Qwen3MLPExperts(nn.Module):
             else selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
         )
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
-        if self.independent_kappa_router:
+        if self.independent_kappa_router and self.kappa_input == 'gate_proj':
+            if kappa_scale is None:
+                kappa_scale = self._materialize_kappa_scale()
+            # slope_work = selected_gate_scores + slope_work * kappa_scale
+            slope_work = torch.addcmul(
+                selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1),
+                slope_work, kappa_scale.to(dtype=target_dtype).unsqueeze(1),
+            )
+        elif self.independent_kappa_router:
             slope_work = kappa_bias + slope_work
         elif self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
             if kappa_scale is None:
@@ -1697,7 +1710,16 @@ class Qwen3MLPExperts(nn.Module):
             target_dtype,
             kappa_bias.device,
         )
-        if self.independent_kappa_router:
+        if self.independent_kappa_router and self.kappa_input == 'gate_proj':
+            kappa_scale = self._get_kappa_scale_unsqueezed_for_eval(
+                target_dtype, gate_out_raw.device, kappa_slot
+            )
+            # slope_work = selected_gate_scores + slope_work * kappa_scale
+            slope_work = torch.addcmul(
+                selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1),
+                slope_work, kappa_scale,
+            )
+        elif self.independent_kappa_router:
             slope_work = kappa_bias + slope_work
         elif self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
             kappa_scale = self._get_kappa_scale_unsqueezed_for_eval(
@@ -1914,16 +1936,28 @@ class Qwen3MLPExperts(nn.Module):
         if self.kappa_swiglu_enabled and (
             selected_gate_scores is not None or self.kappa_input == 'gate_proj'
         ):
-            if self.independent_kappa_router:
+            if self.independent_kappa_router and self.kappa_input != 'gate_proj':
                 selected_gate_scores = self._materialize_kappa_scale(
                     kappa_slot, selected_gate_scores=selected_gate_scores,
                     valid_score_mask=valid_score_mask,
                 )
             if self.training:
                 kappa_bias = self._materialize_kappa_bias(kappa_slot)
-                self._accumulate_kappa_bias_l2_losses(
-                    kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
-                )
+                if self.independent_kappa_router and self.kappa_input == 'gate_proj':
+                    bias_values = selected_gate_scores.float()
+                    if valid_score_mask is None:
+                        bias_loss = bias_values.square().mean()
+                    else:
+                        bias_loss = bias_values.masked_fill(~valid_score_mask, 0.0).square().sum()
+                        bias_loss = bias_loss / valid_score_mask.sum().clamp_min(1)
+                    if loss_accum is not None:
+                        loss_accum.add('kappa_bias_l2_loss', bias_loss)
+                    else:
+                        MANAGER.add('kappa_bias_l2_loss', bias_loss)
+                else:
+                    self._accumulate_kappa_bias_l2_losses(
+                        kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
+                    )
             else:
                 kappa_bias = self._materialize_kappa_bias_for_eval(
                     gate_out_raw.dtype,
@@ -1931,9 +1965,6 @@ class Qwen3MLPExperts(nn.Module):
                     kappa_slot,
                 )
             kappa_scale = None
-            # use_kappa_scale_param implies not independent_kappa_router.
-            # If not independent_kappa_router, we apply l2 loss on the kappa scale parameters.
-            # Otherwise, we apply l2 loss on the live kappa router output scores.
             if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
                 self._accumulate_kappa_scale_l2_losses(
@@ -2000,7 +2031,7 @@ class MOELayer(nn.Module):
         self.kappa_router = (
             nn.Linear(
                 config.n_embd, self.num_kappa_router_slots * config.n_exp,
-                bias=bool(getattr(config, 'disable_kappa_bias', False)),
+                bias=bool(getattr(config, 'disable_kappa_bias', False)) and self.kappa_input != 'gate_proj',
             )
             if getattr(config, 'independent_kappa_router', False)
             and self.use_qwen3_moe_mlp and self.experts.use_kappa_swiglu
@@ -2149,7 +2180,7 @@ class MOELayer(nn.Module):
             )
         return output_flat
 
-    def _select_gate_confidence(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
+    def _select_kappa_scores(self, top_k_scores, router_probs, x_flat=None, top_k_indices=None):
         conditioning_weight = self.router.w_g.weight
         if self.kappa_router is not None:
             if x_flat is None or top_k_indices is None:
@@ -2261,7 +2292,7 @@ class MOELayer(nn.Module):
         flat_rank = rank.view(-1)
         flat_token_indices = torch.arange(B * T, device=x.device).repeat_interleave(self.top_k)
 
-        selected_gate_confidence = self._select_gate_confidence(
+        selected_gate_confidence = self._select_kappa_scores(
             top_k_scores,
             router_probs,
             x_flat=x_flat,
@@ -2444,7 +2475,8 @@ class GPT(nn.Module):
             if isinstance(mlp, MOELayer):
                 experts = getattr(mlp, 'experts', None)
                 if isinstance(experts, Qwen3MLPExperts) and experts.use_kappa_swiglu:
-                    bias_enabled_modules.append(experts)
+                    if not (experts.independent_kappa_router and experts.kappa_input == 'gate_proj'):
+                        bias_enabled_modules.append(experts)
                     if experts.use_kappa_scale_param:
                         bias_scale_enabled_modules.append(experts)
             elif isinstance(mlp, Qwen3MLP) and mlp.has_kappa_swiglu:
@@ -2546,6 +2578,11 @@ class GPT(nn.Module):
                     if name not in expected_keys and (
                         name.endswith('.experts.kappa_scale')
                         or name == 'global_kappa_scale'
+                        or (self.config.kappa_input == 'gate_proj' and (
+                            name.endswith('.experts.kappa_bias')
+                            or name.endswith('.mlp.kappa_router.bias')
+                            or name == 'global_kappa_bias'
+                        ))
                     ):
                         del state_dict[name]
             for name, param in self.state_dict().items():

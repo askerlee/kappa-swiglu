@@ -264,7 +264,7 @@ parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="gate_proj", choices=["top_logits", "router_probs", "constant", "gate_proj"],
                     help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=False,
-                    help="predict kappa scales directly with a separate projection; scale only its input-latent gradients by 0.1")
+                    help="predict kappa conditioning with a separate projection (dynamic expert bias with --kappa-input=gate_proj); scale only its input-latent gradients by 0.1")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,

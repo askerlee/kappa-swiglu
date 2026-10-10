@@ -132,6 +132,17 @@ normalization in this mode; `top_logits` and `router_probs` behave identically.
 Diagnostics use detached predictor logits cached from the latest forward,
 excluding padding and unused expert slots. Constant conditioning is unsupported.
 
+With `--kappa-input=gate_proj`, the predictor instead supplies an expert-level
+dynamic bias shared across that expert's gates. Conditioning is
+`alpha * gate_proj(x) + r_expert @ x`, followed by the existing
+`phi(t) = exp(log(kappa_slope_max_scale) * tanh(t))` slope transform.
+The learned `kappa_scale` tensor stores alpha using the configured sharing
+granularity and kappa learning-rate schedule. This combination has no static
+expert kappa bias or predictor bias. Gate-dependent conditioning retains its
+0.1 gradient scale through `gate_proj(x)`. Scale L2 penalizes alpha; bias L2
+penalizes predictor outputs over valid routed tokens. Checkpoints retain alpha
+in this mode rather than discarding it as legacy independent-router state.
+
 Predictor weights receive full gradients. Only the predictor's gradient path
 back to the input latent is multiplied by 0.1; expert and routing paths are
 unchanged. The predictor uses the MoE matrix optimizer and matrix learning

@@ -499,7 +499,7 @@ def install_gate_bias_instrumentation(model, observer_host: GateBiasObserverHost
             dtype=x_flat.dtype,
             device=x_flat.device,
         )
-        selected_gate_confidence = self._select_gate_confidence(
+        selected_gate_confidence = self._select_kappa_scores(
             top_k_scores,
             router_probs,
             x_flat=x_flat,
