@@ -147,7 +147,13 @@ combined conditioning (`slope_work`) before `tanh` and `exp`. MoE losses exclude
 padding and unused expert slots and average over valid assignment-gate pairs.
 Dense layers penalize `kappa_bias * kappa_input_constant`. Base, mixed, and SFT
 training weight this loss with `--kappa-l2-loss-weight`; base and mixed training
-retain its annealing schedule. There are no separate bias, scale, or SFT-router
+retain its annealing schedule. The effective loss weight is zero before the
+kappa parameter delay D, so regularization does not train upstream representations
+during that delay; the raw loss is still logged. Base and mixed training use
+`D = max(kappa_delay_start_min_iterations, ceil(total_iterations * kappa_delay_start_iteration_frac))`.
+SFT uses `--kappa-delay-start-iterations` (default 0). The existing annealing
+timeline is unchanged, and regularization activates at step D.
+There are no separate bias, scale, or SFT-router
 weight penalties, parameter anchors, or independent-router 10x multipliers.
 The former `--kappa-scale-l2-loss-weight-scale`,
 `--kappa-router-sft-l2-loss-weight`, and `--kappa-params-l2-anchor` options

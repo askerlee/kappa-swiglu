@@ -364,7 +364,6 @@ print0(f"Inherited aux_loss_weight: {aux_loss_weight}")
 user_config["aux_loss_weight"] = aux_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
-kappa_l2_loss_weight = args.kappa_l2_loss_weight
 
 # If the model has not initialized kappa swiglu params, this has no effect.
 # Therefore, if the model is trained without enabling kappa swiglu, this call has no effect.
@@ -881,6 +880,7 @@ throughput_interval_steps = 0
 throughput_interval_time = 0.0
 step = 0
 while True:
+    kappa_l2_loss_weight = args.kappa_l2_loss_weight * float(step >= args.kappa_delay_start_iterations)
     if args.eval_only and step == 0 and master_process:
         print0("Running in eval-only mode; skipping training and checkpoint save.")
     flops_so_far = num_flops_per_token * args.total_batch_size * step

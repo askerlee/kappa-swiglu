@@ -1404,6 +1404,7 @@ while True:
         final_floor_frac=args.kappa_l2_loss_final_frac,
         nolearn_iterations=0,
     )
+    kappa_l2_loss_weight *= float(step >= kappa_param_delay_start_iterations)
     moe_kappa_slope_max_scale = get_kappa_slope_max_scale(
         args.moe_kappa_slope_max_scale,
         step,

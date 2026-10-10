@@ -120,10 +120,15 @@ def test_kappa_slope_l2_uses_single_scheduled_weight():
             and isinstance(node.value.func, ast.Name) and node.value.func.id == "get_two_stage_annealed_loss_weight"
             and any(isinstance(target, ast.Name) and target.id == "kappa_l2_loss_weight" for target in node.targets)
         )
-        weight_module = ast.Module(body=[base_assignment], type_ignores=[])
+        delay_gate = next(
+            node for node in ast.walk(module)
+            if isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name) and node.target.id == "kappa_l2_loss_weight"
+        )
+        weight_module = ast.Module(body=[base_assignment, delay_gate], type_ignores=[])
         for independent_router in (False, True):
             for base_weight in (0.0, 0.001, 0.02):
-                for step in (0, 50, 100):
+                for step in (0, 19, 20, 21, 50, 100):
                     args = SimpleNamespace(
                         independent_kappa_router=independent_router,
                         kappa_l2_loss_weight=base_weight,
@@ -134,11 +139,12 @@ def test_kappa_slope_l2_uses_single_scheduled_weight():
                     namespace = {
                         "args": args, "step": step, "num_iterations": 100,
                         "kappa_l2_stage1_iterations": 50,
+                        "kappa_param_delay_start_iterations": 20,
                         "get_two_stage_annealed_loss_weight": anneal,
                     }
                     exec(compile(weight_module, filename=str(script), mode="exec"), namespace)
                     scheduled_weight = anneal(base_weight, step, 100, 50, 0.5, 0.1)
-                    assert namespace["kappa_l2_loss_weight"] == scheduled_weight
+                    assert namespace["kappa_l2_loss_weight"] == (scheduled_weight if step >= 20 else 0.0)
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():

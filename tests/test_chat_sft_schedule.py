@@ -213,10 +213,11 @@ def test_independent_kappa_router_cli_wires_model_config(script_name):
 
 @pytest.mark.parametrize("independent_router", [False, True])
 @pytest.mark.parametrize("base_weight", [0.0, 0.001, 0.02])
-def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight):
+@pytest.mark.parametrize("step,delay", [(0, 0), (0, 20), (19, 20), (20, 20), (21, 20)])
+def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight, step, delay):
     module = ast.parse(CHAT_SFT.read_text(), filename=str(CHAT_SFT))
     weights = ast.Module(body=[
-        node for node in module.body
+        node for node in ast.walk(module)
         if isinstance(node, ast.Assign)
         and any(
             isinstance(target, ast.Name)
@@ -227,14 +228,57 @@ def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight):
     namespace = {
         "args": SimpleNamespace(
             independent_kappa_router=None, kappa_l2_loss_weight=base_weight,
+            kappa_delay_start_iterations=delay,
         ),
+        "step": step,
         "model": SimpleNamespace(config=SimpleNamespace(independent_kappa_router=independent_router)),
     }
     exec(compile(weights, filename=str(CHAT_SFT), mode="exec"), namespace)
-    assert namespace["kappa_l2_loss_weight"] == base_weight
+    assert namespace["kappa_l2_loss_weight"] == (base_weight if step >= delay else 0.0)
     source = CHAT_SFT.read_text()
     assert 'loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss' in source
     assert '"train/kappa_l2_loss_weight": kappa_l2_loss_weight' in source
+
+
+@pytest.mark.parametrize("script_name", ["base_train", "base_train_mix", "chat_sft"])
+@pytest.mark.parametrize("step", [0, 19, 20, 21])
+def test_kappa_loss_has_no_upstream_gradients_before_delay(script_name, step):
+    script_path = ROOT / "scripts" / f"{script_name}.py"
+    module = ast.parse(script_path.read_text(), filename=str(script_path))
+    weight_nodes = [
+        node for node in ast.walk(module)
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "kappa_l2_loss_weight" for target in node.targets)
+        ) or (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name) and node.target.id == "kappa_l2_loss_weight"
+        )
+    ]
+    weight_nodes.sort(key=lambda node: node.lineno)
+    addition = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Assign) and "kappa_l2_loss_weight * kappa_slope_l2_loss" in ast.unparse(node)
+    )
+    latent = torch.tensor([2.0], requires_grad=True)
+    router_weight = torch.tensor([3.0], requires_grad=True)
+    slope_loss = (latent * router_weight).square().mean()
+    namespace = {
+        "args": SimpleNamespace(
+            kappa_l2_loss_weight=0.01, kappa_delay_start_iterations=20,
+            kappa_l2_loss_stage1_frac=0.5, kappa_l2_loss_final_frac=0.1,
+        ),
+        "step": step, "num_iterations": 100,
+        "kappa_l2_stage1_iterations": 50, "kappa_param_delay_start_iterations": 20,
+        "get_two_stage_annealed_loss_weight": lambda base_weight, *args, **kwargs: base_weight,
+        "loss": torch.tensor(1.0), "kappa_slope_l2_loss": slope_loss,
+    }
+    exec(compile(ast.Module(body=[*weight_nodes, addition], type_ignores=[]), str(script_path), "exec"), namespace)
+    namespace["loss"].backward()
+    expected_scale = 0.01 if step >= 20 else 0.0
+    torch.testing.assert_close(latent.grad, torch.tensor([36.0 * expected_scale]))
+    torch.testing.assert_close(router_weight.grad, torch.tensor([24.0 * expected_scale]))
+    torch.testing.assert_close(slope_loss.detach(), torch.tensor(36.0))
 
 
 def test_chat_sft_keeps_sensitive_parameters_in_fp32_without_casting_buffers():
