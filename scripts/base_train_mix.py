@@ -308,7 +308,7 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
                     help="fractional delay for kappa_bias LR start; the effective delay is max(--kappa-delay-start-min-iterations, ceil(total_iterations * this value))")
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
-parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
+parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-3,
                     help="L2 weight on the pre-transform kappa slope (the omitted default is 0.001 with --independent-kappa-router)")
 parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of kappa slope L2 loss (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
@@ -405,8 +405,6 @@ parser.add_argument("--log-interval", type=int, default=20, help="interval (in s
 parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False)
 
 args = parser.parse_args()
-if args.independent_kappa_router and not arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight'):
-    args.kappa_l2_loss_weight = 0.001
 
 if args.separate_base_sft_kappa:
     args.use_kappa_swiglu = True
@@ -427,7 +425,7 @@ if args.activation_checkpointing and args.log_grad_stats:
     print("Disabling --log-grad-stats because it bypasses activation checkpointing on logging steps.")
     args.log_grad_stats = False
 if args.ut_detach and not args.ut_everypass_ntp:
-    print0("--ut-detach requires --ut-everypass-ntp; disabling --ut-detach because intermediate passes need gradient flow from the final pass.")
+    print("--ut-detach requires --ut-everypass-ntp; disabling --ut-detach because intermediate passes need gradient flow from the final pass.")
     args.ut_detach = False
 
 #if args.use_kappa_swiglu and not arg_was_explicitly_set(sys.argv[1:], '--aux-loss-weight'):
