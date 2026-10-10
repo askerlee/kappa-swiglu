@@ -1653,6 +1653,7 @@ class Qwen3MLPExperts(nn.Module):
         kappa_slot=0,
         loss_accum=None,
         valid_score_mask=None,
+        regularization_gate_scores=None,
     ):
         target_dtype = torch.float32
         kappa_bias = kappa_bias.to(dtype=target_dtype)
@@ -1681,8 +1682,21 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
+        reg_scores = selected_gate_scores.detach() if regularization_gate_scores is None else regularization_gate_scores
+        if self.independent_kappa_router and self.kappa_input == 'gate_proj':
+            reg_slope_work = torch.addcmul(
+                reg_scores.float().unsqueeze(-1), gate_out_raw.detach().float(),
+                kappa_scale.float().unsqueeze(1),
+            )
+        elif self.independent_kappa_router:
+            reg_slope_work = kappa_bias + reg_scores.float().unsqueeze(-1)
+        elif self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
+            reg_input = gate_out_raw.detach().float() if self.kappa_input == 'gate_proj' else reg_scores.float().unsqueeze(-1)
+            reg_slope_work = torch.addcmul(kappa_bias, reg_input, kappa_scale)
+        else:
+            reg_slope_work = reg_scores.float().unsqueeze(-1) * kappa_bias
         _accumulate_kappa_slope_l2_loss(
-            slope_work, loss_accum=loss_accum, valid_score_mask=valid_score_mask,
+            reg_slope_work, loss_accum=loss_accum, valid_score_mask=valid_score_mask,
         )
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
@@ -1742,6 +1756,7 @@ class Qwen3MLPExperts(nn.Module):
         kappa_slot=0,
         loss_accum=None,
         valid_score_mask=None,
+        regularization_gate_scores=None,
     ):
         if self.training:
             return self._apply_kappa_slope_scaled_activation_training(
@@ -1752,6 +1767,7 @@ class Qwen3MLPExperts(nn.Module):
                 kappa_slot=kappa_slot,
                 loss_accum=loss_accum,
                 valid_score_mask=valid_score_mask,
+                regularization_gate_scores=regularization_gate_scores,
             )
         return self._apply_kappa_slope_scaled_activation_inference(
             gate_out_raw,
@@ -1902,7 +1918,7 @@ class Qwen3MLPExperts(nn.Module):
             ),
         )
 
-    def forward(self, x, selected_gate_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None):
+    def forward(self, x, selected_gate_scores=None, router_weight=None, loss_accum=None, current_ut=0, valid_score_mask=None, reg_router_weight=None, reg_router_bias=None):
         kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         # x: [n_exp, capacity, hidden_size]
         # gate_out_raw: [n_exp, capacity, intermediate_size]
@@ -1942,6 +1958,11 @@ class Qwen3MLPExperts(nn.Module):
                 kappa_slot=kappa_slot,
                 loss_accum=loss_accum,
                 valid_score_mask=valid_score_mask,
+                regularization_gate_scores=(
+                    torch.einsum('ech,eh->ec', x.detach(), reg_router_weight)
+                    + (0 if reg_router_bias is None else reg_router_bias.unsqueeze(1))
+                    if self.training and reg_router_weight is not None else None
+                ),
             )
         else:
             self._cached_kappa_scale = None
@@ -2289,6 +2310,16 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         valid_score_mask = None
+        reg_router_weight = None
+        reg_router_bias = None
+        if self.training and self.kappa_router is not None:
+            kappa_slot = self.experts.kappa_phase if self.num_kappa_router_slots == 2 else 0
+            router_weights = self.kappa_router.weight.view(self.num_kappa_router_slots, self.n_exp, -1)
+            reg_router_weight = router_weights[kappa_slot]
+            if kappa_slot == 1:
+                reg_router_weight = reg_router_weight + scale_grad(router_weights[0], 0.1)
+            if self.kappa_router.bias is not None:
+                reg_router_bias = self.kappa_router.bias.view(self.num_kappa_router_slots, self.n_exp)[kappa_slot]
         if self.use_qwen3_moe_mlp:
             expert_counts = expert_mask.sum(dim=(0, 1))
             valid_score_mask = torch.arange(exp_capacity, device=x.device).unsqueeze(0) < expert_counts.unsqueeze(1)
@@ -2299,6 +2330,8 @@ class MOELayer(nn.Module):
             loss_accum=loss_accum,
             current_ut=current_ut,
             valid_score_mask=valid_score_mask,
+            reg_router_weight=reg_router_weight,
+            reg_router_bias=reg_router_bias,
         ) # [n_exp, exp_capacity, C]
 
         # --- Combine expert outputs (the "gather" part) ---

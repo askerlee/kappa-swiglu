@@ -434,21 +434,20 @@ def test_independent_kappa_router_scale_l2_uses_combined_slope(
     with torch.no_grad():
         _, _, _, indices, ranks = layer.router(inputs)
     effective_weight = scale_grad(weight[:config.n_exp], 0.1) + weight[active_slice] if is_sft else weight[active_slice]
-    scores = F.linear(scale_grad(inputs.reshape(-1, config.n_embd), 0.1), effective_weight)
+    scores = F.linear(inputs.detach().reshape(-1, config.n_embd), effective_weight)
     selected_scores = scores.gather(-1, indices)
     valid_assignments = ranks < layer.router.get_capacity(inputs.size(0) * inputs.size(1))
     bias = layer.experts._materialize_kappa_bias(int(is_sft))
     combined_slope = selected_scores.unsqueeze(-1) + bias[indices]
     expected_loss = combined_slope[valid_assignments].square().mean()
     torch.testing.assert_close(scale_loss, expected_loss)
-    expected_weight_grad, expected_input_grad, expected_bias_grad = torch.autograd.grad(
-        expected_loss, (weight, inputs, layer.experts.kappa_bias)
+    expected_weight_grad, expected_bias_grad = torch.autograd.grad(
+        expected_loss, (weight, layer.experts.kappa_bias)
     )
     scale_loss.backward()
     torch.testing.assert_close(weight.grad, expected_weight_grad)
-    torch.testing.assert_close(inputs.grad, expected_input_grad)
+    assert inputs.grad is None
     torch.testing.assert_close(layer.experts.kappa_bias.grad, expected_bias_grad)
-    assert inputs.grad.abs().sum() > 0
     assert layer.router.w_g.weight.grad is None
     assert layer.experts.kappa_scale is None
     assert 'transformer.h.0.mlp.initial_kappa_router_weight' not in model.state_dict()
