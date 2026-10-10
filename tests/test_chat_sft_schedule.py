@@ -411,31 +411,34 @@ def test_chat_sft_uses_10x_kappa_lr_scales_when_enabling_kappa_for_checkpoint():
     assert 'user_config["kappa_lr_final_scale"] = args.kappa_lr_final_scale' in source
 
 
-def test_chat_sft_defaults_kappa_l2_when_enabling_kappa_for_checkpoint():
+def test_chat_sft_preserves_kappa_l2_when_enabling_kappa_for_checkpoint():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    explicit_check_index = source.index(
-        "kappa_l2_loss_weight_was_specified = "
-        "arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight')"
+    assert "kappa_l2_loss_weight_was_specified" not in source
+    assert "args.kappa_l2_loss_weight = 0.01" not in source
+    tree = ast.parse(source)
+    enable_condition = next(
+        node for node in tree.body
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "use_kappa_swiglu and (not checkpoint_used_kappa_swiglu)"
     )
-    enable_condition_index = source.index(
-        "if use_kappa_swiglu and not checkpoint_used_kappa_swiglu:"
-    )
-    omitted_condition_index = source.index(
-        "if not kappa_l2_loss_weight_was_specified:",
-        enable_condition_index,
-    )
-    default_index = source.index(
-        "args.kappa_l2_loss_weight = 0.01",
-        omitted_condition_index,
-    )
-    wandb_index = source.index("wandb_run = DummyWandb()", default_index)
-
-    assert explicit_check_index < enable_condition_index < omitted_condition_index
-    assert omitted_condition_index < default_index < wandb_index
-    assert 'user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight' in source[
-        default_index:wandb_index
-    ]
+    code = compile(ast.Module(body=[enable_condition], type_ignores=[]), str(CHAT_SFT), "exec")
+    for l2_weight in (1e-3, 0.02):
+        args = type("Args", (), {
+            "kappa_lr_max_scale": 0.01,
+            "kappa_lr_final_scale": 0.005,
+            "kappa_l2_loss_weight": l2_weight,
+        })()
+        user_config = {}
+        exec(code, {
+            "args": args,
+            "user_config": user_config,
+            "use_kappa_swiglu": True,
+            "checkpoint_used_kappa_swiglu": False,
+            "print0": lambda *values: None,
+        })
+        assert args.kappa_l2_loss_weight == l2_weight
+        assert user_config["kappa_l2_loss_weight"] == l2_weight
 
 
 def test_chat_sft_inherits_checkpoint_train_capacity():

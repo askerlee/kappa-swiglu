@@ -143,7 +143,7 @@ parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
     type=float,
-    default=1e-2,
+    default=1e-3,
     help="L2 weight on the pre-transform kappa slope",
 )
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
@@ -198,7 +198,6 @@ if args.kappa_lr_warmup_iterations < 0:
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
-kappa_l2_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--kappa-l2-loss-weight')
 
 
 def drop_none_log_values(log_data):
@@ -274,8 +273,6 @@ checkpoint_used_kappa_swiglu = bool(
 if use_kappa_swiglu and not checkpoint_used_kappa_swiglu:
     args.kappa_lr_max_scale *= 10
     args.kappa_lr_final_scale *= 10
-    if not kappa_l2_loss_weight_was_specified:
-        args.kappa_l2_loss_weight = 0.01
     user_config["kappa_lr_max_scale"] = args.kappa_lr_max_scale
     user_config["kappa_lr_final_scale"] = args.kappa_lr_final_scale
     user_config["kappa_l2_loss_weight"] = args.kappa_l2_loss_weight
