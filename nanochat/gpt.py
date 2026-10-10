@@ -213,6 +213,25 @@ def _diagnostic_to_cpu(value: torch.Tensor) -> torch.Tensor:
     return value.detach().to(device="cpu")
 
 
+@torch._dynamo.disable
+@torch.no_grad()
+def _update_kappa_l2_norm_stats(bias, scale=None, router_output=None, valid_score_mask=None):
+    if not MANAGER.collect_load_balancing_stats:
+        return
+    if router_output is not None and valid_score_mask is not None:
+        router_output = router_output.detach().masked_fill(~valid_score_mask, 0.0)
+    for name, value in (
+        ('kappa_bias_l2_norm', bias),
+        ('kappa_scale_l2_norm', scale),
+        ('kappa_router_output_l2_norm', router_output),
+    ):
+        norm_value = (
+            torch.linalg.vector_norm(value.detach().reshape(-1), dtype=torch.float32)
+            if value is not None else bias.new_zeros((), dtype=torch.float32)
+        )
+        MANAGER.add(name, _diagnostic_to_cpu(norm_value))
+
+
 def _mean_extreme_percentile_per_row(
     values: torch.Tensor,
     active_mask: torch.Tensor,
@@ -1292,6 +1311,7 @@ class Qwen3MLP(nn.Module):
                 kappa_slot,
             )
         if MANAGER.collect_load_balancing_stats:
+            _update_kappa_l2_norm_stats(kappa_bias)
             self._update_kappa_slope_scale_stats(slope_scales)
         gate_out = gate_out_raw * torch.sigmoid(
             gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
@@ -1968,6 +1988,14 @@ class Qwen3MLPExperts(nn.Module):
             kappa_scale = None
             if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
+            if MANAGER.collect_load_balancing_stats:
+                with torch.no_grad():
+                    _update_kappa_l2_norm_stats(
+                        kappa_bias,
+                        scale=self._materialize_kappa_scale(kappa_slot) if self.use_kappa_scale_param else None,
+                        router_output=selected_gate_scores if self.independent_kappa_router else None,
+                        valid_score_mask=valid_score_mask,
+                    )
             scaled_selected_gate_scores = selected_gate_scores
             if not self.independent_kappa_router and self.kappa_input != 'gate_proj':
                 scaled_selected_gate_scores = scale_grad(
@@ -3381,6 +3409,15 @@ class GPT(nn.Module):
         kappa_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(kappa_layer_indices)
         }
+        for name in ('kappa_scale_l2_norm', 'kappa_bias_l2_norm', 'kappa_router_output_l2_norm'):
+            values = MANAGER.aggregate(name)
+            MANAGER.reset(name)
+            losses[name] = values.detach() if values is not None else torch.zeros(())
+            if values is not None:
+                for stats_idx, value in enumerate(values):
+                    layer_idx = kappa_layer_indices[stats_idx % len(kappa_layer_indices)]
+                    metric_name = f'{name}_{layer_idx}'
+                    losses[metric_name] = losses.get(metric_name, 0.0) + value.item() / self.total_ut_steps
         implicit_gate_proj_bias_layer_to_stats_idx = {
             layer_idx: stats_idx for stats_idx, layer_idx in enumerate(implicit_gate_proj_bias_layer_indices)
         }

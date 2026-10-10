@@ -10,6 +10,37 @@ from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Rout
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('masked', [False, True])
+def test_kappa_l2_norm_monitoring_is_detached_and_masks_router_output(monkeypatch, enabled, masked):
+    from nanochat.gpt import _update_kappa_l2_norm_stats
+
+    manager = MOEManager()
+    manager.collect_load_balancing_stats = enabled
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    bias = torch.tensor([3.0, 4.0], requires_grad=True)
+    scale = torch.tensor([6.0, 8.0], requires_grad=True)
+    output = torch.tensor([[3.0, 4.0], [12.0, 0.0]], requires_grad=True)
+    mask = torch.tensor([[True, True], [False, False]]) if masked else None
+    _update_kappa_l2_norm_stats(bias, scale, output, mask)
+    expected = {
+        'kappa_bias_l2_norm': 5.0,
+        'kappa_scale_l2_norm': 10.0,
+        'kappa_router_output_l2_norm': 5.0 if masked else 13.0,
+    }
+    for name, value in expected.items():
+        metric = manager.aggregate(name)
+        if enabled:
+            torch.testing.assert_close(metric, torch.tensor([value]))
+            assert not metric.requires_grad
+            assert metric.device.type == 'cpu'
+        else:
+            assert metric is None
+        manager.reset(name)
+        assert manager.aggregate(name) is None
+    assert bias.grad is None and scale.grad is None and output.grad is None
+
+
 @pytest.mark.parametrize('masked', [False, True])
 @pytest.mark.parametrize('compiled', [False, True])
 def test_checkpointed_kappa_regularization_reuses_gate_storage(masked, compiled):
@@ -48,6 +79,54 @@ def test_checkpointed_kappa_regularization_reuses_gate_storage(masked, compiled)
     torch.testing.assert_close(bias.grad, reference_grads[0])
     torch.testing.assert_close(alpha.grad, reference_grads[1])
     assert raw_gate.grad is None
+
+
+@pytest.mark.parametrize('kappa_input', ['router_probs', 'gate_proj'])
+@pytest.mark.parametrize('independent_router', [False, True])
+@pytest.mark.parametrize('is_sft', [False, True])
+@pytest.mark.parametrize('ut_steps', [1, 2])
+def test_gpt_kappa_l2_norm_monitoring_reports_effective_values(monkeypatch, kappa_input, independent_router, is_sft, ut_steps):
+    manager = MOEManager()
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    config = GPTConfig(
+        sequence_len=8, vocab_size=32, n_layer=2, n_embd=32, n_head=4,
+        n_exp=2, moe_start_layer=1, num_moe_layers=1,
+        use_kappa_swiglu=True, independent_kappa_router=independent_router,
+        kappa_input=kappa_input, separate_base_sft_kappa=True,
+        total_ut_steps=ut_steps, use_aux_loss=False, use_router_z_loss=False,
+        constant_kappa_bias_dense_layers=True, kappa_input_constant=1.0,
+        router_tie_noise_steps=0,
+    )
+    model = GPT(config)
+    model.init_weights()
+    model.set_kappa_training_phase(is_sft)
+    experts = model.transformer.h[1].mlp.experts
+    with torch.no_grad():
+        for parameter in (experts.kappa_bias, experts.kappa_scale):
+            if parameter is not None:
+                parameter[0].fill_(0.2)
+                parameter[1].fill_(0.3)
+        if independent_router:
+            model.transformer.h[1].mlp.kappa_router.weight.fill_(0.1)
+    idx = torch.randint(0, config.vocab_size, (1, 4))
+    targets = torch.randint(0, config.vocab_size, (1, 4))
+    mask = torch.tensor([[True, True, True, False]])
+    baseline_loss, baseline_losses = model(idx, targets, valid_token_mask=mask)
+    manager.collect_load_balancing_stats = True
+    monitored_loss, losses = model(idx, targets, valid_token_mask=mask)
+    torch.testing.assert_close(monitored_loss, baseline_loss)
+    torch.testing.assert_close(losses['kappa_slope_l2_loss'], baseline_losses['kappa_slope_l2_loss'])
+    expected_bias = experts._materialize_kappa_bias().detach().norm().item()
+    expected_scale = experts._materialize_kappa_scale().detach().norm().item() if experts.use_kappa_scale_param else 0.0
+    assert losses['kappa_bias_l2_norm_1'] == pytest.approx(expected_bias)
+    assert losses['kappa_scale_l2_norm_1'] == pytest.approx(expected_scale)
+    assert losses['kappa_router_output_l2_norm_1'] > 0 if independent_router else losses['kappa_router_output_l2_norm_1'] == 0
+    for name in ('kappa_bias_l2_norm', 'kappa_scale_l2_norm', 'kappa_router_output_l2_norm'):
+        assert losses[name].shape == (2 * ut_steps,)
+        assert not losses[name].requires_grad
+        assert manager.aggregate(name) is None
+        assert losses[f'{name}_0'] == pytest.approx(losses[name][::2].mean().item())
+        assert losses[f'{name}_1'] == pytest.approx(losses[name][1::2].mean().item())
 
 
 @pytest.mark.parametrize('kappa_input', ['router_probs', 'gate_proj'])

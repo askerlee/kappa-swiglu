@@ -1873,6 +1873,9 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_slope_l2_loss_step": losses['kappa_slope_l2_loss'],
+            "train/kappa_scale_l2_norm_step": scalar_loss_to_item(losses['kappa_scale_l2_norm'].mean()),
+            "train/kappa_bias_l2_norm_step": scalar_loss_to_item(losses['kappa_bias_l2_norm'].mean()),
+            "train/kappa_router_output_l2_norm_step": scalar_loss_to_item(losses['kappa_router_output_l2_norm'].mean()),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -1889,6 +1892,9 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
+        for name, value in losses.items():
+            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_', 'kappa_router_output_l2_norm_')):
+                log_data[f"inspect/{name}"] = value
         log_data["train/kappa_l2_loss_weight"] = kappa_l2_loss_weight
         log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale
         log_data["train/dense_kappa_slope_max_scale"] = dense_kappa_slope_max_scale

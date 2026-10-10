@@ -1151,6 +1151,9 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_slope_l2_loss_step": scalar_loss_to_item(losses['kappa_slope_l2_loss']),
+            "train/kappa_scale_l2_norm_step": scalar_loss_to_item(losses['kappa_scale_l2_norm'].mean()),
+            "train/kappa_bias_l2_norm_step": scalar_loss_to_item(losses['kappa_bias_l2_norm'].mean()),
+            "train/kappa_router_output_l2_norm_step": scalar_loss_to_item(losses['kappa_router_output_l2_norm'].mean()),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -1192,6 +1195,9 @@ while True:
                     no_expert_rates[stats_idx]
                 )
         expert_utilities = losses['expert_utilities']
+        for name, value in losses.items():
+            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_', 'kappa_router_output_l2_norm_')):
+                log_data[f"inspect/{name}"] = value
         moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
         for i in moe_layer_indices:
             if expert_utilities is not None:

@@ -13,6 +13,9 @@ class MOEManager:
             "aux_loss": [],
             "router_z_loss": [],
             "kappa_slope_l2_loss": [],
+            "kappa_scale_l2_norm": [],
+            "kappa_bias_l2_norm": [],
+            "kappa_router_output_l2_norm": [],
             "kappa_slope_scale_abs_top5p_mean": [],
             "kappa_slope_scale_abs_bottom5p_mean": [],
             "drop_rate_per_ks": [],
@@ -56,6 +59,9 @@ class MOEManager:
                "no_expert_rates",
              "expert_utilities",
              "selected_scores",
+             "kappa_scale_l2_norm",
+             "kappa_bias_l2_norm",
+             "kappa_router_output_l2_norm",
              "kappa_slope_scale_abs_top5p_mean",
              "kappa_slope_scale_abs_bottom5p_mean",
              "kappa_slope_scale_abs_mean",
@@ -278,6 +284,8 @@ class MOEManager:
 
     def aggregate(self, name):
         values = self._values.get(name, [])
+        if name in {"kappa_scale_l2_norm", "kappa_bias_l2_norm", "kappa_router_output_l2_norm"}:
+            return torch.stack(values) if values else None
         if name == "drop_rate_per_ks":
             if self._drop_rate_buffer is None or self._drop_rate_size == 0:
                 return None

@@ -164,6 +164,13 @@ The former `--kappa-scale-l2-loss-weight-scale`,
 `--kappa-router-sft-l2-loss-weight`, and `--kappa-params-l2-anchor` options
 have been removed.
 
+Diagnostic steps also log `kappa_scale_l2_norm`, `kappa_bias_l2_norm`, and
+`kappa_router_output_l2_norm`, with per-layer `inspect/` metrics and layer/UT
+means under `train/*_step`. These are detached Euclidean norms, not loss terms.
+Bias and scale use the effective phase-specific, materialized values; router
+output norms include only valid dispatched assignments. Absent components
+report zero. Collection follows the existing `--log-grad-stats` diagnostic schedule.
+
 Predictor weights receive full gradients. In the activation branch, only the predictor's gradient path
 back to the input latent is multiplied by 0.1; expert and routing paths are
 unchanged. The predictor uses the MoE matrix optimizer and matrix learning

@@ -2200,6 +2200,9 @@ while True:
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
             "train/kappa_slope_l2_loss_step": losses['kappa_slope_l2_loss'],
+            "train/kappa_scale_l2_norm_step": scalar_loss_to_item(losses['kappa_scale_l2_norm'].mean()),
+            "train/kappa_bias_l2_norm_step": scalar_loss_to_item(losses['kappa_bias_l2_norm'].mean()),
+            "train/kappa_router_output_l2_norm_step": scalar_loss_to_item(losses['kappa_router_output_l2_norm'].mean()),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -2217,6 +2220,9 @@ while True:
             "train/is_chat_sft_step": 1.0 if train_source == "chat_sft" else 0.0,
             "train/kappa_swiglu_enabled": 1.0 if kappa_swiglu_training_enabled else 0.0,
         }
+        for name, value in losses.items():
+            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_', 'kappa_router_output_l2_norm_')):
+                log_data[f"inspect/{name}"] = value
         if train_source == "chat_sft":
             log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])
             log_data["train/chat_sft_seen_conversations"] = chat_sft_dataloader_state_dict["seen_conversations"]
