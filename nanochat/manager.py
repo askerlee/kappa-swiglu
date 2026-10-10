@@ -12,8 +12,7 @@ class MOEManager:
         self._values = {
             "aux_loss": [],
             "router_z_loss": [],
-            "kappa_bias_l2_loss": [],
-            "kappa_scale_l2_loss": [],
+            "kappa_slope_l2_loss": [],
             "kappa_slope_scale_abs_top5p_mean": [],
             "kappa_slope_scale_abs_bottom5p_mean": [],
             "drop_rate_per_ks": [],

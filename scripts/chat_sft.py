@@ -144,14 +144,8 @@ parser.add_argument(
     dest="kappa_l2_loss_weight",
     type=float,
     default=1e-2,
-    help="L2 base weight on kappa_bias and kappa_scale parameters (kappa router output scores for independent routing); independent kappa routing uses 10x this weight for kappa_bias",
+    help="L2 weight on the pre-transform kappa slope",
 )
-parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=0.2,
-                    help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
-parser.add_argument("--kappa-router-sft-l2-loss-weight", type=float, default=0.001,
-                    help="L2 weight on the SFT slot of separate independent kappa router weights (0 disables)")
-parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial",
-                    help="anchor expert kappa bias and scale L2 around their loaded initial values or 0; independent kappa routing automatically uses zero because its L2 penalty is on output scores")
 parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
                     help="predict kappa scales directly with 0.1 input-latent gradients (default: inherit checkpoint)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
@@ -201,8 +195,6 @@ if args.kappa_delay_start_iterations < 0:
     raise ValueError("--kappa-delay-start-iterations must be >= 0")
 if args.kappa_lr_warmup_iterations < 0:
     raise ValueError("--kappa-lr-warmup-iterations must be >= 0")
-if args.kappa_router_sft_l2_loss_weight < 0:
-    raise ValueError("--kappa-router-sft-l2-loss-weight must be >= 0")
 user_config = vars(args).copy()
 matrix_optimizer_was_specified = arg_was_explicitly_set(sys.argv[1:], '--matrix-optimizer')
 router_z_loss_weight_was_specified = arg_was_explicitly_set(sys.argv[1:], '--router-z-loss-weight')
@@ -255,8 +247,6 @@ if args.model_save_tag:
 
 # Load the model and tokenizer
 # NOTE: the optim state of the base model is not loaded here.
-refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"
-print0(f"expert kappa params L2 anchor: {args.kappa_params_l2_anchor}")
 sft_checkpoint_source = "sft" if args.eval_only else "base"
 use_kappa_swiglu = args.use_kappa_swiglu
 model, tokenizer, meta = load_model(
@@ -275,21 +265,8 @@ model, tokenizer, meta = load_model(
     disable_kappa_bias=args.disable_kappa_bias,
     independent_kappa_router=args.independent_kappa_router,
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
-    refresh_kappa_param_references=refresh_kappa_param_references,
+    refresh_kappa_param_references=False,
 )
-if model.config.independent_kappa_router and refresh_kappa_param_references:
-    args.kappa_params_l2_anchor = "zero"
-    user_config["kappa_params_l2_anchor"] = "zero"
-    refresh_kappa_param_references = False
-    model.config.refresh_kappa_param_references = False
-    for module in model.modules():
-        for name in ("initial_kappa_bias", "initial_kappa_scale"):
-            if hasattr(module, name):
-                setattr(module, name, None)
-    print0(
-        "Using --kappa-params-l2-anchor zero for independent kappa routing "
-        "because its L2 penalty is on output scores."
-    )
 model.set_kappa_training_phase(True)
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
@@ -335,19 +312,6 @@ if not use_dummy_wandb:
         allow_val_change=True,
     )
     
-print0(
-    "kappa_scale_l2_loss_weight_scale: "
-    f"{args.kappa_scale_l2_loss_weight_scale}"
-)
-
-user_config["kappa_scale_l2_loss_weight_scale"] = args.kappa_scale_l2_loss_weight_scale
-if not use_dummy_wandb:
-    wandb_run.config.update(
-        {
-            "kappa_scale_l2_loss_weight_scale": args.kappa_scale_l2_loss_weight_scale,
-        },
-        allow_val_change=True,
-    )
 if args.use_aux_free_load_balancing is None:
     args.use_aux_free_load_balancing = bool(
         getattr(model.config, "use_aux_free_load_balancing", False)
@@ -400,10 +364,7 @@ print0(f"Inherited aux_loss_weight: {aux_loss_weight}")
 user_config["aux_loss_weight"] = aux_loss_weight
 if not use_dummy_wandb:
     wandb_run.config.update({"aux_loss_weight": aux_loss_weight}, allow_val_change=True)
-kappa_bias_l2_loss_weight = args.kappa_l2_loss_weight * (
-    10 if model.config.independent_kappa_router else 1
-)
-kappa_scale_l2_loss_weight = args.kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
+kappa_l2_loss_weight = args.kappa_l2_loss_weight
 
 # If the model has not initialized kappa swiglu params, this has no effect.
 # Therefore, if the model is trained without enabling kappa swiglu, this call has no effect.
@@ -1107,15 +1068,10 @@ while True:
         if aux_loss is None:
             aux_loss = 0.0
         loss = loss + aux_loss_weight * aux_loss
-        kappa_bias_l2_loss = losses.get("kappa_bias_l2_loss")
-        if kappa_bias_l2_loss is None:
-            kappa_bias_l2_loss = 0.0
-        kappa_scale_l2_loss = losses.get("kappa_scale_l2_loss")
-        if kappa_scale_l2_loss is None:
-            kappa_scale_l2_loss = 0.0
-        loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
-        loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
-        loss = loss + args.kappa_router_sft_l2_loss_weight * losses['kappa_router_sft_l2_loss']
+        kappa_slope_l2_loss = losses.get("kappa_slope_l2_loss")
+        if kappa_slope_l2_loss is None:
+            kappa_slope_l2_loss = 0.0
+        loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss
 
         loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
         loss.backward()
@@ -1194,16 +1150,12 @@ while True:
             "train/loss": debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/kappa_bias_l2_loss_step": scalar_loss_to_item(losses['kappa_bias_l2_loss']),
-            "train/kappa_scale_l2_loss_step": scalar_loss_to_item(losses['kappa_scale_l2_loss']),
-            "train/kappa_router_sft_l2_loss_step": scalar_loss_to_item(losses['kappa_router_sft_l2_loss']),
+            "train/kappa_slope_l2_loss_step": scalar_loss_to_item(losses['kappa_slope_l2_loss']),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
-            "train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight,
-            "train/kappa_scale_l2_loss_weight": kappa_scale_l2_loss_weight,
-            "train/kappa_router_sft_l2_loss_weight": args.kappa_router_sft_l2_loss_weight,
+            "train/kappa_l2_loss_weight": kappa_l2_loss_weight,
             "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
             "train/lrm": lrm,
             "train/dt": logged_dt,

@@ -110,7 +110,7 @@ def test_removed_bias_from_scale_option_is_rejected():
         assert unknown == ["--kappa-bias-from-scale"]
 
 
-def test_independent_kappa_router_bias_l2_weight_is_ten_times_base_weight():
+def test_kappa_slope_l2_uses_single_scheduled_weight():
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         module = ast.parse(script.read_text(), filename=str(script))
         base_assignment = next(
@@ -118,28 +118,15 @@ def test_independent_kappa_router_bias_l2_weight_is_ten_times_base_weight():
             if isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Name) and node.value.func.id == "get_two_stage_annealed_loss_weight"
-            and any(isinstance(target, ast.Name) and target.id in {"kappa_l2_loss_weight", "kappa_bias_l2_loss_weight"} for target in node.targets)
+            and any(isinstance(target, ast.Name) and target.id == "kappa_l2_loss_weight" for target in node.targets)
         )
-        scale_assignment = next(
-            node for node in ast.walk(module)
-            if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "kappa_scale_l2_loss_weight" for target in node.targets)
-        )
-        adjustment = next(
-            node for node in ast.walk(module)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Attribute) and node.test.attr == "independent_kappa_router"
-            and any(isinstance(child, ast.Name) and child.id == "kappa_bias_l2_loss_weight" for child in ast.walk(node))
-        )
-        assert base_assignment.lineno < scale_assignment.lineno < adjustment.lineno
-        weight_module = ast.Module(body=[base_assignment, scale_assignment, adjustment], type_ignores=[])
+        weight_module = ast.Module(body=[base_assignment], type_ignores=[])
         for independent_router in (False, True):
             for base_weight in (0.0, 0.001, 0.02):
                 for step in (0, 50, 100):
                     args = SimpleNamespace(
                         independent_kappa_router=independent_router,
                         kappa_l2_loss_weight=base_weight,
-                        kappa_scale_l2_loss_weight_scale=2.0,
                         kappa_l2_loss_stage1_frac=0.5,
                         kappa_l2_loss_final_frac=0.1,
                     )
@@ -151,8 +138,7 @@ def test_independent_kappa_router_bias_l2_weight_is_ten_times_base_weight():
                     }
                     exec(compile(weight_module, filename=str(script), mode="exec"), namespace)
                     scheduled_weight = anneal(base_weight, step, 100, 50, 0.5, 0.1)
-                    assert namespace["kappa_bias_l2_loss_weight"] == scheduled_weight * (10 if independent_router else 1)
-                    assert namespace["kappa_scale_l2_loss_weight"] == scheduled_weight * 2.0
+                    assert namespace["kappa_l2_loss_weight"] == scheduled_weight
 
 
 def test_base_train_separates_compute_and_parameter_storage_dtypes():
@@ -410,7 +396,7 @@ def test_kappa_bias_l2_default_schedule_uses_half_run_and_two_stage_floors():
     assert 'os.execvp(chat_sft_argv[0], chat_sft_argv)' in source
 
 
-def test_base_train_removes_kappa_ema_rms_reg_and_preserves_ordinary_l2():
+def test_base_train_removes_parameter_regularization_and_uses_slope_l2():
     from inspect import signature
     from nanochat.configuration_nanomoe_gpt import GPTConfig
 
@@ -420,19 +406,18 @@ def test_base_train_removes_kappa_ema_rms_reg_and_preserves_ordinary_l2():
         "kappa_bias_l2_ema_anchor_start",
         "kappa_bias_l2_ema_anchor_end",
         "kappa_bias_l2_ema_floor_frac",
+        "kappa_bias_l2_loss_weight",
     )
     for config in (GPTConfig(), GPTConfig(**dict.fromkeys(removed_fields, True))):
         for name in removed_fields:
             assert name not in signature(GPTConfig).parameters
             assert not hasattr(config, name)
-        assert config.kappa_bias_l2_loss_weight == 0.0
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         source = script.read_text()
         assert "ema_rms" not in source
         assert "kappa_l2_ema" not in source
         assert "--kappa-l2-ema" not in source
-        assert "loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss" in source
-        assert "loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss" in source
+        assert "loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss" in source
 
 
 def test_kappa_input_logit_norm_exponent_cli_is_wired_into_config():

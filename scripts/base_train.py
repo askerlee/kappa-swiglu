@@ -290,15 +290,13 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-2,
-                    help="L2 weight on kappa_bias and kappa_scale values (the omitted default is 0.001 with --independent-kappa-router, which uses 10x this weight for kappa_bias)")
-parser.add_argument("--kappa-scale-l2-loss-weight-scale", type=float, default=1,
-                    help="multiplier applied to --kappa-l2-loss-weight when weighting kappa_scale L2 loss")
-parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of the MoE (2D) kappa_bias L2 loss from 1.0 to --kappa-l2-loss-stage1-frac (-1 = use half total training iterations)")
+                    help="L2 weight on the pre-transform kappa slope (the omitted default is 0.001 with --independent-kappa-router)")
+parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of kappa slope L2 loss (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
-# push the kappa_bias values towards 0 so that the slopes 
+# push the conditioning values towards 0 so that the slopes 
 # are pushed towards 1.
-parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
-parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the MoE (2D) kappa_bias L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
+parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_frac", type=float, default=1, help="fraction of the kappa slope L2 base weight to reach at the end of stage 1 (1 = no stage-1 annealing)")
+parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the kappa slope L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 # router-z-loss is around 200. So * weight ~ 0.002.
@@ -1406,13 +1404,6 @@ while True:
         final_floor_frac=args.kappa_l2_loss_final_frac,
         nolearn_iterations=0,
     )
-    kappa_scale_l2_loss_weight = (
-        kappa_l2_loss_weight * args.kappa_scale_l2_loss_weight_scale
-    )
-    if args.independent_kappa_router:
-        kappa_bias_l2_loss_weight = kappa_l2_loss_weight * 10
-    else:
-        kappa_bias_l2_loss_weight = kappa_l2_loss_weight
     moe_kappa_slope_max_scale = get_kappa_slope_max_scale(
         args.moe_kappa_slope_max_scale,
         step,
@@ -1749,14 +1740,10 @@ while True:
         if aux_loss is None:
             aux_loss = 0.0
         loss = loss + aux_loss_weight * aux_loss
-        kappa_bias_l2_loss = micro_losses.get("kappa_bias_l2_loss")
-        if kappa_bias_l2_loss is None:
-            kappa_bias_l2_loss = 0.0
-        kappa_scale_l2_loss = micro_losses.get("kappa_scale_l2_loss")
-        if kappa_scale_l2_loss is None:
-            kappa_scale_l2_loss = 0.0
-        loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss
-        loss = loss + kappa_scale_l2_loss_weight * kappa_scale_l2_loss
+        kappa_slope_l2_loss = micro_losses.get("kappa_slope_l2_loss")
+        if kappa_slope_l2_loss is None:
+            kappa_slope_l2_loss = 0.0
+        loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss
 
         loss = loss * micro_weight / grad_accum_normalizer # normalize by retained sequence rows
         if micro_step == 0 or micro_step == grad_accum_steps - 1:
@@ -1884,8 +1871,7 @@ while True:
             "train/loss_step":              debiased_smooth_loss,
             "train/aux_loss_step":          losses['aux_loss'],
             "train/router_z_loss_step":     losses['router_z_loss'],
-            "train/kappa_bias_l2_loss_step": losses['kappa_bias_l2_loss'],
-            "train/kappa_scale_l2_loss_step": losses['kappa_scale_l2_loss'],
+            "train/kappa_slope_l2_loss_step": losses['kappa_slope_l2_loss'],
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -1902,8 +1888,7 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
-        log_data["train/kappa_bias_l2_loss_weight"] = kappa_bias_l2_loss_weight
-        log_data["train/kappa_scale_l2_loss_weight"] = kappa_scale_l2_loss_weight
+        log_data["train/kappa_l2_loss_weight"] = kappa_l2_loss_weight
         log_data["train/moe_kappa_slope_max_scale"] = moe_kappa_slope_max_scale
         log_data["train/dense_kappa_slope_max_scale"] = dense_kappa_slope_max_scale
         drop_rates = losses['drop_rate_per_ks']

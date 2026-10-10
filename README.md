@@ -139,9 +139,19 @@ dynamic bias shared across that expert's gates. Conditioning is
 The learned `kappa_scale` tensor stores alpha using the configured sharing
 granularity and kappa learning-rate schedule. This combination has no static
 expert kappa bias or predictor bias. Gate-dependent conditioning retains its
-0.1 gradient scale through `gate_proj(x)`. Scale L2 penalizes alpha; bias L2
-penalizes predictor outputs over valid routed tokens. Checkpoints retain alpha
+0.1 gradient scale through `gate_proj(x)`. Checkpoints retain alpha
 in this mode rather than discarding it as legacy independent-router state.
+
+All kappa schemes use only `kappa_slope_l2_loss`: the mean square of the
+combined conditioning (`slope_work`) before `tanh` and `exp`. MoE losses exclude
+padding and unused expert slots and average over valid assignment-gate pairs.
+Dense layers penalize `kappa_bias * kappa_input_constant`. Base, mixed, and SFT
+training weight this loss with `--kappa-l2-loss-weight`; base and mixed training
+retain its annealing schedule. There are no separate bias, scale, or SFT-router
+weight penalties, parameter anchors, or independent-router 10x multipliers.
+The former `--kappa-scale-l2-loss-weight-scale`,
+`--kappa-router-sft-l2-loss-weight`, and `--kappa-params-l2-anchor` options
+have been removed.
 
 Predictor weights receive full gradients. Only the predictor's gradient path
 back to the input latent is multiplied by 0.1; expert and routing paths are

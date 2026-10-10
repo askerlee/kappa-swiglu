@@ -76,8 +76,8 @@ def test_kappa_phase_is_set_before_optimizer_setup():
     assert load_position < phase_position < source.index("optimizer = model.setup_optimizer(")
 
 
-@pytest.mark.parametrize("script_name", ["base_train_mix", "chat_sft"])
-def test_kappa_router_sft_weight_l2_cli_and_training_loss(script_name):
+@pytest.mark.parametrize("script_name", ["base_train", "base_train_mix", "chat_sft"])
+def test_kappa_slope_l2_cli_and_training_loss(script_name):
     script_path = ROOT / "scripts" / f"{script_name}.py"
     source = script_path.read_text()
     module = ast.parse(source)
@@ -86,36 +86,32 @@ def test_kappa_router_sft_weight_l2_cli_and_training_loss(script_name):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and node.func.attr == "add_argument" and node.args
         and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == "--kappa-router-sft-l2-loss-weight"
+        and node.args[0].value == "--kappa-l2-loss-weight"
     )
     parser = argparse.ArgumentParser()
     option_module = ast.fix_missing_locations(ast.Module(body=[ast.Expr(value=option)], type_ignores=[]))
     exec(compile(option_module, str(script_path), "exec"), {"parser": parser})
-    assert parser.parse_args([]).kappa_router_sft_l2_loss_weight == 0.001
-    assert parser.parse_args(["--kappa-router-sft-l2-loss-weight", "0"]).kappa_router_sft_l2_loss_weight == 0.0
-    guard = next(
-        node for node in ast.walk(module)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "args.kappa_router_sft_l2_loss_weight < 0"
-    )
-    with pytest.raises(ValueError, match="must be >= 0"):
-        exec(compile(ast.Module(body=[guard], type_ignores=[]), str(script_path), "exec"), {
-            "args": parser.parse_args(["--kappa-router-sft-l2-loss-weight", "-1"]),
-        })
+    assert parser.parse_args([]).kappa_l2_loss_weight == 0.01
+    assert parser.parse_args(["--kappa-l2-loss-weight", "0"]).kappa_l2_loss_weight == 0.0
     addition = next(
         node for node in ast.walk(module)
-        if isinstance(node, ast.Assign) and "args.kappa_router_sft_l2_loss_weight *" in ast.unparse(node)
+        if isinstance(node, ast.Assign) and "kappa_l2_loss_weight * kappa_slope_l2_loss" in ast.unparse(node)
     )
     weights = torch.tensor([1.0, 2.0], requires_grad=True)
-    losses = {"kappa_router_sft_l2_loss": weights.square().mean()}
-    namespace = {"loss": torch.tensor(1.0), "args": parser.parse_args([]), "losses": losses, "micro_losses": losses}
+    namespace = {
+        "loss": torch.tensor(1.0), "kappa_l2_loss_weight": 0.01,
+        "kappa_slope_l2_loss": weights.square().mean(),
+    }
     exec(compile(ast.Module(body=[addition], type_ignores=[]), str(script_path), "exec"), namespace)
-    torch.testing.assert_close(namespace["loss"], torch.tensor(1.0025))
+    torch.testing.assert_close(namespace["loss"], torch.tensor(1.025))
     namespace["loss"].backward()
-    torch.testing.assert_close(weights.grad, torch.tensor([0.001, 0.002]))
+    torch.testing.assert_close(weights.grad, torch.tensor([0.01, 0.02]))
     assert source.index(ast.get_source_segment(source, addition)) < source.index("loss = loss * micro_weight / grad_accum_normalizer")
-    assert '"train/kappa_router_sft_l2_loss_step"' in source
-    assert '"train/kappa_router_sft_l2_loss_weight"' in source
+    assert '"train/kappa_slope_l2_loss_step"' in source
+    assert '"train/kappa_l2_loss_weight"' in source
+    for removed in ('kappa_bias_l2_loss', 'kappa_scale_l2_loss', 'kappa_router_sft_l2_loss',
+                    '--kappa-scale-l2-loss-weight-scale', '--kappa-router-sft-l2-loss-weight'):
+        assert removed not in source
 
 
 @pytest.mark.parametrize("rank,upload", [(0, True), (0, False), (1, True)])
@@ -217,30 +213,28 @@ def test_independent_kappa_router_cli_wires_model_config(script_name):
 
 @pytest.mark.parametrize("independent_router", [False, True])
 @pytest.mark.parametrize("base_weight", [0.0, 0.001, 0.02])
-def test_chat_sft_independent_kappa_bias_l2_weight(independent_router, base_weight):
+def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight):
     module = ast.parse(CHAT_SFT.read_text(), filename=str(CHAT_SFT))
     weights = ast.Module(body=[
         node for node in module.body
         if isinstance(node, ast.Assign)
         and any(
             isinstance(target, ast.Name)
-            and target.id in {"kappa_bias_l2_loss_weight", "kappa_scale_l2_loss_weight"}
+            and target.id == "kappa_l2_loss_weight"
             for target in node.targets
         )
     ], type_ignores=[])
     namespace = {
         "args": SimpleNamespace(
             independent_kappa_router=None, kappa_l2_loss_weight=base_weight,
-            kappa_scale_l2_loss_weight_scale=0.2,
         ),
         "model": SimpleNamespace(config=SimpleNamespace(independent_kappa_router=independent_router)),
     }
     exec(compile(weights, filename=str(CHAT_SFT), mode="exec"), namespace)
-    assert namespace["kappa_bias_l2_loss_weight"] == base_weight * (10 if independent_router else 1)
-    assert namespace["kappa_scale_l2_loss_weight"] == base_weight * 0.2
+    assert namespace["kappa_l2_loss_weight"] == base_weight
     source = CHAT_SFT.read_text()
-    assert 'loss = loss + kappa_bias_l2_loss_weight * kappa_bias_l2_loss' in source
-    assert '"train/kappa_bias_l2_loss_weight": kappa_bias_l2_loss_weight' in source
+    assert 'loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss' in source
+    assert '"train/kappa_l2_loss_weight": kappa_l2_loss_weight' in source
 
 
 def test_chat_sft_keeps_sensitive_parameters_in_fp32_without_casting_buffers():
@@ -647,57 +641,12 @@ def test_final_checkpoint_is_saved_before_final_chat_eval():
     assert save_index < chat_eval_index
 
 
-def test_kappa_params_l2_anchor_cli_defaults_to_initial_and_wires_load_behavior():
+def test_kappa_slope_l2_has_no_parameter_anchor_option():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'parser.add_argument("--kappa-params-l2-anchor", type=str, choices=("initial", "zero"), default="initial"' in source
+    assert '--kappa-params-l2-anchor' not in source
     assert '--use-kappa-swiglu-as-lr-scaler' not in source
-    assert 'refresh_kappa_param_references = args.kappa_params_l2_anchor == "initial"' in source
-    assert 'refresh_kappa_param_references=refresh_kappa_param_references' in source
-
-
-@pytest.mark.parametrize("independent_router", [False, True])
-@pytest.mark.parametrize("anchor", ["initial", "zero"])
-def test_independent_kappa_router_uses_zero_l2_anchor(independent_router, anchor):
-    source = CHAT_SFT.read_text(encoding="utf-8")
-    module = ast.parse(source, filename=str(CHAT_SFT))
-    condition = "model.config.independent_kappa_router and refresh_kappa_param_references"
-    guard = next(
-        node for node in module.body
-        if isinstance(node, ast.If) and ast.unparse(node.test) == condition
-    )
-    model = torch.nn.Module()
-    model.config = SimpleNamespace(
-        independent_kappa_router=independent_router,
-        refresh_kappa_param_references=anchor == "initial",
-    )
-    model.experts = torch.nn.Module()
-    for name in ("initial_kappa_bias", "initial_kappa_scale"):
-        model.experts.register_buffer(name, torch.ones(2) if anchor == "initial" else None)
-    namespace = {
-        "model": model,
-        "args": SimpleNamespace(kappa_params_l2_anchor=anchor),
-        "user_config": {"kappa_params_l2_anchor": anchor},
-        "refresh_kappa_param_references": anchor == "initial",
-        "print0": lambda message: None,
-    }
-    guard_code = compile(ast.Module(body=[guard], type_ignores=[]), str(CHAT_SFT), "exec")
-    exec(guard_code, namespace)
-    expected_anchor = "zero" if independent_router else anchor
-    assert namespace["args"].kappa_params_l2_anchor == expected_anchor
-    assert namespace["user_config"]["kappa_params_l2_anchor"] == expected_anchor
-    assert namespace["refresh_kappa_param_references"] is (expected_anchor == "initial")
-    assert model.config.refresh_kappa_param_references is (expected_anchor == "initial")
-    if expected_anchor == "zero":
-        assert model.experts.initial_kappa_bias is None
-        assert model.experts.initial_kappa_scale is None
-    else:
-        torch.testing.assert_close(model.experts.initial_kappa_bias, torch.ones(2))
-        torch.testing.assert_close(model.experts.initial_kappa_scale, torch.ones(2))
-    load_index = source.index("model, tokenizer, meta = load_model(")
-    guard_index = source.index(f"if {condition}:")
-    phase_index = source.index("model.set_kappa_training_phase(True)")
-    assert load_index < guard_index < phase_index
+    assert 'refresh_kappa_param_references=False' in source
 
 
 def test_matrix_optimizer_inherits_from_base_checkpoint_unless_explicitly_set():

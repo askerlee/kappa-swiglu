@@ -42,9 +42,22 @@ from nanochat.flash_attention import flash_attn
 _UT_LOSS_NAMES = (
     "aux_loss",
     "router_z_loss",
-    "kappa_bias_l2_loss",
-    "kappa_scale_l2_loss",
+    "kappa_slope_l2_loss",
 )
+
+
+def _accumulate_kappa_slope_l2_loss(slope_work, loss_accum=None, valid_score_mask=None):
+    slope_work = slope_work.float()
+    if valid_score_mask is None:
+        loss = slope_work.square().mean()
+    else:
+        valid_slope_mask = valid_score_mask.unsqueeze(-1).expand_as(slope_work)
+        loss = slope_work.masked_fill(~valid_slope_mask, 0.0).square().sum()
+        loss = loss / valid_slope_mask.sum().clamp_min(1)
+    if loss_accum is not None:
+        loss_accum.add("kappa_slope_l2_loss", loss)
+    else:
+        MANAGER.add("kappa_slope_l2_loss", loss)
 
 
 def _save_activations_on_cpu(device_type):
@@ -1174,7 +1187,7 @@ class Qwen3MLP(nn.Module):
             return kappa_bias + 0
         return kappa_bias.reshape(1).expand(self.intermediate_size) + 0
 
-    def _compute_kappa_slope_scales(self, kappa_bias):
+    def _compute_kappa_slope_scales(self, kappa_bias, loss_accum=None):
         target_dtype = torch.float32 if self.training else kappa_bias.dtype
         kappa_bias = kappa_bias.to(dtype=target_dtype)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
@@ -1184,6 +1197,8 @@ class Qwen3MLP(nn.Module):
             dtype=target_dtype,
         )
         log_kappa = kappa_bias * input_constant
+        if self.training:
+            _accumulate_kappa_slope_l2_loss(log_kappa, loss_accum=loss_accum)
         return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa))
 
     @torch._dynamo.disable
@@ -1215,24 +1230,6 @@ class Qwen3MLP(nn.Module):
 
     def set_kappa_slope_max_scale(self, kappa_slope_max_scale):
         self.kappa_slope_max_scale.fill_(float(kappa_slope_max_scale))
-
-    def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, kappa_slot=0):
-        if self.disable_kappa_bias:
-            return
-        kappa_bias = kappa_bias.float()
-        loss = kappa_bias.square().mean()
-        if loss_accum is not None:
-            loss_accum.add("kappa_bias_l2_loss", loss)
-        else:
-            MANAGER.add("kappa_bias_l2_loss", loss)
-
-    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None, kappa_slot=0):
-        kappa_scale = kappa_scale.float()
-        loss = kappa_scale.square().mean()
-        if loss_accum is not None:
-            loss_accum.add("kappa_scale_l2_loss", loss)
-        else:
-            MANAGER.add("kappa_scale_l2_loss", loss)
 
     @torch._dynamo.disable
     def _update_kappa_slope_scale_stats(self, slope_scales):
@@ -1275,16 +1272,12 @@ class Qwen3MLP(nn.Module):
             return self.c_proj(gate_out * self.c_fc(x))
         kappa_bias = self._materialize_kappa_bias(kappa_slot)
         if self.training:
-            slope_scales = self._compute_kappa_slope_scales(kappa_bias)
+            slope_scales = self._compute_kappa_slope_scales(kappa_bias, loss_accum=loss_accum)
         else:
             slope_scales = self._materialize_kappa_slope_scales_for_eval(
                 gate_out_raw.dtype,
                 gate_out_raw.device,
                 kappa_slot,
-            )
-        if self.training:
-            self._accumulate_kappa_bias_l2_losses(
-                kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
             )
         if MANAGER.collect_load_balancing_stats:
             self._update_kappa_slope_scale_stats(slope_scales)
@@ -1657,6 +1650,9 @@ class Qwen3MLPExperts(nn.Module):
         kappa_bias,
         selected_gate_scores,
         kappa_scale=None,
+        kappa_slot=0,
+        loss_accum=None,
+        valid_score_mask=None,
     ):
         target_dtype = torch.float32
         kappa_bias = kappa_bias.to(dtype=target_dtype)
@@ -1685,6 +1681,9 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
+        _accumulate_kappa_slope_l2_loss(
+            slope_work, loss_accum=loss_accum, valid_score_mask=valid_score_mask,
+        )
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         if MANAGER.collect_load_balancing_stats:
@@ -1741,6 +1740,8 @@ class Qwen3MLPExperts(nn.Module):
         selected_gate_scores,
         kappa_scale=None,
         kappa_slot=0,
+        loss_accum=None,
+        valid_score_mask=None,
     ):
         if self.training:
             return self._apply_kappa_slope_scaled_activation_training(
@@ -1748,6 +1749,9 @@ class Qwen3MLPExperts(nn.Module):
                 kappa_bias,
                 selected_gate_scores,
                 kappa_scale=kappa_scale,
+                kappa_slot=kappa_slot,
+                loss_accum=loss_accum,
+                valid_score_mask=valid_score_mask,
             )
         return self._apply_kappa_slope_scaled_activation_inference(
             gate_out_raw,
@@ -1757,34 +1761,6 @@ class Qwen3MLPExperts(nn.Module):
 
     def set_kappa_slope_max_scale(self, kappa_slope_max_scale):
         self.kappa_slope_max_scale.fill_(float(kappa_slope_max_scale))
-
-    def _accumulate_kappa_bias_l2_losses(self, kappa_bias, loss_accum=None, kappa_slot=0):
-        if self.disable_kappa_bias:
-            return
-        kappa_bias = kappa_bias.float()
-        kappa_bias_l2_value = kappa_bias
-        if self.initial_kappa_bias is not None:
-            kappa_bias_l2_value = kappa_bias - self.initial_kappa_bias[kappa_slot].float()
-        loss = kappa_bias_l2_value.square().mean()
-        if loss_accum is not None:
-            loss_accum.add("kappa_bias_l2_loss", loss)
-        else:
-            MANAGER.add("kappa_bias_l2_loss", loss)
-
-    def _accumulate_kappa_scale_l2_losses(self, kappa_scale, loss_accum=None, kappa_slot=0, valid_score_mask=None):
-        kappa_scale = kappa_scale.float()
-        kappa_scale_l2_value = kappa_scale
-        if self.initial_kappa_scale is not None:
-            kappa_scale_l2_value = kappa_scale - self.initial_kappa_scale[kappa_slot].float()
-        if valid_score_mask is None:
-            loss = kappa_scale_l2_value.square().mean()
-        else:
-            loss = kappa_scale_l2_value.masked_fill(~valid_score_mask, 0.0).square().sum()
-            loss = loss / valid_score_mask.sum().clamp_min(1)
-        if loss_accum is not None:
-            loss_accum.add("kappa_scale_l2_loss", loss)
-        else:
-            MANAGER.add("kappa_scale_l2_loss", loss)
 
     def _update_gate_stats(self, gate_out_acts):
         if not MANAGER.collect_load_balancing_stats:
@@ -1943,21 +1919,6 @@ class Qwen3MLPExperts(nn.Module):
                 )
             if self.training:
                 kappa_bias = self._materialize_kappa_bias(kappa_slot)
-                if self.independent_kappa_router and self.kappa_input == 'gate_proj':
-                    bias_values = selected_gate_scores.float()
-                    if valid_score_mask is None:
-                        bias_loss = bias_values.square().mean()
-                    else:
-                        bias_loss = bias_values.masked_fill(~valid_score_mask, 0.0).square().sum()
-                        bias_loss = bias_loss / valid_score_mask.sum().clamp_min(1)
-                    if loss_accum is not None:
-                        loss_accum.add('kappa_bias_l2_loss', bias_loss)
-                    else:
-                        MANAGER.add('kappa_bias_l2_loss', bias_loss)
-                else:
-                    self._accumulate_kappa_bias_l2_losses(
-                        kappa_bias, loss_accum=loss_accum, kappa_slot=kappa_slot
-                    )
             else:
                 kappa_bias = self._materialize_kappa_bias_for_eval(
                     gate_out_raw.dtype,
@@ -1967,14 +1928,6 @@ class Qwen3MLPExperts(nn.Module):
             kappa_scale = None
             if self.training and self.use_kappa_scale_param:
                 kappa_scale = self._materialize_kappa_scale(kappa_slot)
-                self._accumulate_kappa_scale_l2_losses(
-                    kappa_scale, loss_accum=loss_accum, kappa_slot=kappa_slot
-                )
-            elif self.training and self.independent_kappa_router:
-                self._accumulate_kappa_scale_l2_losses(
-                    selected_gate_scores, loss_accum=loss_accum,
-                    kappa_slot=kappa_slot, valid_score_mask=valid_score_mask,
-                )
             scaled_selected_gate_scores = selected_gate_scores
             if not self.independent_kappa_router and self.kappa_input != 'gate_proj':
                 scaled_selected_gate_scores = scale_grad(
@@ -1987,6 +1940,8 @@ class Qwen3MLPExperts(nn.Module):
                 scaled_selected_gate_scores,
                 kappa_scale=kappa_scale,
                 kappa_slot=kappa_slot,
+                loss_accum=loss_accum,
+                valid_score_mask=valid_score_mask,
             )
         else:
             self._cached_kappa_scale = None
@@ -2334,7 +2289,7 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         valid_score_mask = None
-        if self.kappa_router is not None:
+        if self.use_qwen3_moe_mlp:
             expert_counts = expert_mask.sum(dim=(0, 1))
             valid_score_mask = torch.arange(exp_capacity, device=x.device).unsqueeze(0) < expert_counts.unsqueeze(1)
         expert_outputs = self.experts(
@@ -2493,24 +2448,11 @@ class GPT(nn.Module):
             for module in bias_scale_enabled_modules:
                 module.bind_shared_kappa_scale(self.global_kappa_scale)
 
-    def compute_kappa_router_sft_l2_loss(self):
-        if self.kappa_phase != 1 or not getattr(self.config, 'separate_base_sft_kappa', False):
-            return self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
-        router_losses = [
-            block.mlp.kappa_router.weight.view(2, self.config.n_exp, -1)[1].float().square().mean()
-            for block in self.transformer.h
-            if isinstance(block.mlp, MOELayer) and block.mlp.kappa_router is not None
-        ]
-        if not router_losses:
-            return self.transformer.wte.weight.new_zeros((), dtype=torch.float32)
-        return torch.stack(router_losses).mean()
-
     def compute_kappa_slope_magnitude_losses(self):
         device = self.transformer.wte.weight.device
         losses = {}
         for name in (
-            'kappa_bias_l2_loss',
-            'kappa_scale_l2_loss',
+            'kappa_slope_l2_loss',
         ):
             value = self._aggregate_loop_averaged_loss(name)
             losses[name] = value if torch.is_tensor(value) else torch.zeros((), device=device)
@@ -3277,8 +3219,7 @@ class GPT(nn.Module):
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
-                   'kappa_bias_l2_loss': 0,
-                   'kappa_scale_l2_loss': 0,
+                   'kappa_slope_l2_loss': 0,
                    'kappa_slope_scale_abs_top5p_mean': 0,
                    'kappa_slope_scale_abs_bottom5p_mean': 0,
                    'kappa_slope_scale_abs_mean': 0,
@@ -3475,7 +3416,6 @@ class GPT(nn.Module):
             assert ntp_loss_total is not None
             loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
-            losses['kappa_router_sft_l2_loss'] = self.compute_kappa_router_sft_l2_loss()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = (
@@ -3498,8 +3438,7 @@ class GPT(nn.Module):
                 losses.update({
                     name: checkpoint_loss_totals[_UT_LOSS_NAMES.index(name)] / self.total_ut_steps
                     for name in (
-                        'kappa_bias_l2_loss',
-                        'kappa_scale_l2_loss',
+                        'kappa_slope_l2_loss',
                     )
                 })
             else:

@@ -38,7 +38,6 @@ class GPTConfig:
         log_implicit_gate_proj_bias: bool = False,
         gate_stats_threshold: float = 0.1,
         gate_stats_topk: int = 16,
-        kappa_bias_l2_loss_weight: float = 0.0,
         refresh_kappa_param_references: bool = False,
         refresh_kappa_bias_references: bool | None = None,
         use_noisy_top_k: bool = False,
@@ -139,12 +138,10 @@ class GPTConfig:
                 f"kappa_start_layer must be >= 0, got {kappa_start_layer}"
             )
         self.log_implicit_gate_proj_bias = bool(log_implicit_gate_proj_bias)
-        self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
         self.gate_stats_threshold = float(gate_stats_threshold)
         self.gate_stats_topk = int(gate_stats_topk)
         if self.gate_stats_topk <= 0:
             raise ValueError(f"gate_stats_topk must be > 0, got {gate_stats_topk}")
-        self.kappa_bias_l2_loss_weight = float(kappa_bias_l2_loss_weight)
         self.refresh_kappa_param_references = bool(
             refresh_kappa_param_references or refresh_kappa_bias_references
         )
