@@ -46,7 +46,7 @@ _UT_LOSS_NAMES = (
 )
 
 
-def _accumulate_kappa_slope_l2_loss(slope_work, loss_accum=None, valid_score_mask=None):
+def _compute_kappa_slope_l2_loss(slope_work, valid_score_mask=None):
     slope_work = slope_work.float()
     if valid_score_mask is None:
         loss = slope_work.square().mean()
@@ -54,6 +54,18 @@ def _accumulate_kappa_slope_l2_loss(slope_work, loss_accum=None, valid_score_mas
         valid_slope_mask = valid_score_mask.unsqueeze(-1).expand_as(slope_work)
         loss = slope_work.masked_fill(~valid_slope_mask, 0.0).square().sum()
         loss = loss / valid_slope_mask.sum().clamp_min(1)
+    return loss
+
+
+def _kappa_slope_l2_from_conditioning(conditioning, bias, scale, valid_score_mask):
+    conditioning = conditioning.float()
+    bias = bias.float()
+    slope_work = bias + conditioning if scale is None else torch.addcmul(bias, conditioning, scale.float())
+    return _compute_kappa_slope_l2_loss(slope_work, valid_score_mask)
+
+
+def _accumulate_kappa_slope_l2_loss(slope_work, loss_accum=None, valid_score_mask=None):
+    loss = _compute_kappa_slope_l2_loss(slope_work, valid_score_mask)
     if loss_accum is not None:
         loss_accum.add("kappa_slope_l2_loss", loss)
     else:
@@ -1682,22 +1694,34 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
-        reg_scores = selected_gate_scores.detach() if regularization_gate_scores is None else regularization_gate_scores
+        reg_scores = regularization_gate_scores
+        if reg_scores is None and selected_gate_scores is not None:
+            reg_scores = selected_gate_scores.detach()
         if self.independent_kappa_router and self.kappa_input == 'gate_proj':
-            reg_slope_work = torch.addcmul(
-                reg_scores.float().unsqueeze(-1), gate_out_raw.detach().float(),
-                kappa_scale.float().unsqueeze(1),
-            )
+            reg_input = gate_out_raw.detach()
+            reg_bias = reg_scores.unsqueeze(-1)
+            reg_scale = kappa_scale.unsqueeze(1)
         elif self.independent_kappa_router:
-            reg_slope_work = kappa_bias + reg_scores.float().unsqueeze(-1)
+            reg_input = reg_scores.unsqueeze(-1)
+            reg_bias = kappa_bias
+            reg_scale = None
         elif self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
-            reg_input = gate_out_raw.detach().float() if self.kappa_input == 'gate_proj' else reg_scores.float().unsqueeze(-1)
-            reg_slope_work = torch.addcmul(kappa_bias, reg_input, kappa_scale)
+            reg_input = gate_out_raw.detach() if self.kappa_input == 'gate_proj' else reg_scores.unsqueeze(-1)
+            reg_bias = kappa_bias
+            reg_scale = kappa_scale
         else:
-            reg_slope_work = reg_scores.float().unsqueeze(-1) * kappa_bias
-        _accumulate_kappa_slope_l2_loss(
-            reg_slope_work, loss_accum=loss_accum, valid_score_mask=valid_score_mask,
+            reg_input = reg_scores.unsqueeze(-1)
+            reg_bias = kappa_bias.new_zeros(())
+            reg_scale = kappa_bias
+        reg_loss = checkpoint(
+            _kappa_slope_l2_from_conditioning,
+            reg_input, reg_bias, reg_scale, valid_score_mask,
+            use_reentrant=False, preserve_rng_state=False,
         )
+        if loss_accum is not None:
+            loss_accum.add('kappa_slope_l2_loss', reg_loss)
+        else:
+            MANAGER.add('kappa_slope_l2_loss', reg_loss)
         slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         if MANAGER.collect_load_balancing_stats:

@@ -146,6 +146,11 @@ All kappa schemes use only `kappa_slope_l2_loss`: the mean square of the
 combined conditioning (`slope_work`) before `tanh` and `exp`. MoE losses exclude
 padding and unused expert slots and average over valid assignment-gate pairs.
 Dense layers penalize `kappa_bias * kappa_input_constant`. Base, mixed, and SFT
+regularization detaches conditioning token inputs and gate projections while
+retaining gradients for kappa predictor weights, alpha, and bias. Its scalar
+loss computation is checkpointed: backward recomputes the FP32 slope instead
+of retaining a second full gate-sized FP32 graph. Activation gradients are unchanged.
+Base, mixed, and SFT
 training weight this loss with `--kappa-l2-loss-weight`; base and mixed training
 retain its annealing schedule. The effective loss weight is zero before the
 kappa parameter delay D, so regularization does not train upstream representations
@@ -159,7 +164,7 @@ The former `--kappa-scale-l2-loss-weight-scale`,
 `--kappa-router-sft-l2-loss-weight`, and `--kappa-params-l2-anchor` options
 have been removed.
 
-Predictor weights receive full gradients. Only the predictor's gradient path
+Predictor weights receive full gradients. In the activation branch, only the predictor's gradient path
 back to the input latent is multiplied by 0.1; expert and routing paths are
 unchanged. The predictor uses the MoE matrix optimizer and matrix learning
 rate, not the kappa bias/scale learning-rate schedule.

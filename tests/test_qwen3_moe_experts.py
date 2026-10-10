@@ -10,6 +10,79 @@ from nanochat.gpt import GPT, MANAGER, MOELayer, Qwen3MLP, Qwen3MLPExperts, Rout
 from nanochat.manager import MOEManager
 
 
+@pytest.mark.parametrize('masked', [False, True])
+@pytest.mark.parametrize('compiled', [False, True])
+def test_checkpointed_kappa_regularization_reuses_gate_storage(masked, compiled):
+    from nanochat.gpt import _kappa_slope_l2_from_conditioning
+    from torch.utils.checkpoint import checkpoint
+
+    raw_gate = torch.randn(2, 8, 16, dtype=torch.bfloat16, requires_grad=True)
+    bias = torch.randn(2, 8, 1, requires_grad=True)
+    alpha = torch.randn(2, 1, 16, requires_grad=True)
+    mask = torch.rand(2, 8) > 0.5 if masked else None
+    reference_loss = _kappa_slope_l2_from_conditioning(raw_gate.detach(), bias, alpha, mask)
+    reference_grads = torch.autograd.grad(reference_loss, (bias, alpha))
+    saved = []
+
+    def pack(tensor):
+        saved.append(tensor)
+        return tensor
+
+    def compute_loss(raw_gate, bias, alpha, mask):
+        return checkpoint(
+            _kappa_slope_l2_from_conditioning,
+            raw_gate.detach(), bias, alpha, mask,
+            use_reentrant=False, preserve_rng_state=False,
+        )
+
+    if compiled:
+        compute_loss = torch.compile(compute_loss, fullgraph=True)
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        loss = compute_loss(raw_gate, bias, alpha, mask)
+    torch.testing.assert_close(loss, reference_loss)
+    gate_sized_saved = [tensor for tensor in saved if tensor.shape == raw_gate.shape]
+    assert len(gate_sized_saved) == 1
+    assert gate_sized_saved[0].dtype == torch.bfloat16
+    assert gate_sized_saved[0].data_ptr() == raw_gate.data_ptr()
+    loss.backward()
+    torch.testing.assert_close(bias.grad, reference_grads[0])
+    torch.testing.assert_close(alpha.grad, reference_grads[1])
+    assert raw_gate.grad is None
+
+
+@pytest.mark.parametrize('kappa_input', ['router_probs', 'gate_proj'])
+@pytest.mark.parametrize('is_sft', [False, True])
+def test_kappa_regularization_blocks_inputs_but_preserves_activation_gradients(monkeypatch, kappa_input, is_sft):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    torch.manual_seed(42)
+    layer = MOELayer(GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True, independent_kappa_router=True,
+        kappa_input=kappa_input, separate_base_sft_kappa=True,
+        use_aux_loss=False, use_router_z_loss=False, router_tie_noise_steps=0,
+    ), layer_idx=0)
+    layer.experts.kappa_phase = int(is_sft)
+    with torch.no_grad():
+        for parameter in layer.parameters():
+            parameter.uniform_(-0.3, 0.3)
+    inputs = torch.randn(1, 8, 4, requires_grad=True)
+    mask = torch.tensor([[True, True, True, True, True, True, False, False]])
+    accum = _UTLossAccum(inputs, 1, 2)
+    output = layer(inputs, valid_token_mask=mask, loss_accum=accum, router_layer_idx=0)
+    loss = accum.losses[_UT_LOSS_NAMES.index('kappa_slope_l2_loss')]
+    loss.backward(retain_graph=True)
+    assert inputs.grad is None
+    assert layer.experts.gate_proj.grad is None
+    assert layer.router.w_g.weight.grad is None
+    assert layer.kappa_router.weight.grad.abs().sum() > 0
+    kappa_parameter = layer.experts.kappa_scale if kappa_input == 'gate_proj' else layer.experts.kappa_bias
+    assert kappa_parameter.grad.abs().sum() > 0
+    layer.zero_grad(set_to_none=True)
+    output.square().sum().backward()
+    assert inputs.grad.abs().sum() > 0
+    assert layer.experts.gate_proj.grad.abs().sum() > 0
+    assert layer.kappa_router.weight.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize('training', [False, True])
 @pytest.mark.parametrize('kappa_slot', [0, 1])
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
@@ -59,8 +132,8 @@ def test_gate_proj_kappa_formula_and_gradients(monkeypatch, training, kappa_slot
         expected_slope = scale.unsqueeze(1) * kappa_raw + conditioning_bias
         torch.testing.assert_close(slope_loss, expected_slope[valid_mask].square().mean())
         if independent_router:
-            score_grad = torch.autograd.grad(slope_loss, scores, retain_graph=True)[0]
-            assert score_grad[~valid_mask].count_nonzero() == 0
+            score_grad = torch.autograd.grad(slope_loss, scores, retain_graph=True, allow_unused=True)[0]
+            assert score_grad is None
     if not independent_router:
         torch.testing.assert_close(experts(inputs, selected_gate_scores=scores * 7), actual)
         torch.testing.assert_close(experts(inputs), actual)
@@ -570,7 +643,7 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     assert not cached.requires_grad
     assert output[:, -2:].count_nonzero() == 0
     expected_logits = F.linear(
-        scale_grad(latent.reshape(-1, 4), 0.1), layer.kappa_router.weight,
+        latent.detach().reshape(-1, 4), layer.kappa_router.weight,
     ).gather(-1, indices)
     expected_slope = expected_logits.unsqueeze(-1) + layer.experts._materialize_kappa_bias()[indices]
     expected_scale_loss = expected_slope[valid_assignments].square().mean()
@@ -578,12 +651,12 @@ def test_independent_kappa_router_dispatch_and_gradients(monkeypatch, kappa_inpu
     actual_scale_grad = torch.autograd.grad(
         scale_loss, layer.kappa_router.weight, retain_graph=True,
     )[0]
-    expected_scale_grad, expected_latent_grad = torch.autograd.grad(
-        expected_scale_loss, (layer.kappa_router.weight, latent),
-    )
+    expected_scale_grad = torch.autograd.grad(
+        expected_scale_loss, layer.kappa_router.weight,
+    )[0]
     torch.testing.assert_close(actual_scale_grad, expected_scale_grad)
-    actual_latent_grad = torch.autograd.grad(scale_loss, latent, retain_graph=True)[0]
-    torch.testing.assert_close(actual_latent_grad, expected_latent_grad)
+    actual_latent_grad = torch.autograd.grad(scale_loss, latent, retain_graph=True, allow_unused=True)[0]
+    assert actual_latent_grad is None
     assert actual_scale_grad.abs().sum() > 0
     output.square().sum().backward()
     reference_output.square().sum().backward()
@@ -2530,9 +2603,9 @@ def test_kappa_slope_l2_uses_valid_pre_transform_values(kappa_input, independent
     torch.testing.assert_close(loss, expected)
     loss.backward()
     if kappa_input == 'gate_proj':
-        assert raw_gate.grad[~mask].count_nonzero() == 0
+        assert raw_gate.grad is None
     if independent_router:
-        assert scores.grad[~mask].count_nonzero() == 0
+        assert scores.grad is None
     experts.eval()
     experts._apply_kappa_slope_scaled_activation(
         raw_gate.detach(), bias.detach(), scores.detach(), loss_accum=accum,
