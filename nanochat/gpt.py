@@ -225,10 +225,14 @@ def _update_kappa_l2_norm_stats(bias, scale=None, router_output=None, valid_scor
         ('kappa_scale_l2_norm', scale),
         ('kappa_router_output_l2_norm', router_output),
     ):
-        norm_value = (
-            torch.linalg.vector_norm(value.detach().reshape(-1), dtype=torch.float32)
-            if value is not None else bias.new_zeros((), dtype=torch.float32)
-        )
+        if value is None or value.numel() == 0:
+            norm_value = bias.new_zeros((), dtype=torch.float32)
+        elif name == 'kappa_router_output_l2_norm':
+            norm_value = torch.linalg.vector_norm(value.detach().reshape(-1), dtype=torch.float32)
+            count = valid_score_mask.sum().clamp_min(1) if valid_score_mask is not None else max(value.numel(), 1)
+            norm_value = norm_value / torch.as_tensor(count, device=norm_value.device, dtype=torch.float32).sqrt()
+        else:
+            norm_value = value.detach().float().square().mean()
         MANAGER.add(name, _diagnostic_to_cpu(norm_value))
 
 

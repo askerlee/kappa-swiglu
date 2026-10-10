@@ -24,9 +24,9 @@ def test_kappa_l2_norm_monitoring_is_detached_and_masks_router_output(monkeypatc
     mask = torch.tensor([[True, True], [False, False]]) if masked else None
     _update_kappa_l2_norm_stats(bias, scale, output, mask)
     expected = {
-        'kappa_bias_l2_norm': 5.0,
-        'kappa_scale_l2_norm': 10.0,
-        'kappa_router_output_l2_norm': 5.0 if masked else 13.0,
+        'kappa_bias_l2_norm': 12.5,
+        'kappa_scale_l2_norm': 50.0,
+        'kappa_router_output_l2_norm': 5.0 / math.sqrt(2) if masked else 13.0 / math.sqrt(4),
     }
     for name, value in expected.items():
         metric = manager.aggregate(name)
@@ -39,6 +39,40 @@ def test_kappa_l2_norm_monitoring_is_detached_and_masks_router_output(monkeypatc
         manager.reset(name)
         assert manager.aggregate(name) is None
     assert bias.grad is None and scale.grad is None and output.grad is None
+
+
+def test_kappa_bias_scale_norms_use_mean_square_normalization(monkeypatch):
+    from nanochat.gpt import _update_kappa_l2_norm_stats
+
+    manager = MOEManager()
+    manager.collect_load_balancing_stats = True
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    bias = torch.tensor([3.0, 4.0])
+    scale = torch.tensor([6.0, 8.0])
+    _update_kappa_l2_norm_stats(bias, scale)
+    _update_kappa_l2_norm_stats(bias.repeat(4), scale.repeat(4))
+    _update_kappa_l2_norm_stats(bias.unsqueeze(1).expand(2, 8), scale.unsqueeze(1).expand(2, 8))
+    torch.testing.assert_close(manager.aggregate('kappa_bias_l2_norm'), torch.full((3,), 12.5))
+    torch.testing.assert_close(manager.aggregate('kappa_scale_l2_norm'), torch.full((3,), 50.0))
+
+
+@pytest.mark.parametrize('all_masked', [False, True])
+def test_kappa_router_output_norm_is_rms_and_ignores_padding(monkeypatch, all_masked):
+    from nanochat.gpt import _update_kappa_l2_norm_stats
+
+    manager = MOEManager()
+    manager.collect_load_balancing_stats = True
+    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
+    bias = torch.zeros(1)
+    output = torch.tensor([[3.0, 4.0]])
+    mask = torch.full_like(output, not all_masked, dtype=torch.bool)
+    _update_kappa_l2_norm_stats(bias, router_output=output, valid_score_mask=mask)
+    _update_kappa_l2_norm_stats(bias, router_output=output.repeat(2, 1), valid_score_mask=mask.repeat(2, 1))
+    padded_output = torch.cat((output, torch.full_like(output, 100.0)))
+    padded_mask = torch.cat((mask, torch.zeros_like(mask)))
+    _update_kappa_l2_norm_stats(bias, router_output=padded_output, valid_score_mask=padded_mask)
+    expected = 0.0 if all_masked else math.sqrt(12.5)
+    torch.testing.assert_close(manager.aggregate('kappa_router_output_l2_norm'), torch.full((3,), expected))
 
 
 @pytest.mark.parametrize('masked', [False, True])
@@ -116,8 +150,8 @@ def test_gpt_kappa_l2_norm_monitoring_reports_effective_values(monkeypatch, kapp
     monitored_loss, losses = model(idx, targets, valid_token_mask=mask)
     torch.testing.assert_close(monitored_loss, baseline_loss)
     torch.testing.assert_close(losses['kappa_slope_l2_loss'], baseline_losses['kappa_slope_l2_loss'])
-    expected_bias = experts._materialize_kappa_bias().detach().norm().item()
-    expected_scale = experts._materialize_kappa_scale().detach().norm().item() if experts.use_kappa_scale_param else 0.0
+    expected_bias = experts._materialize_kappa_bias().detach().float().square().mean().item()
+    expected_scale = experts._materialize_kappa_scale().detach().float().square().mean().item() if experts.use_kappa_scale_param else 0.0
     assert losses['kappa_bias_l2_norm_1'] == pytest.approx(expected_bias)
     assert losses['kappa_scale_l2_norm_1'] == pytest.approx(expected_scale)
     assert losses['kappa_router_output_l2_norm_1'] > 0 if independent_router else losses['kappa_router_output_l2_norm_1'] == 0
