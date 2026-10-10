@@ -995,7 +995,7 @@ def get_linear_lr_scale(it, num_iterations, end_scale=1.0, max_scale=1.0, warmup
     return max_scale + (end_scale - max_scale) * decay_progress
 
 
-def get_kappa_bias_lr_scale(optimizer, step, num_iterations):
+def get_kappa_lr_scale(optimizer, step, num_iterations):
     for group in optimizer.param_groups:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
@@ -1713,7 +1713,7 @@ while True:
     step_losses = None
     training_model = model
     orig_model.set_training_step(step)
-    kappa_bias_lr_scale = get_kappa_bias_lr_scale(optimizer, step, num_iterations)
+    kappa_lr_scale = get_kappa_lr_scale(optimizer, step, num_iterations)
     for micro_step in range(grad_accum_steps):
         micro_weight = last_micro_weight if micro_step == grad_accum_steps - 1 else 1.0
         micro_x = x[:last_device_batch_size] if micro_step == grad_accum_steps - 1 else x
@@ -1797,7 +1797,7 @@ while True:
             resume_kappa_lr_scale = get_resume_kappa_lr_scale(
                 step, args.resume_from_step, args.resume_lr_warmup_steps
             )
-            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale * resume_kappa_lr_scale
+            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_lr_scale * resume_kappa_lr_scale
             if resume_kappa_lr_scale == 0.0:
                 for param in group["params"]:
                     param.grad = None
@@ -1884,7 +1884,7 @@ while True:
             "train/routed_token_router_weight_cosine_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_mean'].mean()),
             "train/routed_token_router_weight_cosine_top5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_top5p_mean'].mean()),
             "train/routed_token_router_weight_cosine_bottom5p_mean_step": scalar_loss_to_item(losses['routed_token_router_weight_cosine_bottom5p_mean'].mean()),
-            "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
+            "train/kappa_lr_scale": kappa_lr_scale,
             "lrm": lrm,
             "dt": logged_dt,
             "tok_per_sec": logged_tok_per_sec,

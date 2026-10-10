@@ -589,11 +589,11 @@ def test_chat_sft_kappa_warmup_parser_validation_and_optimizer(monkeypatch, warm
     assert eval(compile(ast.Expression(warmup_value), str(CHAT_SFT), "eval"), namespace) == expected
 
 
-def test_chat_sft_uses_schedule_total_iterations_when_applying_kappa_bias_lr_scale():
+def test_chat_sft_uses_schedule_total_iterations_when_applying_kappa_lr_scale():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
     assert "kappa_bias_schedule_total_iterations = get_kappa_bias_schedule_total_iterations(" in source
-    assert 'kappa_bias_lr_scale = get_kappa_lr_scale(' in source
+    assert 'kappa_lr_scale = get_kappa_lr_scale(' in source
     assert 'kappa_router_lr_scale = get_kappa_lr_scale(' in source
     assert '        optimizer,' in source
     assert '        kappa_bias_schedule_total_iterations,' in source

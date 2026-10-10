@@ -1031,7 +1031,7 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
-    kappa_bias_lr_scale = get_kappa_lr_scale(
+    kappa_lr_scale = get_kappa_lr_scale(
         optimizer,
         step,
         kappa_bias_schedule_total_iterations,
@@ -1042,7 +1042,7 @@ while True:
         kappa_bias_schedule_total_iterations,
         group_name="kappa_router",
     )
-    orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_bias_lr_scale)
+    orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_lr_scale)
     step_train_loss = 0.0
     step_sft_padding_tokens = 0
     step_sft_token_positions = 0
@@ -1095,7 +1095,7 @@ while True:
     muon_weight_decay = get_weight_decay(progress, weight_decay_scaled)
     for group in optimizer.param_groups:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
-            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_bias_lr_scale
+            group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_lr_scale
         elif group.get("name") == "kappa_router":
             group["lr"] = group["initial_lr"] * lrm * kappa_router_lr_scale
         else:
@@ -1159,7 +1159,7 @@ while True:
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
             "train/aux_loss_weight": aux_loss_weight,
             "train/kappa_l2_loss_weight": kappa_l2_loss_weight,
-            "train/kappa_bias_lr_scale": kappa_bias_lr_scale,
+            "train/kappa_lr_scale": kappa_lr_scale,
             "train/lrm": lrm,
             "train/dt": logged_dt,
             "train/tok_per_sec": logged_tok_per_sec,

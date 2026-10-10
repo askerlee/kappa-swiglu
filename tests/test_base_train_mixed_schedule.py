@@ -155,8 +155,8 @@ def test_kappa_slope_l2_logging_uses_current_step_value():
 def test_kappa_delay_freezes_lr_and_delays_slope_scale_warmup():
     get_kappa_slope_max_scale = load_function_from_script("get_kappa_slope_max_scale")
     get_kappa_slope_max_scale.__globals__["math"] = math
-    get_kappa_bias_lr_scale = load_function_from_script("get_kappa_bias_lr_scale")
-    get_kappa_bias_lr_scale.__globals__["get_linear_lr_scale"] = load_function_from_script(
+    get_kappa_lr_scale = load_function_from_script("get_kappa_lr_scale")
+    get_kappa_lr_scale.__globals__["get_linear_lr_scale"] = load_function_from_script(
         "get_linear_lr_scale"
     )
     optimizer = SimpleNamespace(param_groups=[{
@@ -166,9 +166,9 @@ def test_kappa_delay_freezes_lr_and_delays_slope_scale_warmup():
         "lr_scale_warmup_iterations": 10,
     }])
 
-    assert get_kappa_bias_lr_scale(optimizer, 10, 100) == 0.0
-    assert get_kappa_bias_lr_scale(optimizer, 19, 100) == 0.0
-    assert get_kappa_bias_lr_scale(optimizer, 25, 100) == 0.5
+    assert get_kappa_lr_scale(optimizer, 10, 100) == 0.0
+    assert get_kappa_lr_scale(optimizer, 19, 100) == 0.0
+    assert get_kappa_lr_scale(optimizer, 25, 100) == 0.5
     for target in (3.0, 2.0):
         for step in (0, 5, 19, 20):
             assert get_kappa_slope_max_scale(target, step, 100, delay_iterations=20) == 1.0

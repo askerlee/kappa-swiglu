@@ -255,7 +255,7 @@ def test_resume_lr_warmup_freezes_kappa_until_warmup_finishes():
         assert get_resume_kappa_lr_scale(4050, 4000, 50) == 1.0
 
         source = script.read_text()
-        assert "* kappa_bias_lr_scale * resume_kappa_lr_scale" in source
+        assert "* kappa_lr_scale * resume_kappa_lr_scale" in source
         assert 'if resume_kappa_lr_scale == 0.0:' in source
         assert 'for param in group["params"]:' in source
         assert "param.grad = None" in source
