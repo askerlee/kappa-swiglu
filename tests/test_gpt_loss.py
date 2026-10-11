@@ -258,7 +258,8 @@ def test_chunked_cross_entropy_matches_full_mean_loss_gradients():
     assert torch.allclose(chunked_lm_head.weight.grad, full_lm_head.weight.grad, atol=1e-6, rtol=1e-5)
 
 
-def test_recompute_chunked_cross_entropy_matches_full_mean_loss_gradients():
+@pytest.mark.parametrize('compiled', [False, True])
+def test_recompute_chunked_cross_entropy_matches_full_mean_loss_gradients(compiled):
     torch.manual_seed(4)
     config = GPTConfig(vocab_size=31)
     full_lm_head = nn.Linear(10, 32, bias=False)
@@ -278,7 +279,17 @@ def test_recompute_chunked_cross_entropy_matches_full_mean_loss_gradients():
         softcap,
         'mean',
     )
-    chunked_loss = _chunked_cross_entropy(
+    captured_graphs = []
+
+    def capture_backend(graph_module, example_inputs):
+        captured_graphs.append(graph_module)
+        return torch._dynamo.backends.registry.lookup_backend('aot_eager')(graph_module, example_inputs)
+
+    loss_fn = _chunked_cross_entropy
+    if compiled:
+        loss_fn = torch.compile(loss_fn, backend=capture_backend)
+
+    chunked_loss = loss_fn(
         chunked_hidden,
         targets,
         chunked_lm_head,
@@ -295,6 +306,14 @@ def test_recompute_chunked_cross_entropy_matches_full_mean_loss_gradients():
     assert torch.allclose(chunked_loss, full_loss)
     assert torch.allclose(chunked_hidden.grad, full_hidden.grad, atol=1e-6, rtol=1e-5)
     assert torch.allclose(chunked_lm_head.weight.grad, full_lm_head.weight.grad, atol=1e-6, rtol=1e-5)
+
+    for graph_module in captured_graphs:
+        assert not any(
+            node.target == F.linear
+            for module in graph_module.modules()
+            if isinstance(module, torch.fx.GraphModule)
+            for node in module.graph.nodes
+        )
 
 
 def test_recompute_chunked_cross_entropy_handles_all_ignored_targets():

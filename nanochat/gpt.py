@@ -433,6 +433,22 @@ class ChunkedLinearCrossEntropy(torch.autograd.Function):
         return grad_hidden, None, grad_weight, None, None, None, None
 
 
+@torch._dynamo.disable
+def _recomputing_linear_cross_entropy(
+    hidden_flat, targets_flat, weight, vocab_size, softcap, loss_reduction, chunk_tokens,
+):
+    """Keep chunk lifetimes under eager autograd rather than AOTAutograd tracing."""
+    return ChunkedLinearCrossEntropy.apply(
+        hidden_flat,
+        targets_flat,
+        weight,
+        vocab_size,
+        softcap,
+        loss_reduction,
+        chunk_tokens,
+    )
+
+
 def _get_loss_chunk_tokens(config, total_tokens: int) -> int:
     """Bound lm_head/loss work to a token chunk that keeps peak vocab activations manageable."""
     configured = getattr(config, "loss_chunk_tokens", None)
@@ -468,7 +484,7 @@ def _chunked_cross_entropy(
         raise ValueError(f"Unsupported loss_reduction: {loss_reduction}")
 
     if recompute_backward:
-        return ChunkedLinearCrossEntropy.apply(
+        return _recomputing_linear_cross_entropy(
             hidden_flat,
             targets_flat,
             lm_head.weight,
