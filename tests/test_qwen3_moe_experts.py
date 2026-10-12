@@ -2726,11 +2726,74 @@ def test_kappa_slope_l2_uses_valid_pre_transform_values(kappa_input, independent
     torch.testing.assert_close(accum.aggregate('kappa_slope_l2_loss'), loss)
 
 
+@pytest.mark.parametrize('mode', ['original', 'sharpen-only', 'smooth-only'])
+def test_kappa_modes_match_formulas_for_dense_and_moe(monkeypatch, mode):
+    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
+    config = GPTConfig(
+        n_exp=2, n_embd=4, use_kappa_swiglu=True,
+        constant_kappa_bias_dense_layers=True, kappa_input='constant',
+        kappa_input_constant=1.0, kappa_mode=mode,
+    )
+    conditioning = torch.tensor([-2.0, -0.5, 0.0, 0.5, 2.0])
+    exponent = conditioning.tanh() if mode == 'original' else conditioning.square().tanh()
+    if mode == 'smooth-only':
+        exponent = -exponent
+    dense = Qwen3MLP(config)
+    dense_slope = dense._compute_kappa_slope_scales(conditioning)
+    torch.testing.assert_close(dense_slope, config.dense_kappa_slope_max_scale ** exponent)
+    with torch.no_grad():
+        dense.kappa_bias.copy_(conditioning.repeat(4)[:16].unsqueeze(0))
+    dense.eval()
+    cached_slope = dense._materialize_kappa_slope_scales_for_eval(torch.float32, conditioning.device)
+    torch.testing.assert_close(cached_slope, dense_slope.repeat(4)[:16])
+
+    experts = Qwen3MLPExperts(config)
+    with torch.no_grad():
+        experts.kappa_bias.fill_(1.0)
+    experts.snapshot_kappa_param_references()
+    raw_gate = torch.full((2, 5, 16), 0.75, requires_grad=True)
+    scores = conditioning.expand(2, -1)
+    expected_slope = config.moe_kappa_slope_max_scale ** exponent
+    expected = raw_gate * torch.sigmoid(raw_gate * expected_slope.reshape(1, 5, 1))
+    actual = experts._apply_kappa_slope_scaled_activation(
+        raw_gate, experts._materialize_kappa_bias(), scores,
+    )
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    assert torch.isfinite(raw_gate.grad).all()
+    assert torch.isfinite(experts.kappa_bias.grad).all()
+    assert experts.kappa_bias.grad.abs().sum() > 0
+    experts.eval()
+    with torch.no_grad():
+        actual_eval = experts._apply_kappa_slope_scaled_activation(
+            raw_gate.detach(), experts._materialize_kappa_bias(), scores,
+        )
+    torch.testing.assert_close(actual_eval, expected.detach())
+    if mode != 'original':
+        torch.testing.assert_close(expected_slope, expected_slope.flip(0))
+        assert expected_slope[2] == 1.0
+        if mode == 'sharpen-only':
+            assert (expected_slope >= 1.0).all()
+            assert (expected_slope <= config.moe_kappa_slope_max_scale).all()
+        else:
+            assert (expected_slope <= 1.0).all()
+            assert (expected_slope >= 1.0 / config.moe_kappa_slope_max_scale).all()
+
+
+def test_kappa_mode_config_defaults_and_validation():
+    assert GPTConfig().kappa_mode == 'original'
+    config = GPTConfig(kappa_mode='smooth-only')
+    assert GPTConfig(**vars(config)).kappa_mode == 'smooth-only'
+    with pytest.raises(ValueError, match='kappa_mode'):
+        GPTConfig(kappa_mode='invalid')
+
+
+@pytest.mark.parametrize('mode', ['original', 'sharpen-only', 'smooth-only'])
 @pytest.mark.parametrize('constant', [0.0, 0.5, 2.0])
-def test_dense_kappa_slope_l2_penalizes_pre_transform_value(constant):
+def test_dense_kappa_slope_l2_penalizes_pre_transform_value(constant, mode):
     mlp = Qwen3MLP(GPTConfig(
         n_embd=4, use_kappa_swiglu=True, constant_kappa_bias_dense_layers=True,
-        kappa_input_constant=constant,
+        kappa_input_constant=constant, kappa_mode=mode,
     ))
     with torch.no_grad():
         mlp.kappa_bias.fill_(0.5)

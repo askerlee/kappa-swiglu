@@ -46,6 +46,17 @@ _UT_LOSS_NAMES = (
 )
 
 
+def _kappa_exponent(conditioning, mode):
+    if mode == 'original':
+        return conditioning.tanh()
+    exponent = conditioning.square().tanh()
+    if mode == 'sharpen-only':
+        return exponent
+    if mode == 'smooth-only':
+        return -exponent
+    raise ValueError(f"Unsupported kappa mode: {mode!r}")
+
+
 def _compute_kappa_slope_l2_loss(slope_work, valid_score_mask=None):
     slope_work = slope_work.float()
     if valid_score_mask is None:
@@ -1159,6 +1170,7 @@ class Qwen3MLP(nn.Module):
         self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = SiLUActivation()
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.kappa_mode = getattr(config, 'kappa_mode', 'original')
         self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.kappa_input_constant = getattr(config, 'kappa_input_constant', None)
         self.register_buffer(
@@ -1250,7 +1262,9 @@ class Qwen3MLP(nn.Module):
         log_kappa = kappa_bias * input_constant
         if self.training:
             _accumulate_kappa_slope_l2_loss(log_kappa, loss_accum=loss_accum)
-        return torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(log_kappa))
+        return torch.exp(torch.log(kappa_slope_max_scale) * _kappa_exponent(
+            log_kappa, self.kappa_mode
+        ))
 
     @torch._dynamo.disable
     def _materialize_kappa_slope_scales_for_eval(self, target_dtype, target_device, kappa_slot=0):
@@ -1352,6 +1366,7 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
+        self.kappa_mode = getattr(config, 'kappa_mode', 'original')
         self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.register_buffer(
             'kappa_slope_max_scale',
@@ -1762,7 +1777,9 @@ class Qwen3MLPExperts(nn.Module):
             loss_accum.add('kappa_slope_l2_loss', reg_loss)
         else:
             MANAGER.add('kappa_slope_l2_loss', reg_loss)
-        slope_work = torch.exp(torch.log(kappa_slope_max_scale) * torch.tanh(slope_work))
+        slope_work = torch.exp(torch.log(kappa_slope_max_scale) * _kappa_exponent(
+            slope_work, self.kappa_mode
+        ))
         slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         if MANAGER.collect_load_balancing_stats:
             self._update_kappa_slope_scale_stats(slope_work, selected_gate_scores)
@@ -1805,7 +1822,12 @@ class Qwen3MLPExperts(nn.Module):
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
+        kappa_mode = self.kappa_mode
+        if kappa_mode != 'original':
+            slope_work.square_()
         slope_work.tanh_()
+        if kappa_mode == 'smooth-only':
+            slope_work.neg_()
         slope_work.mul_(log_kappa_slope_max_scale)
         slope_work.exp_()
         self._update_kappa_slope_scale_stats(slope_work, selected_gate_scores)

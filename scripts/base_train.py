@@ -238,6 +238,8 @@ parser.add_argument("--aux-loss-weight-init-scale", type=float, default=2.0, hel
 parser.add_argument("--aux-loss-weight-init-anneal-iterations", type=int, default=500, help="number of iterations used to anneal aux loss weight from --aux-loss-weight * --aux-loss-weight-init-scale down to --aux-loss-weight")
 parser.add_argument("--use-kappa-swiglu", type=str2bool, nargs='?', const=True, default=False,
                     help="add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU")
+parser.add_argument("--kappa-mode", choices=["original", "sharpen-only", "smooth-only"], default="original",
+                    help="kappa exponent: tanh(a), tanh(a^2), or -tanh(a^2)")
 parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
                     help="allocate base/SFT kappa slots shared across UT passes; base training uses slot 0")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="gate_proj", choices=["top_logits", "router_probs", "constant", "gate_proj"],
@@ -612,6 +614,7 @@ def build_model_meta(depth):
         use_aux_free_load_balancing=args.use_aux_free_load_balancing,
         aux_loss_weight=args.aux_loss_weight,
         use_kappa_swiglu=args.use_kappa_swiglu,
+        kappa_mode=args.kappa_mode,
         separate_base_sft_kappa=args.separate_base_sft_kappa,
         kappa_input=args.kappa_input,
         independent_kappa_router=args.independent_kappa_router,
