@@ -167,6 +167,7 @@ def build_chat_sft_exec_argv(
     max_seq_len,
     matrix_optimizer,
     extra_args_text="",
+    wg_optimizer="muon",
 ):
     import shlex
 
@@ -187,6 +188,7 @@ def build_chat_sft_exec_argv(
     if extra_args_text:
         argv.extend(shlex.split(extra_args_text))
     argv.extend(["--matrix-optimizer", matrix_optimizer])
+    argv.extend(["--wg-optimizer", wg_optimizer])
     return argv
 
 
@@ -373,6 +375,7 @@ parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learnin
 parser.add_argument("--weight-decay", type=float, default=0.05, help="cautious weight decay for Transformer layer weights in the Muon optimizer")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
 parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "aurora"], help="matrix optimizer for 2D parameters")
+parser.add_argument("--wg-optimizer", type=str, default="muon", choices=["muon", "adamw"], help="router w_g optimizer: muon uses the matrix optimizer, adamw uses the AdamW group")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate for x0_lambdas (resid_lambdas use 0.1x)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
@@ -904,6 +907,7 @@ optimizer = model.setup_optimizer(
     embedding_lr=args.embedding_lr * batch_lr_scale,
     matrix_lr=args.matrix_lr * batch_lr_scale,
     matrix_optimizer=args.matrix_optimizer,
+    wg_optimizer=args.wg_optimizer,
     weight_decay=weight_decay_scaled,
     adam_betas=adam_betas,
     scalar_lr=args.scalar_lr * batch_lr_scale,
@@ -2442,6 +2446,7 @@ if should_continue_to_chat_sft:
         args.max_seq_len,
         args.matrix_optimizer,
         args.continue_to_chat_sft_args,
+        wg_optimizer=args.wg_optimizer,
     )
     sanitize_chat_sft_rendezvous_env()
     if chat_sft_master_port is not None:

@@ -356,7 +356,8 @@ def test_get_compile_rebuild_plan_rebuilds_before_resuming_training():
     assert get_compile_rebuild_plan(True, False, True, True) == (False, False)
 
 
-def test_chat_sft_continuation_inherits_shape_without_changing_total_batch_size():
+@pytest.mark.parametrize("wg_optimizer", ["muon", "adamw"])
+def test_chat_sft_continuation_inherits_shape_without_changing_total_batch_size(wg_optimizer):
     build_chat_sft_exec_argv = load_function_from_script("build_chat_sft_exec_argv")
 
     argv = build_chat_sft_exec_argv(
@@ -366,15 +367,18 @@ def test_chat_sft_continuation_inherits_shape_without_changing_total_batch_size(
         24,
         2048,
         "muonh",
+        wg_optimizer=wg_optimizer,
     )
 
-    assert argv[-6:] == [
+    assert argv[-8:] == [
         "--device-batch-size",
         "24",
         "--max-seq-len",
         "2048",
         "--matrix-optimizer",
         "muonh",
+        "--wg-optimizer",
+        wg_optimizer,
     ]
     assert "--total-batch-size" not in argv
 

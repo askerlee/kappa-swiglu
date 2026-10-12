@@ -671,7 +671,9 @@ def test_setup_optimizer_configures_muonh_without_weight_decay():
     assert all(group['initial_weight_decay'] == 0.0 for group in matrix_groups)
 
 
-def test_setup_optimizer_updates_router_projection_as_regular_matrix():
+@pytest.mark.parametrize('wg_optimizer', [None, 'muon', 'adamw'])
+@pytest.mark.parametrize('matrix_optimizer', ['muon', 'aurora'])
+def test_setup_optimizer_updates_router_projection_as_regular_matrix(wg_optimizer, matrix_optimizer):
     config = GPTConfig(
         n_layer=3,
         moe_start_layer=1,
@@ -683,7 +685,11 @@ def test_setup_optimizer_updates_router_projection_as_regular_matrix():
     model = GPT(config)
     model.init_weights()
 
-    optimizer = model.setup_optimizer(matrix_lr=0.01, weight_decay=0.05)
+    optimizer_kwargs = {} if wg_optimizer is None else {'wg_optimizer': wg_optimizer}
+    optimizer = model.setup_optimizer(
+        matrix_lr=0.01, weight_decay=0.05, matrix_optimizer=matrix_optimizer,
+        **optimizer_kwargs,
+    )
     optimizer_params = {
         parameter
         for group in optimizer.param_groups
@@ -698,8 +704,15 @@ def test_setup_optimizer_updates_router_projection_as_regular_matrix():
         group for group in optimizer.param_groups
         if any(param is router_weight for param in group['params'])
     )
-    assert router_group['kind'] == 'aurora'
-    assert router_group['weight_decay'] == 0.05
+    assert router_group['kind'] == ('adamw' if wg_optimizer == 'adamw' else matrix_optimizer)
+    assert router_group['weight_decay'] == (0.0 if wg_optimizer == 'adamw' else 0.05)
+    assert sum(param is router_weight for group in optimizer.param_groups for param in group['params']) == 1
+    expert_weight = model.transformer.h[1].mlp.experts.gate_proj
+    expert_group = next(
+        group for group in optimizer.param_groups
+        if any(param is expert_weight for param in group['params'])
+    )
+    assert expert_group['kind'] == matrix_optimizer
     initial_weight = router_weight.detach().clone()
     router_weight.grad = torch.randn_like(router_weight)
     optimizer.step()

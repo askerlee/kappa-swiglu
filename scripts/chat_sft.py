@@ -125,6 +125,7 @@ parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learnin
 parser.add_argument("--scalar-lr", type=float, default=0.05, help="learning rate for x0_lambdas (resid_lambdas use 0.1x)")
 parser.add_argument("--matrix-lr", type=float, default=0.01, help="learning rate for matrix parameters")
 parser.add_argument("--matrix-optimizer", type=str, default="aurora", choices=["muon", "muonh", "aurora"], help="matrix optimizer for 2D parameters")
+parser.add_argument("--wg-optimizer", type=str, default="muon", choices=["muon", "adamw"], help="router w_g optimizer: muon uses the matrix optimizer, adamw uses the AdamW group")
 parser.add_argument("--lr-base-scale", type=float, default=0.2, help="base scaling factor for all types of learning rates, relative to the LR used during base model pretraining")
 parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of SFT progress used for linear LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.2, help="ratio of SFT progress used for linear LR warmdown")
@@ -416,6 +417,7 @@ if not args.eval_only:
         scalar_lr=args.scalar_lr,
         matrix_lr=args.matrix_lr,
         matrix_optimizer=args.matrix_optimizer,
+        wg_optimizer=args.wg_optimizer,
         weight_decay=weight_decay_scaled,
         muon_match_rms_adamw=args.muon_match_rms_adamw,
         kappa_lr_final_scale=args.kappa_lr_final_scale,

@@ -76,6 +76,36 @@ def test_kappa_phase_is_set_before_optimizer_setup():
     assert load_position < phase_position < source.index("optimizer = model.setup_optimizer(")
 
 
+@pytest.mark.parametrize("script_name", ["base_train", "base_train_mix", "chat_sft", "chat_rl"])
+def test_wg_optimizer_cli_and_optimizer_wiring(script_name):
+    script_path = ROOT / "scripts" / f"{script_name}.py"
+    module = ast.parse(script_path.read_text())
+    option = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument" and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--wg-optimizer"
+    )
+    parser = argparse.ArgumentParser()
+    option_module = ast.fix_missing_locations(ast.Module(body=[ast.Expr(value=option)], type_ignores=[]))
+    exec(compile(option_module, str(script_path), "exec"), {"parser": parser})
+    assert parser.parse_args([]).wg_optimizer == "muon"
+    for value in ("muon", "adamw"):
+        assert parser.parse_args(["--wg-optimizer", value]).wg_optimizer == value
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--wg-optimizer", "invalid"])
+    optimizer_call = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "setup_optimizer"
+    )
+    assert any(
+        keyword.arg == "wg_optimizer" and ast.unparse(keyword.value) == "args.wg_optimizer"
+        for keyword in optimizer_call.keywords
+    )
+
+
 @pytest.mark.parametrize("script_name", ["base_train", "base_train_mix", "chat_sft"])
 def test_kappa_slope_l2_cli_and_training_loss(script_name):
     script_path = ROOT / "scripts" / f"{script_name}.py"

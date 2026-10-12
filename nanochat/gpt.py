@@ -2944,7 +2944,10 @@ class GPT(nn.Module):
                         kappa_lr_final_scale=1.0,
                         kappa_lr_max_scale=1.0,
                         kappa_param_delay_start_iterations=0,
-                        kappa_lr_warmup_iterations=1000):
+                        kappa_lr_warmup_iterations=1000,
+                        wg_optimizer='muon'):
+        if wg_optimizer not in ('muon', 'adamw'):
+            raise ValueError(f"Unsupported wg_optimizer: {wg_optimizer}")
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
@@ -2990,6 +2993,8 @@ class GPT(nn.Module):
                     append_param(kappa_router_params, param, full_name)
                 elif name == 'mlp.kappa_router.bias':
                     append_param(kappa_router_bias_params, param, full_name)
+                elif name == 'mlp.router.w_g.weight' and wg_optimizer == 'adamw':
+                    append_param(target_nonmatrix_params, param, full_name)
                 elif not use_matrix_optimizer(param):
                     append_param(target_nonmatrix_params, param, full_name)
                 else:
