@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from nanochat.checkpoint_manager import load_model
 from nanochat.common import COMPUTE_DTYPE, autodetect_device_type, compute_cleanup, compute_init, print0
 from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
-from nanochat.gpt import MOELayer, _kappa_exponent
+from nanochat.gpt import MOELayer
 
 
 TOP10_FRACTION = 0.1
@@ -279,9 +279,7 @@ class GateBiasStatsCollector:
         else:
             slope_input = router_score * kappa_bias.unsqueeze(1)
         max_scale = experts.kappa_slope_max_scale.to(device=gate_base.device, dtype=gate_base.dtype)
-        slope_scale = torch.exp(torch.log(max_scale) * _kappa_exponent(
-            slope_input, getattr(experts, "kappa_mode", "original")
-        ))
+        slope_scale = torch.exp(torch.log(max_scale) * slope_input.tanh())
         gate_base_acts = experts._apply_gate_activation(gate_base)
         gate_biased_acts = gate_base * torch.sigmoid(gate_base * slope_scale)
         delta_gate = gate_biased_acts - gate_base_acts

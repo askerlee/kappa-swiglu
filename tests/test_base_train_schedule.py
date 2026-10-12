@@ -426,29 +426,11 @@ def test_base_train_removes_parameter_regularization_and_uses_slope_l2():
         assert "loss = loss + kappa_l2_loss_weight * kappa_slope_l2_loss" in source
 
 
-def test_kappa_mode_cli_is_wired_into_config():
-    import argparse
-
+def test_kappa_mode_cli_is_removed():
     for script in (BASE_TRAIN, BASE_TRAIN_MIX):
         source = script.read_text()
-        module = ast.parse(source, filename=str(script))
-        argument = next(
-            node for node in ast.walk(module)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument'
-            and node.args and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == '--kappa-mode'
-        )
-        parser = argparse.ArgumentParser()
-        argument_module = ast.fix_missing_locations(
-            ast.Module(body=[ast.Expr(value=argument)], type_ignores=[])
-        )
-        exec(compile(argument_module,
-                     filename=str(script), mode='exec'), {'parser': parser})
-        assert parser.parse_args([]).kappa_mode == 'original'
-        for mode in ('original', 'sharpen-only', 'smooth-only'):
-            assert parser.parse_args(['--kappa-mode', mode]).kappa_mode == mode
-        assert 'kappa_mode=args.kappa_mode' in source
+        assert '--kappa-mode' not in source
+        assert 'args.kappa_mode' not in source
 
 
 def test_kappa_input_logit_norm_exponent_cli_is_wired_into_config():

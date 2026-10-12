@@ -71,7 +71,6 @@ class GPTConfig:
         loss_chunk_tokens: int | None = None,
         loss_recompute_backward: bool = False,
         debug: bool = False,
-        kappa_mode: str = "original",
         **kwargs,
     ):        
         self.sequence_len = sequence_len
@@ -92,12 +91,6 @@ class GPTConfig:
         self.z_loss_demean_logits = z_loss_demean_logits
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
-        valid_kappa_modes = {"original", "sharpen-only", "smooth-only"}
-        if kappa_mode not in valid_kappa_modes:
-            raise ValueError(
-                f"kappa_mode must be one of {sorted(valid_kappa_modes)}, got {kappa_mode!r}"
-            )
-        self.kappa_mode = kappa_mode
         self.separate_base_sft_kappa = bool(separate_base_sft_kappa)
         valid_kappa_inputs = {"top_logits", "router_probs", "constant", "gate_proj"}
         if kappa_input not in valid_kappa_inputs:
