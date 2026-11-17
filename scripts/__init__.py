@@ -1,0 +1,1 @@
+"""Command-line entry points for this checkout of nanochat."""
