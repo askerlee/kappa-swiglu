@@ -61,14 +61,12 @@ def test_kappa_uses_same_slot_for_all_ut_passes(separate_base_sft_kappa, trainin
 
 
 @pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
-@pytest.mark.parametrize('independent_router', [False, True])
-def test_task_kappa_residual_values_and_gradients(granularity, independent_router):
+def test_task_kappa_residual_values_and_gradients(granularity):
     config = GPTConfig(
         n_layer=2, n_head=2, n_embd=16, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, use_kappa_swiglu=True,
         constant_kappa_bias_dense_layers=True, separate_base_sft_kappa=True,
         global_kappa_param_granularity=granularity,
-        independent_kappa_router=independent_router,
     )
     model = GPT(config)
     model.init_weights()
@@ -76,8 +74,7 @@ def test_task_kappa_residual_values_and_gradients(granularity, independent_route
     experts = model.transformer.h[1].mlp.experts
     materializers = [(dense._get_kappa_bias_parameter(), dense._materialize_kappa_bias)]
     materializers.append((experts._get_kappa_bias_parameter(), experts._materialize_kappa_bias))
-    if not independent_router:
-        materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_scale))
+    materializers.append((experts._get_kappa_scale_parameter(), experts._materialize_kappa_scale))
     for parameter, materialize in materializers:
         with torch.no_grad():
             parameter[0].fill_(0.3)
@@ -86,10 +83,10 @@ def test_task_kappa_residual_values_and_gradients(granularity, independent_route
             model.set_kappa_training_phase(is_sft)
             model.zero_grad(set_to_none=True)
             actual = materialize()
-            expected = 0.2 if independent_router and is_sft else (0.5 if is_sft else 0.3)
+            expected = 0.5 if is_sft else 0.3
             torch.testing.assert_close(actual, torch.full_like(actual, expected))
             actual.sum().backward()
-            if is_sft and not independent_router:
+            if is_sft:
                 torch.testing.assert_close(parameter.grad[0], parameter.grad[1] * 0.1)
             else:
                 assert parameter.grad[1 - int(is_sft)].count_nonzero() == 0

@@ -137,9 +137,9 @@ parser.add_argument("--kappa-lr-final-scale",
                     dest="kappa_lr_final_scale", type=float, default=0.005,
                     help="final LR scale factor for kappa_bias params after warming from 0 to --kappa-lr-max-scale")
 parser.add_argument("--kappa-delay-start-iterations", type=int, default=0,
-                    help="number of initial iterations to keep kappa parameter and kappa_router LR at 0 before warmup")
+                    help="number of initial iterations to keep kappa parameter LR at 0 before warmup")
 parser.add_argument("--kappa-lr-warmup-iterations", type=int, default=100,
-                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale; also warms kappa_router from 0 to its full scheduled LR")
+                    help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
@@ -147,8 +147,6 @@ parser.add_argument(
     default=1e-3,
     help="L2 weight on the pre-transform kappa slope",
 )
-parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=None,
-                    help="predict kappa scales directly with 0.1 input-latent gradients (default: inherit checkpoint)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -263,7 +261,6 @@ model, tokenizer, meta = load_model(
     activation_offload=args.activation_offload,
     use_kappa_swiglu=use_kappa_swiglu,
     disable_kappa_bias=args.disable_kappa_bias,
-    independent_kappa_router=args.independent_kappa_router,
     constant_kappa_bias_dense_layers=args.constant_kappa_dense_layers,
     refresh_kappa_param_references=False,
 )
@@ -687,11 +684,9 @@ def get_kappa_bias_schedule_total_iterations(step, progress):
     return step + 1
 
 
-def get_kappa_lr_scale(optimizer, step, num_iterations, group_name="kappa_params"):
+def get_kappa_lr_scale(optimizer, step, num_iterations):
     for group in optimizer.param_groups:
-        if group.get("name") != group_name:
-            continue
-        if group_name == "kappa_params" and group.get("kind") == "adamw":
+        if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             return get_linear_lr_scale(
                 step,
                 num_iterations,
@@ -699,13 +694,6 @@ def get_kappa_lr_scale(optimizer, step, num_iterations, group_name="kappa_params
                 max_scale=group.get("lr_scale_max", 1.0),
                 nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
                 warmup_iterations=group.get("lr_scale_warmup_iterations", 1000),
-            )
-        if group_name == "kappa_router":
-            return get_linear_lr_scale(
-                step,
-                num_iterations,
-                nolearn_iterations=group.get("kappa_param_delay_start_iterations", 0),
-                warmup_iterations=args.kappa_lr_warmup_iterations,
             )
     return 1.0
 
@@ -1035,12 +1023,6 @@ while True:
         step,
         kappa_bias_schedule_total_iterations,
     )
-    kappa_router_lr_scale = get_kappa_lr_scale(
-        optimizer,
-        step,
-        kappa_bias_schedule_total_iterations,
-        group_name="kappa_router",
-    )
     orig_model.set_router_confidence_gate_bias_grad_scale(0.25 * kappa_lr_scale)
     step_train_loss = 0.0
     step_sft_padding_tokens = 0
@@ -1095,8 +1077,6 @@ while True:
     for group in optimizer.param_groups:
         if group.get("name") == "kappa_params" and group.get("kind") == "adamw":
             group["lr"] = group.get("base_lr", group["initial_lr"]) * lrm * kappa_lr_scale
-        elif group.get("name") == "kappa_router":
-            group["lr"] = group["initial_lr"] * lrm * kappa_router_lr_scale
         else:
             group["lr"] = group["initial_lr"] * lrm
         if group['kind'] in ('muon', 'muonh'):
@@ -1152,7 +1132,6 @@ while True:
             "train/kappa_slope_l2_loss_step": scalar_loss_to_item(losses['kappa_slope_l2_loss']),
             "train/kappa_scale_l2_norm_step": scalar_loss_to_item(losses['kappa_scale_l2_norm'].mean()),
             "train/kappa_bias_l2_norm_step": scalar_loss_to_item(losses['kappa_bias_l2_norm'].mean()),
-            "train/kappa_router_output_l2_norm_step": scalar_loss_to_item(losses['kappa_router_output_l2_norm'].mean()),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -1195,7 +1174,7 @@ while True:
                 )
         expert_utilities = losses['expert_utilities']
         for name, value in losses.items():
-            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_', 'kappa_router_output_l2_norm_')):
+            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_')):
                 log_data[f"inspect/{name}"] = value
         moe_layer_to_stats_idx = {layer_idx: stats_idx for stats_idx, layer_idx in enumerate(moe_layer_indices)}
         for i in moe_layer_indices:

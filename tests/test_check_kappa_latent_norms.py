@@ -184,13 +184,13 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision, 
 
 
 @pytest.mark.parametrize("kappa_input", ["router_probs", "gate_proj"])
-@pytest.mark.parametrize("has_kappa,independent_router", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("has_kappa", [False, True])
 @pytest.mark.parametrize("mixed_precision", [False, True])
 @pytest.mark.parametrize("normalize_output", [False, True])
-def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kappa, independent_router, mixed_precision, normalize_output):
+def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kappa, mixed_precision, normalize_output):
     experts = Qwen3MLPExperts(GPTConfig(
         n_embd=4, n_exp=2, use_kappa_swiglu=has_kappa,
-        kappa_input=kappa_input, independent_kappa_router=independent_router,
+        kappa_input=kappa_input,
         swiglu_norm_output=normalize_output,
     ), layer_idx=0).eval()
     with torch.no_grad():
@@ -234,11 +234,11 @@ def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kap
 
 
 @pytest.mark.parametrize("kappa_input", ["router_probs", "gate_proj"])
-@pytest.mark.parametrize("has_kappa,independent_router", [(False, False), (True, False), (True, True)])
-def test_native_moe_dispatch_with_probe(kappa_input, independent_router, has_kappa):
+@pytest.mark.parametrize("has_kappa", [False, True])
+def test_native_moe_dispatch_with_probe(kappa_input, has_kappa):
     layer = MOELayer(GPTConfig(
         n_embd=4, n_exp=2, moe_top_k=1, use_kappa_swiglu=has_kappa,
-        kappa_input=kappa_input, independent_kappa_router=independent_router,
+        kappa_input=kappa_input,
         use_aux_loss=False, use_router_z_loss=False, router_tie_noise_steps=0,
     ), layer_idx=0).eval()
     with torch.no_grad():

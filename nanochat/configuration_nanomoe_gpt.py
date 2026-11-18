@@ -25,7 +25,6 @@ class GPTConfig:
         z_loss_penalize_mean_logits: bool = True,  # penalize mean logits in router z loss
         use_kappa_swiglu: bool = False,  # add a learnable bias to Qwen3 expert gate activations after gate_proj and SiLU
         kappa_input: str = "router_probs",
-        independent_kappa_router: bool = False,
         kappa_input_constant: float = 1.0,
         kappa_input_logit_norm_exponent: float = 0.5,
         separate_base_sft_kappa: bool = False,
@@ -105,11 +104,6 @@ class GPTConfig:
             )
         self.constant_kappa_bias_dense_layers = bool(constant_kappa_bias_dense_layers)
         self.kappa_input = kappa_input
-        self.independent_kappa_router = bool(independent_kappa_router)
-        if self.independent_kappa_router and (
-            not self.use_kappa_swiglu or not use_qwen3_moe_mlp or kappa_input == "constant"
-        ):
-            raise ValueError("independent_kappa_router requires kappa-SwiGLU MoE with nonconstant kappa_input")
         self.kappa_input_constant = (
             None if kappa_input_constant is None else float(kappa_input_constant)
         )

@@ -225,26 +225,22 @@ def test_disable_kappa_bias_cli_wires_model_config(script_name):
 
 
 @pytest.mark.parametrize('script_name', ['base_train', 'base_train_mix', 'chat_sft'])
-def test_independent_kappa_router_cli_wires_model_config(script_name):
+def test_independent_kappa_router_is_not_a_cli_option(script_name):
     source = (ROOT / 'scripts' / f'{script_name}.py').read_text(encoding='utf-8')
-    assert '"--independent-kappa-router"' in source
-    assert 'independent_kappa_router=args.independent_kappa_router,' in source
     module = ast.parse(source)
-    option = next(
-        node for node in ast.walk(module)
+    options = {
+        arg.value for node in ast.walk(module)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == 'add_argument' and node.args
-        and isinstance(node.args[0], ast.Constant)
-        and node.args[0].value == '--independent-kappa-router'
-    )
-    default = next(keyword.value.value for keyword in option.keywords if keyword.arg == 'default')
-    assert default is (None if script_name == 'chat_sft' else False)
+        and node.func.attr == 'add_argument'
+        for arg in node.args if isinstance(arg, ast.Constant)
+    }
+    assert '--independent-kappa-router' not in options
+    assert 'args.independent_kappa_router' not in source
 
 
-@pytest.mark.parametrize("independent_router", [False, True])
 @pytest.mark.parametrize("base_weight", [0.0, 0.001, 0.02])
 @pytest.mark.parametrize("step,delay", [(0, 0), (0, 20), (19, 20), (20, 20), (21, 20)])
-def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight, step, delay):
+def test_chat_sft_kappa_slope_l2_weight(base_weight, step, delay):
     module = ast.parse(CHAT_SFT.read_text(), filename=str(CHAT_SFT))
     weights = ast.Module(body=[
         node for node in ast.walk(module)
@@ -257,11 +253,10 @@ def test_chat_sft_kappa_slope_l2_weight(independent_router, base_weight, step, d
     ], type_ignores=[])
     namespace = {
         "args": SimpleNamespace(
-            independent_kappa_router=None, kappa_l2_loss_weight=base_weight,
+            kappa_l2_loss_weight=base_weight,
             kappa_delay_start_iterations=delay,
         ),
         "step": step,
-        "model": SimpleNamespace(config=SimpleNamespace(independent_kappa_router=independent_router)),
     }
     exec(compile(weights, filename=str(CHAT_SFT), mode="exec"), namespace)
     assert namespace["kappa_l2_loss_weight"] == (base_weight if step >= delay else 0.0)
@@ -563,8 +558,8 @@ def test_loss_recompute_backward_cli_is_wired_into_loaded_model_config():
 def test_kappa_bias_lr_schedule_uses_total_iterations_helper_and_cli_scales():
     source = CHAT_SFT.read_text(encoding="utf-8")
 
-    assert 'def get_kappa_lr_scale(optimizer, step, num_iterations, group_name="kappa_params"):' in source
-    assert 'if group_name == "kappa_params" and group.get("kind") == "adamw":' in source
+    assert 'def get_kappa_lr_scale(optimizer, step, num_iterations):' in source
+    assert 'if group.get("name") == "kappa_params" and group.get("kind") == "adamw":' in source
     assert 'end_scale=group.get("lr_scale_end", 1.0)' in source
     assert 'max_scale=group.get("lr_scale_max", 1.0)' in source
 
@@ -627,49 +622,8 @@ def test_chat_sft_uses_schedule_total_iterations_when_applying_kappa_lr_scale():
 
     assert "kappa_bias_schedule_total_iterations = get_kappa_bias_schedule_total_iterations(" in source
     assert 'kappa_lr_scale = get_kappa_lr_scale(' in source
-    assert 'kappa_router_lr_scale = get_kappa_lr_scale(' in source
     assert '        optimizer,' in source
     assert '        kappa_bias_schedule_total_iterations,' in source
-
-
-@pytest.mark.parametrize("kind", ["muon", "muonh", "aurora", "adamw"])
-@pytest.mark.parametrize("delay,warmup,step,expected_scale", [
-    (100, 100, 99, 0.0),
-    (100, 100, 100, 0.0),
-    (100, 100, 150, 0.5),
-    (100, 100, 200, 1.0),
-    (100, 100, 500, 1.0),
-    (0, 100, 0, 0.0),
-    (0, 100, 50, 0.5),
-    (100, 0, 100, 1.0),
-])
-def test_chat_sft_kappa_router_lr_warms_up(kind, delay, warmup, step, expected_scale):
-    module = ast.parse(CHAT_SFT.read_text(encoding="utf-8"), filename=str(CHAT_SFT))
-    router_branch = next(
-        node for node in ast.walk(module)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "group.get('name') == 'kappa_router'"
-    )
-    group = {
-        "name": "kappa_router", "kind": kind, "initial_lr": 0.01,
-        "kappa_param_delay_start_iterations": delay,
-    }
-    get_kappa_lr_scale = load_function_from_script("get_kappa_lr_scale")
-    get_kappa_lr_scale.__globals__.update({
-        "args": SimpleNamespace(kappa_lr_warmup_iterations=warmup),
-        "get_linear_lr_scale": load_function_from_script("get_linear_lr_scale"),
-    })
-    router_scale = get_kappa_lr_scale(
-        SimpleNamespace(param_groups=[group]), step, 1000, group_name="kappa_router"
-    )
-    assert router_scale == pytest.approx(expected_scale)
-    namespace = {
-        "group": group,
-        "lrm": 0.2,
-        "kappa_router_lr_scale": router_scale,
-    }
-    exec(compile(ast.Module(body=router_branch.body, type_ignores=[]), str(CHAT_SFT), "exec"), namespace)
-    assert group["lr"] == pytest.approx(0.01 * 0.2 * expected_scale)
 
 
 @pytest.mark.parametrize("step,expected_scale", [(99, 0.0), (150, 0.005), (200, 0.01), (1000, 0.005)])
@@ -684,7 +638,6 @@ def test_chat_sft_shared_kappa_schedule_preserves_bias_scales(step, expected_sca
     }
     optimizer = SimpleNamespace(param_groups=[group])
     assert get_kappa_lr_scale(optimizer, step, 1000) == pytest.approx(expected_scale)
-    assert get_kappa_lr_scale(optimizer, step, 1000, group_name="kappa_router") == 1.0
 
 
 def test_chat_sft_inherits_kappa_slope_max_scale_without_sft_warmup():

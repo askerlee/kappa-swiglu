@@ -265,8 +265,6 @@ parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const
                     help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources unless SFT-only is explicitly requested")
 parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="gate_proj", choices=["top_logits", "router_probs", "constant", "gate_proj"],
                     help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")
-parser.add_argument("--independent-kappa-router", type=str2bool, nargs='?', const=True, default=False,
-                    help="predict kappa conditioning with a separate projection (dynamic expert bias with --kappa-input=gate_proj); scale only its input-latent gradients by 0.1")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
@@ -311,7 +309,7 @@ parser.add_argument("--kappa-delay-start-iteration-frac", dest="kappa_delay_star
 parser.add_argument("--kappa-lr-warmup-iterations", dest="kappa_lr_warmup_iterations", type=int, default=1000,
                     help="number of iterations to linearly ramp kappa_bias LR scale from 0 to --kappa-lr-max-scale before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-l2-loss-weight", dest="kappa_l2_loss_weight", type=float, default=1e-3,
-                    help="L2 weight on the pre-transform kappa slope (the omitted default is 0.001 with --independent-kappa-router)")
+                    help="L2 weight on the pre-transform kappa slope")
 parser.add_argument("--kappa-l2-loss-anneal-iterations", dest="kappa_l2_loss_anneal_iterations", type=int, default=-1, help="iterations for stage-1 anneal of kappa slope L2 loss (-1 = use half total training iterations)")
 # By default, the stage1 frac and final frac are set to 1 to 
 # push the conditioning values towards 0 so that the slopes 
@@ -658,7 +656,6 @@ def build_model_meta(depth):
         use_kappa_swiglu=args.use_kappa_swiglu,
         separate_base_sft_kappa=args.separate_base_sft_kappa,
         kappa_input=args.kappa_input,
-        independent_kappa_router=args.independent_kappa_router,
         kappa_input_constant=args.kappa_input_constant,
         kappa_input_logit_norm_exponent=args.kappa_input_logit_norm_exponent,
         moe_kappa_slope_max_scale=args.moe_kappa_slope_max_scale,
@@ -1474,9 +1471,8 @@ def collect_weight_grad_stats(model, losses, moe_layer_indices):
                 gate_proj_row_mean_component_ratio = compute_row_mean_component_ratio(exp_gate_weight).mean(dim=1)
                 gate_proj_row_mean_component_ratios.append(gate_proj_row_mean_component_ratio)
                 losses[f'gate_proj_row_mean_component_ratio_{i}'] = gate_proj_row_mean_component_ratio.mean().item()
-                has_cached_scale = experts._cached_kappa_scale is not None
                 has_bias_stats = experts.use_kappa_swiglu
-                has_scale_stats = experts.use_kappa_scale_param or has_cached_scale
+                has_scale_stats = experts.use_kappa_scale_param
                 if has_bias_stats:
                     exp_kappa_bias = experts._materialize_kappa_bias()
                     losses[f'kappa_bias_mean_{i}'] = exp_kappa_bias.float().nanmean().item()
@@ -2127,10 +2123,6 @@ while True:
             if resume_kappa_lr_scale == 0.0:
                 for param in group["params"]:
                     param.grad = None
-        elif group.get("name") == "kappa_router":
-            group["lr"] = group["initial_lr"] * lrm * float(
-                step >= group.get("kappa_param_delay_start_iterations", 0)
-            )
         else:
             group["lr"] = group["initial_lr"] * lrm
         if group['kind'] in ('muon', 'muonh'):
@@ -2207,7 +2199,6 @@ while True:
             "train/kappa_slope_l2_loss_step": losses['kappa_slope_l2_loss'],
             "train/kappa_scale_l2_norm_step": scalar_loss_to_item(losses['kappa_scale_l2_norm'].mean()),
             "train/kappa_bias_l2_norm_step": scalar_loss_to_item(losses['kappa_bias_l2_norm'].mean()),
-            "train/kappa_router_output_l2_norm_step": scalar_loss_to_item(losses['kappa_router_output_l2_norm'].mean()),
             "train/kappa_slope_scale_abs_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_mean'].mean()),
             "train/kappa_slope_scale_abs_top5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_top5p_mean'].mean()),
             "train/kappa_slope_scale_abs_bottom5p_mean_step": scalar_loss_to_item(losses['kappa_slope_scale_abs_bottom5p_mean'].mean()),
@@ -2226,7 +2217,7 @@ while True:
             "train/kappa_swiglu_enabled": 1.0 if kappa_swiglu_training_enabled else 0.0,
         }
         for name, value in losses.items():
-            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_', 'kappa_router_output_l2_norm_')):
+            if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_')):
                 log_data[f"inspect/{name}"] = value
         if train_source == "chat_sft":
             log_data["train/chat_sft_ntp_loss_step"] = scalar_loss_to_item(losses['ntp_loss'])

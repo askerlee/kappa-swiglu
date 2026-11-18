@@ -72,14 +72,13 @@ def load_function_from_script(function_name, script_path=BASE_TRAIN_MIX):
     raise AssertionError(f"Function {function_name} not found in {script_path}")
 
 
-def test_cached_independent_kappa_statistics():
+def test_kappa_parameter_statistics():
     from nanochat.configuration_nanomoe_gpt import GPTConfig
     from nanochat.gpt import GPT
 
     model = GPT(GPTConfig(
         n_layer=1, n_head=2, n_embd=32, n_exp=2, vocab_size=64,
         sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
-        independent_kappa_router=True,
     ))
     model.init_weights()
     for parameter in model.parameters():
@@ -88,10 +87,9 @@ def test_cached_independent_kappa_statistics():
     with torch.no_grad():
         experts.kappa_bias[0, 0].fill_(2.0)
         experts.kappa_bias[0, 1].fill_(-6.0)
-    logits = torch.tensor([[0.0, 2.0, 99.0], [-3.0, 99.0, 99.0]])
-    mask = torch.tensor([[True, True, False], [True, False, False]])
+        experts.kappa_scale[0, 0].fill_(1.0)
+        experts.kappa_scale[0, 1].fill_(-3.0)
     for script_name in ('base_train_mix.py', 'base_train.py', 'chat_sft.py'):
-        experts._materialize_kappa_scale(0, selected_gate_scores=logits, valid_score_mask=mask)
         collect_stats = load_function_from_script('collect_weight_grad_stats', ROOT / 'scripts' / script_name)
         collect_stats.__globals__.update({
             'math': math,
@@ -100,18 +98,13 @@ def test_cached_independent_kappa_statistics():
         losses = {'expert_utilities': torch.tensor([[0.8, 0.2]])}
         collect_stats(model, losses, [0])
         if script_name != 'chat_sft.py':
-            assert math.isclose(losses['kappa_scale_mean_0'], -1.0 / 3.0, rel_tol=1e-6)
-            assert math.isclose(losses['kappa_scale_abs_mean_0'], 5.0 / 3.0, rel_tol=1e-6)
+            assert losses['kappa_scale_mean_0'] == -1.0
+            assert losses['kappa_scale_abs_mean_0'] == 2.0
             assert losses['kappa_scale_mean_top_0'] == 1.0
             assert losses['kappa_scale_mean_bottom_0'] == -3.0
         assert losses['kappa_bias_mean_0'] == -2.0
         assert losses['kappa_bias_mean_top_0'] == 2.0
         assert losses['kappa_bias_mean_bottom_0'] == -6.0
-        experts._cached_kappa_scale = None
-        losses = {'expert_utilities': torch.tensor([[0.8, 0.2]])}
-        collect_stats(model, losses, [0])
-        assert 'kappa_scale_mean_0' not in losses
-        assert losses['kappa_bias_mean_0'] == -2.0
 
 
 def test_should_use_chat_sft_step_runs_only_on_positive_multiples():

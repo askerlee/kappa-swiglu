@@ -120,34 +120,14 @@ independent AdamW moments and update counts; inactive slots remain unchanged.
 The mode is stored in checkpoint model configuration. Start a fresh run when
 switching an existing mixed-training recipe to the new parameter layout.
 
-## Independent Kappa Router
-
-Add `--use-kappa-swiglu --independent-kappa-router` to base or mixed training
-to predict token-dependent kappa scales with a separate bias-free token-to-expert
-projection. The original router still selects experts and weights their
-outputs. The predictor gathers raw outputs for those selected experts and
-uses `kappa_bias + predicted_kappa_scale` as the activation conditioning.
-There is no additional learned `kappa_scale` multiplier, softmax, or logit
-normalization in this mode; `top_logits` and `router_probs` behave identically.
-Diagnostics use detached predictor logits cached from the latest forward,
-excluding padding and unused expert slots. Constant conditioning is unsupported.
-
-With `--kappa-input=gate_proj`, the predictor instead supplies an expert-level
-dynamic bias shared across that expert's gates. Conditioning is
-`alpha * gate_proj(x) + r_expert @ x`, followed by the existing
-`phi(t) = exp(log(kappa_slope_max_scale) * tanh(t))` slope transform.
-The learned `kappa_scale` tensor stores alpha using the configured sharing
-granularity and kappa learning-rate schedule. This combination has no static
-expert kappa bias or predictor bias. Gate-dependent conditioning retains its
-0.1 gradient scale through `gate_proj(x)`. Checkpoints retain alpha
-in this mode rather than discarding it as legacy independent-router state.
+## Kappa Regularization
 
 All kappa schemes use only `kappa_slope_l2_loss`: the mean square of the
 combined conditioning (`slope_work`) before `tanh` and `exp`. MoE losses exclude
 padding and unused expert slots and average over valid assignment-gate pairs.
 Dense layers penalize `kappa_bias * kappa_input_constant`. Base, mixed, and SFT
 regularization detaches conditioning token inputs and gate projections while
-retaining gradients for kappa predictor weights, alpha, and bias. Its scalar
+retaining gradients for kappa scale and bias. Its scalar
 loss computation is checkpointed: backward recomputes the FP32 slope instead
 of retaining a second full gate-sized FP32 graph. Activation gradients are unchanged.
 Base, mixed, and SFT
@@ -158,42 +138,15 @@ during that delay; the raw loss is still logged. Base and mixed training use
 `D = max(kappa_delay_start_min_iterations, ceil(total_iterations * kappa_delay_start_iteration_frac))`.
 SFT uses `--kappa-delay-start-iterations` (default 0). The existing annealing
 timeline is unchanged, and regularization activates at step D.
-There are no separate bias, scale, or SFT-router
-weight penalties, parameter anchors, or independent-router 10x multipliers.
-The former `--kappa-scale-l2-loss-weight-scale`,
-`--kappa-router-sft-l2-loss-weight`, and `--kappa-params-l2-anchor` options
-have been removed.
 
-Diagnostic steps also log `kappa_scale_l2_norm`, `kappa_bias_l2_norm`, and
-`kappa_router_output_l2_norm`, with per-layer `inspect/` metrics and layer/UT
-means under `train/*_step`. These are detached Euclidean norms, not loss terms.
-Bias and scale use the effective phase-specific, materialized values; router
-output norms include only valid dispatched assignments. Absent components
-report zero. Collection follows the existing `--log-grad-stats` diagnostic schedule.
-
-Predictor weights receive full gradients. In the activation branch, only the predictor's gradient path
-back to the input latent is multiplied by 0.1; expert and routing paths are
-unchanged. The predictor uses the MoE matrix optimizer and matrix learning
-rate, not the kappa bias/scale learning-rate schedule.
-
-With `--separate-base-sft-kappa`, one predictor projection stores two weight
-sets as stacked rows, reshaped to `(2, n_exp, n_embd)`. Base steps select
-slot 0 and SFT steps select slot 1; all UT passes use the selected phase.
-Each slot has independent matrix-optimizer state, and inactive weights and
-state remain unchanged. Without this option, the predictor remains shared.
-
-Chat SFT inherits this mode from the checkpoint. Add
-`--independent-kappa-router` to enable it on an existing kappa checkpoint;
-missing predictor weights are copied from its router weights,
-preserving deterministic initial conditioning. In separate-phase mode,
-missing or older single-set predictor weights are copied into both slots.
-Fresh pretraining initializes the predictor uniformly like
-other input projections. Predictor weights and the mode are saved for evaluation.
-Legacy learned scale tensors are ignored when loading independent mode.
-Existing independent checkpoints therefore load but do not preserve their old outputs.
+Diagnostic steps log `kappa_scale_l2_norm` and `kappa_bias_l2_norm`, with
+per-layer `inspect/` metrics and layer/UT means under `train/*_step`. These
+are detached mean squares of the effective phase-specific parameters, not
+loss terms. Absent components report zero. Collection follows `--log-grad-stats`.
 
 ## Notes
 
+- Checkpoints containing a separate kappa router projection require an older revision that supports it.
 - The training command assumes this repository is the current working directory.
 - `--delete-old-ckpts-before-save` removes earlier checkpoints before writing new ones, which keeps disk usage under control.
 - `--rebuild-compile-after-first-eval-only` avoids paying a full compile rebuild after every later CORE/sample pass.
