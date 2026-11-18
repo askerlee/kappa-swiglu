@@ -12,7 +12,8 @@ inference ablation of one trained checkpoint, not a comparison of training runs.
 Non-kappa layers are included. Checkpoints without kappa run one baseline pass.
 By default, input/output refer to the MLP boundaries. --norm-location swiglu
 measures input [gate_proj(x), up_proj(x)] and output activation(gate) * up,
-before the down-projection. The input norm combines both projection branches.
+before the down-projection (after output RMSNorm when configured). The input
+norm combines both projection branches.
 """
 
 import argparse
@@ -27,7 +28,7 @@ import torch.distributed as dist
 
 from nanochat.checkpoint_manager import load_model
 from nanochat.common import COMPUTE_DTYPE, autodetect_device_type, compute_cleanup, compute_init, print0
-from nanochat.gpt import Qwen3MLP, Qwen3MLPExperts
+from nanochat.gpt import Qwen3MLP, Qwen3MLPExperts, norm
 from scripts.eval_kappa_effect import build_loader
 
 
@@ -136,6 +137,8 @@ class LatentNormProbe:
             up = torch.bmm(inputs, module.c_fc)
             values["up"] = up.float().square().sum(dim=-1)
             output = values["activated_gate"] * up
+            if module.swiglu_norm_output:
+                output = norm(output)
         else:
             output = values["product"]
         return (values["gate"] + values["up"]).sqrt(), output
@@ -265,7 +268,7 @@ def print_comparisons(names, summaries, expert_summaries=None, norm_location="ml
 
     print0("CV: lower means more uniform across tokens/valid expert assignments.")
     if norm_location == "swiglu":
-        print0("SwiGLU norms: input=[gate_proj(x), up_proj(x)], output=activation(gate) * up before down-projection.")
+        print0("SwiGLU norms: input=[gate_proj(x), up_proj(x)], output=activation(gate) * up before down-projection (after optional RMSNorm).")
     else:
         print0("Norms are at the MLP input and final projected output, not internal SwiGLU boundaries.")
     print0("MoE: each column is mean +/- population std across observed experts (equal weight).")
@@ -409,7 +412,7 @@ def main():
                 expert_summary=expert_summaries,
                 norm_location=args.norm_location,
                 norm_definition=(
-                    {"input": "concat(gate_proj(x), up_proj(x))", "output": "activation(gate_proj(x)) * up_proj(x)"}
+                    {"input": "concat(gate_proj(x), up_proj(x))", "output": "activation(gate_proj(x)) * up_proj(x), after RMSNorm if configured"}
                     if args.norm_location == "swiglu" else {"input": "MLP input", "output": "MLP output after down-projection"}
                 ),
             )

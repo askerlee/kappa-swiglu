@@ -137,10 +137,11 @@ def test_real_dense_probe_matches_native_ablation(has_kappa):
 
 @pytest.mark.parametrize("has_kappa", [False, True])
 @pytest.mark.parametrize("mixed_precision", [False, True])
-def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision):
+@pytest.mark.parametrize("normalize_output", [False, True])
+def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision, normalize_output):
     dense = Qwen3MLP(SimpleNamespace(
         n_embd=4, use_kappa_swiglu=has_kappa, constant_kappa_bias_dense_layers=True,
-        kappa_input_constant=1.0,
+        kappa_input_constant=1.0, swiglu_norm_output=normalize_output,
     ), layer_idx=0).eval()
     if has_kappa:
         with torch.no_grad():
@@ -159,7 +160,10 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision):
             product = gate * torch.sigmoid(gate * torch.tensor(slope, dtype=gate.dtype)) * up
         else:
             product = disabled_product
-        expected = dense(inputs)
+        if normalize_output:
+            product = torch.nn.functional.rms_norm(product, (dense.intermediate_size,))
+            disabled_product = torch.nn.functional.rms_norm(disabled_product, (dense.intermediate_size,))
+        expected = dense.c_proj(product)
         try:
             probe.install(torch.nn.Sequential(dense))
             actual = dense(inputs, valid_token_mask=mask)
@@ -182,15 +186,18 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision):
 @pytest.mark.parametrize("kappa_input", ["router_probs", "gate_proj"])
 @pytest.mark.parametrize("has_kappa,independent_router", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("mixed_precision", [False, True])
-def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kappa, independent_router, mixed_precision):
+@pytest.mark.parametrize("normalize_output", [False, True])
+def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kappa, independent_router, mixed_precision, normalize_output):
     experts = Qwen3MLPExperts(GPTConfig(
         n_embd=4, n_exp=2, use_kappa_swiglu=has_kappa,
         kappa_input=kappa_input, independent_kappa_router=independent_router,
+        swiglu_norm_output=normalize_output,
     ), layer_idx=0).eval()
     with torch.no_grad():
         for parameter in experts.parameters():
             parameter.uniform_(-0.3, 0.3)
     reference = deepcopy(experts)
+    reference.swiglu_norm_output = False
     reference.c_proj = torch.nn.Parameter(torch.eye(experts.intermediate_size).repeat(2, 1, 1))
     inputs = torch.randn(2, 3, 4)
     scores = torch.randn(2, 3)
@@ -200,9 +207,12 @@ def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kap
     with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16, enabled=mixed_precision):
         pre = torch.cat((torch.bmm(inputs, experts.gate_proj).float(), torch.bmm(inputs, experts.c_fc).float()), dim=-1)
         product = reference(inputs, selected_gate_scores=scores, valid_score_mask=mask)
-        expected = experts(inputs, selected_gate_scores=scores, valid_score_mask=mask)
         reference.set_kappa_swiglu_enabled(False)
         disabled_product = reference(inputs, selected_gate_scores=scores, valid_score_mask=mask)
+        if normalize_output:
+            product = torch.nn.functional.rms_norm(product, (experts.intermediate_size,))
+            disabled_product = torch.nn.functional.rms_norm(disabled_product, (experts.intermediate_size,))
+        expected = torch.bmm(product, experts.c_proj)
         try:
             probe.install(torch.nn.Sequential(experts))
             actual = experts(inputs, selected_gate_scores=scores, valid_score_mask=mask)

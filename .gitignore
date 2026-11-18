@@ -32,3 +32,4 @@ pbs*.out
 *debug.log
 figures/
 *.log
+norm_stats.json

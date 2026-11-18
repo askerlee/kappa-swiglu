@@ -1153,6 +1153,7 @@ class Qwen3MLP(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.swiglu_norm_output = bool(getattr(config, 'swiglu_norm_output', False))
         # up_proj -> c_fc, down_proj -> c_proj
         # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
         self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -1318,26 +1319,28 @@ class Qwen3MLP(nn.Module):
     def forward(self, x, loss_accum=None, router_layer_idx=None, current_ut=0, valid_token_mask=None):
         kappa_slot = self.kappa_phase if self.separate_base_sft_kappa else 0
         gate_out_raw = self.gate_proj(x)
-        if not self.kappa_swiglu_enabled:
-            gate_out = self.act_fn(gate_out_raw)
-            return self.c_proj(gate_out * self.c_fc(x))
-        kappa_bias = self._materialize_kappa_bias(kappa_slot)
-        if self.training:
-            slope_scales = self._compute_kappa_slope_scales(kappa_bias, loss_accum=loss_accum)
-        else:
-            slope_scales = self._materialize_kappa_slope_scales_for_eval(
-                gate_out_raw.dtype,
-                gate_out_raw.device,
-                kappa_slot,
+        if self.kappa_swiglu_enabled:
+            kappa_bias = self._materialize_kappa_bias(kappa_slot)
+            if self.training:
+                slope_scales = self._compute_kappa_slope_scales(kappa_bias, loss_accum=loss_accum)
+            else:
+                slope_scales = self._materialize_kappa_slope_scales_for_eval(
+                    gate_out_raw.dtype,
+                    gate_out_raw.device,
+                    kappa_slot,
+                )
+            if MANAGER.collect_load_balancing_stats:
+                _update_kappa_l2_norm_stats(kappa_bias)
+                self._update_kappa_slope_scale_stats(slope_scales)
+            gate_out = gate_out_raw * torch.sigmoid(
+                gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
             )
-        if MANAGER.collect_load_balancing_stats:
-            _update_kappa_l2_norm_stats(kappa_bias)
-            self._update_kappa_slope_scale_stats(slope_scales)
-        gate_out = gate_out_raw * torch.sigmoid(
-            gate_out_raw * slope_scales.to(dtype=gate_out_raw.dtype)
-        )
-        down_proj = self.c_proj(gate_out * self.c_fc(x))
-        return down_proj
+        else:
+            gate_out = self.act_fn(gate_out_raw)
+        product = gate_out * self.c_fc(x)
+        if self.swiglu_norm_output:
+            product = norm(product)
+        return self.c_proj(product)
 
 class Qwen3MLPExperts(nn.Module):
     def __init__(self, config, layer_idx=None):
@@ -1351,6 +1354,7 @@ class Qwen3MLPExperts(nn.Module):
         self.hidden_size = config.n_embd
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
+        self.swiglu_norm_output = bool(getattr(config, 'swiglu_norm_output', False))
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.register_buffer(
@@ -1989,9 +1993,10 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        if self.kappa_swiglu_enabled and (
+        use_kappa = self.kappa_swiglu_enabled and (
             selected_gate_scores is not None or self.kappa_input == 'gate_proj'
-        ):
+        )
+        if use_kappa:
             if self.independent_kappa_router and self.kappa_input != 'gate_proj':
                 selected_gate_scores = self._materialize_kappa_scale(
                     kappa_slot, selected_gate_scores=selected_gate_scores,
@@ -2047,6 +2052,8 @@ class Qwen3MLPExperts(nn.Module):
 
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
+        if self.swiglu_norm_output and (use_kappa or not self.bilinear_mlp_moe):
+            x = norm(x)
         proj_out = torch.bmm(x, self.c_proj)
 
         if self.debug:
