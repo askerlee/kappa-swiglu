@@ -1,6 +1,5 @@
 import json
 import math
-from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -154,15 +153,17 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision, 
         gate = dense.gate_proj(inputs)
         up = dense.c_fc(inputs)
         pre = torch.cat((gate.float(), up.float()), dim=-1)
-        disabled_product = dense.act_fn(gate) * up
+        disabled_gate = dense.act_fn(gate)
         if has_kappa:
             slope = math.exp(math.log(2.0) * math.tanh(0.5))
-            product = gate * torch.sigmoid(gate * torch.tensor(slope, dtype=gate.dtype)) * up
+            activated_gate = gate * torch.sigmoid(gate * torch.tensor(slope, dtype=gate.dtype))
         else:
-            product = disabled_product
+            activated_gate = disabled_gate
         if normalize_output:
-            product = torch.nn.functional.rms_norm(product, (dense.intermediate_size,))
-            disabled_product = torch.nn.functional.rms_norm(disabled_product, (dense.intermediate_size,))
+            activated_gate = torch.nn.functional.rms_norm(activated_gate, (dense.intermediate_size,))
+            disabled_gate = torch.nn.functional.rms_norm(disabled_gate, (dense.intermediate_size,))
+        product = activated_gate * up
+        disabled_product = disabled_gate * up
         expected = dense.c_proj(product)
         try:
             probe.install(torch.nn.Sequential(dense))
@@ -187,7 +188,7 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision, 
 @pytest.mark.parametrize("has_kappa", [False, True])
 @pytest.mark.parametrize("mixed_precision", [False, True])
 @pytest.mark.parametrize("normalize_output", [False, True])
-def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kappa, mixed_precision, normalize_output):
+def test_expert_swiglu_norms_match_explicit_branches(kappa_input, has_kappa, mixed_precision, normalize_output):
     experts = Qwen3MLPExperts(GPTConfig(
         n_embd=4, n_exp=2, use_kappa_swiglu=has_kappa,
         kappa_input=kappa_input,
@@ -196,22 +197,22 @@ def test_expert_swiglu_norms_match_identity_down_projection(kappa_input, has_kap
     with torch.no_grad():
         for parameter in experts.parameters():
             parameter.uniform_(-0.3, 0.3)
-    reference = deepcopy(experts)
-    reference.swiglu_norm_output = False
-    reference.c_proj = torch.nn.Parameter(torch.eye(experts.intermediate_size).repeat(2, 1, 1))
     inputs = torch.randn(2, 3, 4)
     scores = torch.randn(2, 3)
     mask = torch.tensor([[True, True, False], [True, False, False]])
     probe = LatentNormProbe(per_expert=True, norm_location="swiglu")
     probe.mode = "enabled" if has_kappa else "baseline"
     with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16, enabled=mixed_precision):
-        pre = torch.cat((torch.bmm(inputs, experts.gate_proj).float(), torch.bmm(inputs, experts.c_fc).float()), dim=-1)
-        product = reference(inputs, selected_gate_scores=scores, valid_score_mask=mask)
-        reference.set_kappa_swiglu_enabled(False)
-        disabled_product = reference(inputs, selected_gate_scores=scores, valid_score_mask=mask)
+        gate = torch.bmm(inputs, experts.gate_proj)
+        up = torch.bmm(inputs, experts.c_fc)
+        pre = torch.cat((gate.float(), up.float()), dim=-1)
+        disabled_gate = experts.act_fn(gate)
+        activated_gate = experts._apply_kappa_slope_scaled_activation_inference(gate, scores) if has_kappa else disabled_gate
         if normalize_output:
-            product = torch.nn.functional.rms_norm(product, (experts.intermediate_size,))
-            disabled_product = torch.nn.functional.rms_norm(disabled_product, (experts.intermediate_size,))
+            activated_gate = torch.nn.functional.rms_norm(activated_gate, (experts.intermediate_size,))
+            disabled_gate = torch.nn.functional.rms_norm(disabled_gate, (experts.intermediate_size,))
+        product = activated_gate * up
+        disabled_product = disabled_gate * up
         expected = torch.bmm(product, experts.c_proj)
         try:
             probe.install(torch.nn.Sequential(experts))

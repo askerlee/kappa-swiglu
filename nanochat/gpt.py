@@ -1330,10 +1330,9 @@ class Qwen3MLP(nn.Module):
             )
         else:
             gate_out = self.act_fn(gate_out_raw)
-        product = gate_out * self.c_fc(x)
         if self.swiglu_norm_output:
-            product = norm(product)
-        return self.c_proj(product)
+            gate_out = norm(gate_out)
+        return self.c_proj(gate_out * self.c_fc(x))
 
 class Qwen3MLPExperts(nn.Module):
     def __init__(self, config, layer_idx=None):
@@ -1976,10 +1975,10 @@ class Qwen3MLPExperts(nn.Module):
         if MANAGER.collect_load_balancing_stats:
             self._update_gate_stats(gate_out_acts)
 
+        if self.swiglu_norm_output and (use_kappa or not self.bilinear_mlp_moe):
+            gate_out_acts = norm(gate_out_acts)
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
-        if self.swiglu_norm_output and (use_kappa or not self.bilinear_mlp_moe):
-            x = norm(x)
         proj_out = torch.bmm(x, self.c_proj)
 
         if self.debug:

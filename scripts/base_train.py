@@ -298,7 +298,7 @@ parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
 parser.add_argument("--swiglu-norm-output", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply RMSNorm over FFN neurons after SwiGLU, before down-projection")
+                    help="apply RMSNorm over FFN neurons to the activated gate before multiplying by the up projection")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
