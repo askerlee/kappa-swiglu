@@ -7,6 +7,57 @@ from nanochat.configuration_nanomoe_gpt import GPTConfig
 from nanochat.gpt import GPT, _UTLossAccum, _chunked_cross_entropy, _get_loss_chunk_tokens, SoftcapInPlace
 
 
+def test_swiglu_norm_reg_modes_and_legacy_config():
+    assert GPTConfig().swiglu_norm_reg is None
+    assert GPTConfig(swiglu_norm_reg='None', swiglu_norm_output=True).swiglu_norm_reg is None
+    assert GPTConfig(swiglu_norm_output=True).swiglu_norm_reg == 'RMSNorm'
+    assert GPTConfig(swiglu_norm_reg='RMSNorm').swiglu_norm_output
+    config = GPTConfig(swiglu_norm_reg='zerosum-kappa', zerosum_kappa_alpha_weight=0.25)
+    restored = GPTConfig(**vars(config))
+    assert restored.swiglu_norm_reg == 'zerosum-kappa'
+    assert not restored.swiglu_norm_output
+    assert restored.zerosum_kappa_alpha_weight == 0.25
+
+
+def test_zerosum_kappa_loss_is_added_once_and_preserves_ntp_metric():
+    config = GPTConfig(
+        n_layer=2, n_head=2, n_embd=32, vocab_size=32, sequence_len=8,
+        n_exp=2, moe_start_layer=1, total_ut_steps=2, ut_everypass_ntp=True,
+        use_kappa_swiglu=True, kappa_input='gate_proj', use_router_z_loss=False,
+        swiglu_norm_reg='zerosum-kappa', zerosum_kappa_alpha_weight=0.25,
+        zerosum_kappa_bias_weight=0.5,
+    )
+    model = GPT(config)
+    model.init_weights()
+    experts = model.transformer.h[1].mlp.experts
+    with torch.no_grad():
+        experts.kappa_scale[0, 0].fill_(2)
+        experts.kappa_scale[0, 1].fill_(-2)
+        experts.kappa_bias[0, 0].fill_(1)
+        experts.kappa_bias[0, 1].fill_(-1)
+        experts.kappa_bias[0, 0, :2].copy_(torch.tensor([0.0, 2.0]))
+    tokens = torch.arange(8).reshape(2, 4)
+    targets = tokens.roll(-1, dims=-1)
+    total, metrics = model(tokens, targets)
+    expected_reg = total.new_tensor(3.0)
+    torch.testing.assert_close(metrics['zerosum_kappa_loss'], expected_reg)
+    torch.testing.assert_close(total.detach(), metrics['ntp_loss'] + expected_reg)
+
+    model.config.swiglu_norm_reg = None
+    ntp, _ = model(tokens, targets)
+    torch.testing.assert_close(ntp.detach(), metrics['ntp_loss'])
+    scale_grad, bias_grad = torch.autograd.grad(total - ntp, (experts.kappa_scale, experts.kappa_bias))
+    for grad in (scale_grad, bias_grad):
+        torch.testing.assert_close(grad[0, 0], torch.full_like(grad[0, 0], 1 / experts.intermediate_size))
+        torch.testing.assert_close(grad[0, 1], torch.full_like(grad[0, 1], -1 / experts.intermediate_size))
+
+    model.config.swiglu_norm_reg = 'zerosum-kappa'
+    with torch.no_grad():
+        eval_loss, eval_metrics = model.eval()(tokens, targets)
+    assert 'zerosum_kappa_loss' not in eval_metrics
+    torch.testing.assert_close(eval_loss, eval_metrics['ntp_loss'])
+
+
 @pytest.mark.parametrize('separate_base_sft_kappa', [False, True])
 @pytest.mark.parametrize('training', [False, True])
 def test_kappa_uses_same_slot_for_all_ut_passes(separate_base_sft_kappa, training):

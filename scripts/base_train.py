@@ -297,8 +297,12 @@ parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_fr
 parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the kappa slope L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
-parser.add_argument("--swiglu-norm-output", type=str2bool, nargs='?', const=True, default=False,
-                    help="apply RMSNorm over FFN neurons to the activated gate before multiplying by the up projection")
+parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'zerosum-kappa'], default=None,
+                    help="SwiGLU gate RMSNorm or per-expert kappa mean penalty (default: None)")
+parser.add_argument("--zerosum-kappa-alpha-weight", type=float, default=1e-3,
+                    help="weight for squared per-expert mean kappa scales")
+parser.add_argument("--zerosum-kappa-bias-weight", type=float, default=1e-3,
+                    help="weight for squared per-expert mean kappa biases")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -625,7 +629,9 @@ def build_model_meta(depth):
         kappa_start_layer=args.kappa_start_layer,
         log_implicit_gate_proj_bias=args.log_implicit_gate_proj_bias,
         bilinear_mlp_moe=args.bilinear_mlp_moe,
-        swiglu_norm_output=args.swiglu_norm_output,
+        swiglu_norm_reg=args.swiglu_norm_reg,
+        zerosum_kappa_alpha_weight=args.zerosum_kappa_alpha_weight,
+        zerosum_kappa_bias_weight=args.zerosum_kappa_bias_weight,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
@@ -1886,6 +1892,8 @@ while True:
             "epoch": epoch,
         }
         log_data["train/aux_loss_weight"] = aux_loss_weight
+        if 'zerosum_kappa_loss' in losses:
+            log_data["train/zerosum_kappa_loss_step"] = scalar_loss_to_item(losses['zerosum_kappa_loss'])
         for name, value in losses.items():
             if name.startswith(('kappa_scale_l2_norm_', 'kappa_bias_l2_norm_')):
                 log_data[f"inspect/{name}"] = value

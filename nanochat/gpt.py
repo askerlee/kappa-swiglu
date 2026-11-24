@@ -1555,6 +1555,17 @@ class Qwen3MLPExperts(nn.Module):
             return kappa_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
+    def zerosum_kappa_loss(self, alpha_weight, bias_weight):
+        if self.use_kappa_scale_param:
+            alpha = self._materialize_kappa_scale()
+            bias = self._materialize_kappa_bias()
+            return (
+                alpha_weight * alpha.float().mean(dim=-1).square().sum()
+                + bias_weight * bias.float().mean(dim=-1).square().sum()
+            )
+        alpha = self._materialize_kappa_bias()
+        return alpha_weight * alpha.float().mean(dim=-1).square().sum()
+
     def _get_kappa_bias_version(self):
         kappa_bias = self._get_kappa_bias_parameter()
         return -1 if kappa_bias is None else kappa_bias._version
@@ -3366,6 +3377,18 @@ class GPT(nn.Module):
             assert ntp_loss_total is not None
             loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
+
+            if self.training and self.config.swiglu_norm_reg == 'zerosum-kappa':
+                zerosum_loss = loss.new_zeros(())
+                for block in self.transformer.h:
+                    experts = getattr(block.mlp, 'experts', None)
+                    if isinstance(experts, Qwen3MLPExperts) and experts.kappa_swiglu_enabled:
+                        zerosum_loss = zerosum_loss + experts.zerosum_kappa_loss(
+                            self.config.zerosum_kappa_alpha_weight,
+                            self.config.zerosum_kappa_bias_weight,
+                        )
+                loss = loss + zerosum_loss
+                losses['zerosum_kappa_loss'] = zerosum_loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = (

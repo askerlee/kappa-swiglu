@@ -57,6 +57,9 @@ class GPTConfig:
         use_qwen3_dense_mlp: bool = True,  # use Qwen3-style dense MLPs in non-MoE layers
         bilinear_mlp_moe: bool = False,  # disable SiLU gating in Qwen3-style MoE MLPs and use raw bilinear gating instead
         swiglu_norm_output: bool = False,
+        swiglu_norm_reg: str | None = None,
+        zerosum_kappa_alpha_weight: float = 1e-3,
+        zerosum_kappa_bias_weight: float = 1e-3,
         # Sliding window attention pattern string, tiled across layers. Final layer always L.
         # Characters: L=long (full context), S=short (half context)
         # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
@@ -162,7 +165,18 @@ class GPTConfig:
         self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
         self.use_qwen3_dense_mlp = bool(use_qwen3_dense_mlp)
         self.bilinear_mlp_moe = bool(bilinear_mlp_moe)
-        self.swiglu_norm_output = bool(swiglu_norm_output)
+        if swiglu_norm_reg is None and swiglu_norm_output:
+            swiglu_norm_reg = 'RMSNorm'
+        if swiglu_norm_reg == 'None':
+            swiglu_norm_reg = None
+        if swiglu_norm_reg not in (None, 'RMSNorm', 'zerosum-kappa'):
+            raise ValueError(f"Unsupported SwiGLU normalization/regularization mode: {swiglu_norm_reg!r}")
+        if not (0 <= zerosum_kappa_alpha_weight < float('inf') and 0 <= zerosum_kappa_bias_weight < float('inf')):
+            raise ValueError("Zero-sum kappa weights must be finite and nonnegative")
+        self.swiglu_norm_reg = swiglu_norm_reg
+        self.swiglu_norm_output = swiglu_norm_reg == 'RMSNorm'
+        self.zerosum_kappa_alpha_weight = zerosum_kappa_alpha_weight
+        self.zerosum_kappa_bias_weight = zerosum_kappa_bias_weight
         self.window_pattern = window_pattern
         self.total_ut_steps = int(total_ut_steps)
         if self.total_ut_steps <= 0:
