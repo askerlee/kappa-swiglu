@@ -14,6 +14,8 @@ By default, input/output refer to the MLP boundaries. --norm-location swiglu
 measures input [gate_proj(x), up_proj(x)] and output activation(gate) * up,
 before the down-projection. When configured, RMSNorm is applied to the
 activated gate before multiplication. The input norm combines both branches.
+The checkpoint's unweighted zero-sum kappa penalties are computed once,
+independently of the evaluation data and whether training used the penalty.
 """
 
 import argparse
@@ -351,6 +353,34 @@ def parse_args():
     return args
 
 
+@torch.no_grad()
+def summarize_zerosum_kappa_loss(model):
+    alpha_sum = 0.0
+    bias_sum = 0.0
+    alpha_abs_sum = 0.0
+    bias_abs_sum = 0.0
+    expert_count = 0
+    for module in model.modules():
+        if isinstance(module, Qwen3MLPExperts) and module.kappa_swiglu_enabled:
+            alpha_mean, bias_mean = module.zerosum_kappa_expert_means()
+            alpha_sum += alpha_mean.square().sum().item()
+            bias_sum += bias_mean.square().sum().item()
+            alpha_abs_sum += alpha_mean.abs().sum().item()
+            bias_abs_sum += bias_mean.abs().sum().item()
+            expert_count += alpha_mean.numel()
+
+    total_loss = alpha_sum + bias_sum
+    report = dict(
+        expert_count=expert_count, alpha_loss=alpha_sum, bias_loss=bias_sum, total_loss=total_loss,
+        mean_alpha_loss=alpha_sum / expert_count if expert_count else None,
+        mean_bias_loss=bias_sum / expert_count if expert_count else None,
+        mean_total_loss=total_loss / expert_count if expert_count else None,
+        mean_abs_alpha_mean=alpha_abs_sum / expert_count if expert_count else None,
+        mean_abs_bias_mean=bias_abs_sum / expert_count if expert_count else None,
+    )
+    return {name: value if value is not None and math.isfinite(value) else None for name, value in report.items()}
+
+
 def main():
     args = parse_args()
     device_type = args.device_type or autodetect_device_type()
@@ -363,6 +393,7 @@ def main():
             step=args.step, eval_capacity=args.eval_capacity,
         )
         model.eval()
+        zerosum_kappa_loss = summarize_zerosum_kappa_loss(model)
         states = [(module, module.kappa_swiglu_enabled) for module in model.modules()
                   if isinstance(module, (Qwen3MLP, Qwen3MLPExperts))]
         names = probe.install(model)
@@ -374,6 +405,22 @@ def main():
         tokens_per_step = args.device_batch_size * sequence_len * world_size
         steps = max(1, math.ceil(args.eval_tokens / tokens_per_step))
         print0(f"Checkpoint step: {meta['step']} | tokens per mode: {steps * tokens_per_step:,}")
+        print0(
+            f"Zero-sum kappa loss (unweighted): alpha={format_number(zerosum_kappa_loss['alpha_loss'])}, "
+            f"bias={format_number(zerosum_kappa_loss['bias_loss'])}, "
+            f"total={format_number(zerosum_kappa_loss['total_loss'])}"
+        )
+        print0(
+            f"Mean zero-sum loss per expert (n={zerosum_kappa_loss['expert_count']}): "
+            f"alpha={format_number(zerosum_kappa_loss['mean_alpha_loss'])}, "
+            f"bias={format_number(zerosum_kappa_loss['mean_bias_loss'])}, "
+            f"total={format_number(zerosum_kappa_loss['mean_total_loss'])}"
+        )
+        print0(
+            "Mean absolute expert coefficient mean (before squaring): "
+            f"alpha={format_number(zerosum_kappa_loss['mean_abs_alpha_mean'])}, "
+            f"bias={format_number(zerosum_kappa_loss['mean_abs_bias_mean'])}"
+        )
         if has_kappa:
             print0("Eager inference; each batch is evaluated enabled then disabled, without reloading data.")
         else:
@@ -411,6 +458,7 @@ def main():
                 tokens_per_mode=steps * tokens_per_step, world_size=world_size, modes=modes,
                 layer_kappa_enabled=layer_kappa_enabled, statistics=output_summaries,
                 expert_summary=expert_summaries,
+                zerosum_kappa_loss=zerosum_kappa_loss,
                 norm_location=args.norm_location,
                 norm_definition=(
                     {"input": "concat(gate_proj(x), up_proj(x))", "output": "activated gate (RMS-normalized if configured) * up_proj(x)"}

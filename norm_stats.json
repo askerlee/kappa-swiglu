@@ -29361,9 +29361,16 @@
       }
     }
   },
+  "zerosum_kappa_loss": {
+    "alpha_weight": 0.001,
+    "bias_weight": 0.001,
+    "alpha_loss": 3.222015651408583e-05,
+    "bias_loss": 6.924627418629825e-05,
+    "total_loss": 0.00010146643070038408
+  },
   "norm_location": "swiglu",
   "norm_definition": {
     "input": "concat(gate_proj(x), up_proj(x))",
-    "output": "activation(gate_proj(x)) * up_proj(x)"
+    "output": "activated gate (RMS-normalized if configured) * up_proj(x)"
   }
 }

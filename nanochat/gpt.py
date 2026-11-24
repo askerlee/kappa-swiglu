@@ -1555,16 +1555,24 @@ class Qwen3MLPExperts(nn.Module):
             return kappa_scale.unsqueeze(-1).expand(-1, self.intermediate_size) + 0
         return kappa_scale.reshape(1, 1).expand(self.n_exp, self.intermediate_size) + 0
 
-    def zerosum_kappa_loss(self, alpha_weight, bias_weight):
+    def zerosum_kappa_expert_means(self):
         if self.use_kappa_scale_param:
             alpha = self._materialize_kappa_scale()
             bias = self._materialize_kappa_bias()
             return (
-                alpha_weight * alpha.float().mean(dim=-1).square().sum()
-                + bias_weight * bias.float().mean(dim=-1).square().sum()
+                alpha.float().mean(dim=-1),
+                bias.float().mean(dim=-1),
             )
-        alpha = self._materialize_kappa_bias()
-        return alpha_weight * alpha.float().mean(dim=-1).square().sum()
+        alpha_mean = self._materialize_kappa_bias().float().mean(dim=-1)
+        return alpha_mean, torch.zeros_like(alpha_mean)
+
+    def zerosum_kappa_terms(self):
+        alpha_mean, bias_mean = self.zerosum_kappa_expert_means()
+        return alpha_mean.square().sum(), bias_mean.square().sum()
+
+    def zerosum_kappa_loss(self, alpha_weight, bias_weight):
+        alpha_term, bias_term = self.zerosum_kappa_terms()
+        return alpha_weight * alpha_term + bias_weight * bias_term
 
     def _get_kappa_bias_version(self):
         kappa_bias = self._get_kappa_bias_parameter()

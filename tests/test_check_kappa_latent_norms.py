@@ -11,6 +11,30 @@ from scripts import check_kappa_latent_norms
 from scripts.check_kappa_latent_norms import LatentNormProbe, ScalarStats
 
 
+def test_zerosum_kappa_report_ignores_training_weights():
+    config = GPTConfig(
+        n_embd=4, n_exp=2, use_kappa_swiglu=True, kappa_input='gate_proj',
+        zerosum_kappa_alpha_weight=0.25, zerosum_kappa_bias_weight=0.5,
+    )
+    experts = Qwen3MLPExperts(config).eval()
+    disabled_experts = Qwen3MLPExperts(config).eval()
+    disabled_experts.set_kappa_swiglu_enabled(False)
+    model = torch.nn.Sequential(experts, disabled_experts)
+    model.config = config
+    with torch.no_grad():
+        experts.kappa_scale[0, 0].fill_(1)
+        experts.kappa_scale[0, 1].fill_(-3)
+        experts.kappa_bias.fill_(1)
+        disabled_experts.kappa_scale.fill_(100)
+        disabled_experts.kappa_bias.fill_(100)
+    report = check_kappa_latent_norms.summarize_zerosum_kappa_loss(model)
+    assert report == dict(
+        expert_count=2, alpha_loss=10.0, bias_loss=2.0, total_loss=12.0,
+        mean_alpha_loss=5.0, mean_bias_loss=1.0, mean_total_loss=6.0,
+        mean_abs_alpha_mean=2.0, mean_abs_bias_mean=1.0,
+    )
+
+
 def test_expert_summary_uses_equal_weight_and_excludes_empty_experts():
     summaries = {}
     for expert_idx, values in enumerate(([1.0, 3.0], [10.0], [])):
@@ -273,6 +297,7 @@ def test_main_pairs_batches_reports_ntp_loss_and_writes_json(monkeypatch, tmp_pa
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
+            self.config = GPTConfig(zerosum_kappa_alpha_weight=0.25, zerosum_kappa_bias_weight=0.5)
             self.experts = FakeExperts()
             self.experts.use_kappa_swiglu = has_kappa
             self.experts.kappa_swiglu_enabled = has_kappa
@@ -289,6 +314,7 @@ def test_main_pairs_batches_reports_ntp_loss_and_writes_json(monkeypatch, tmp_pa
             return torch.tensor(9.0), {"ntp_loss": torch.tensor(2.0)}
 
     model = Model()
+    monkeypatch.setattr(model.experts, "zerosum_kappa_expert_means", lambda: (torch.tensor([2.0, -2.0]), torch.ones(2)))
     output = tmp_path / "stats.json"
     args = SimpleNamespace(
         per_expert=per_expert, source="base", device_type="cpu", model_tag="test", step=None,
@@ -305,6 +331,8 @@ def test_main_pairs_batches_reports_ntp_loss_and_writes_json(monkeypatch, tmp_pa
     check_kappa_latent_norms.main()
     report = json.loads(output.read_text())
     assert report["tokens_per_mode"] == 4
+    assert report["zerosum_kappa_loss"]["total_loss"] == (10.0 if has_kappa else 0.0)
+    assert report["zerosum_kappa_loss"]["mean_total_loss"] == (5.0 if has_kappa else None)
     mode = "enabled" if has_kappa else "baseline"
     assert report["statistics"][f"model/{mode}/nll"]["mean"] == 2
     if per_expert:
@@ -315,6 +343,7 @@ def test_main_pairs_batches_reports_ntp_loss_and_writes_json(monkeypatch, tmp_pa
         assert not any(".expert0" in key for key in report["statistics"])
     assert report["expert_summary"][f"experts/{mode}/output_norm"]["observed_experts"] == 1
     text = capsys.readouterr().out
+    assert "Zero-sum kappa loss (unweighted):" in text
     assert ".expert0" not in text
     assert "mean +/- population std across observed experts" in text
     assert report["statistics"][f"baseline_layer/{mode}/output_norm"]["count"] == 4
@@ -341,6 +370,7 @@ def test_main_swiglu_records_boundary_definition(monkeypatch, tmp_path, capsys, 
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
+            self.config = GPTConfig()
             self.mlp = Qwen3MLP(SimpleNamespace(
                 n_embd=4, use_kappa_swiglu=has_kappa, constant_kappa_bias_dense_layers=True,
                 kappa_input_constant=1.0,
