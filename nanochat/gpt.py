@@ -43,7 +43,26 @@ _UT_LOSS_NAMES = (
     "aux_loss",
     "router_z_loss",
     "kappa_slope_l2_loss",
+    "normbalanceloss",
 )
+
+
+def _expert_activation_norm_balance(product, valid_score_mask=None):
+    if valid_score_mask is not None:
+        product = product.masked_fill(~valid_score_mask.unsqueeze(-1), 0)
+    token_norms = torch.linalg.vector_norm(product.float(), dim=-1)
+    if valid_score_mask is None:
+        expert_means = token_norms.mean(dim=-1)
+        mean = expert_means.mean()
+        variance = (expert_means - mean).square().mean()
+    else:
+        token_counts = valid_score_mask.sum(dim=-1)
+        active = token_counts > 0
+        expert_count = active.sum().clamp_min(1)
+        expert_means = token_norms.sum(dim=-1) / token_counts.clamp_min(1)
+        mean = expert_means.sum() / expert_count
+        variance = (expert_means - mean).square().masked_fill(~active, 0).sum() / expert_count
+    return variance / (mean.square() + 1e-8)
 
 
 def _compute_kappa_slope_l2_loss(slope_work, valid_score_mask=None):
@@ -1347,6 +1366,7 @@ class Qwen3MLPExperts(nn.Module):
         self.intermediate_size = 4 * config.n_embd
         self.bilinear_mlp_moe = bool(getattr(config, 'bilinear_mlp_moe', False))
         self.swiglu_norm_output = bool(getattr(config, 'swiglu_norm_output', False))
+        self.use_normbalanceloss = getattr(config, 'swiglu_norm_reg', None) == 'normbalanceloss'
         self.kappa_input = getattr(config, 'kappa_input', 'router_probs')
         self.disable_kappa_bias = bool(getattr(config, 'disable_kappa_bias', False))
         self.register_buffer(
@@ -1565,14 +1585,6 @@ class Qwen3MLPExperts(nn.Module):
             )
         alpha_mean = self._materialize_kappa_bias().float().mean(dim=-1)
         return alpha_mean, torch.zeros_like(alpha_mean)
-
-    def zerosum_kappa_terms(self):
-        alpha_mean, bias_mean = self.zerosum_kappa_expert_means()
-        return alpha_mean.square().sum(), bias_mean.square().sum()
-
-    def zerosum_kappa_loss(self, alpha_weight, bias_weight):
-        alpha_term, bias_term = self.zerosum_kappa_terms()
-        return alpha_weight * alpha_term + bias_weight * bias_term
 
     def _get_kappa_bias_version(self):
         kappa_bias = self._get_kappa_bias_parameter()
@@ -1998,6 +2010,12 @@ class Qwen3MLPExperts(nn.Module):
             gate_out_acts = norm(gate_out_acts)
         fc_out = torch.bmm(x, self.c_fc)
         x = gate_out_acts * fc_out
+        if self.training and torch.is_grad_enabled() and self.use_normbalanceloss and (use_kappa or not self.bilinear_mlp_moe):
+            balance_loss = _expert_activation_norm_balance(x, valid_score_mask)
+            if loss_accum is None:
+                MANAGER.add('normbalanceloss', balance_loss)
+            else:
+                loss_accum.add('normbalanceloss', balance_loss)
         proj_out = torch.bmm(x, self.c_proj)
 
         if self.debug:
@@ -3386,17 +3404,17 @@ class GPT(nn.Module):
             loss = ntp_loss_total / len(ut_hidden_states)
             losses['ntp_loss'] = loss.detach()
 
-            if self.training and self.config.swiglu_norm_reg == 'zerosum-kappa':
-                zerosum_loss = loss.new_zeros(())
-                for block in self.transformer.h:
-                    experts = getattr(block.mlp, 'experts', None)
-                    if isinstance(experts, Qwen3MLPExperts) and experts.kappa_swiglu_enabled:
-                        zerosum_loss = zerosum_loss + experts.zerosum_kappa_loss(
-                            self.config.zerosum_kappa_alpha_weight,
-                            self.config.zerosum_kappa_bias_weight,
-                        )
-                loss = loss + zerosum_loss
-                losses['zerosum_kappa_loss'] = zerosum_loss.detach()
+            if self.training and self.config.swiglu_norm_reg == 'normbalanceloss':
+                balance_loss = (
+                    checkpoint_loss_totals[_UT_LOSS_NAMES.index('normbalanceloss')] / self.total_ut_steps
+                    if checkpoint_loss_totals is not None
+                    else self._aggregate_loop_averaged_loss('normbalanceloss')
+                )
+                if balance_loss is None:
+                    balance_loss = loss.new_zeros(())
+                balance_loss = self.config.normbalanceloss_weight * balance_loss
+                loss = loss + balance_loss
+                losses['normbalanceloss'] = balance_loss.detach()
 
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = (
@@ -3425,6 +3443,7 @@ class GPT(nn.Module):
             else:
                 losses.update(self.compute_kappa_slope_magnitude_losses())
         else:
+            MANAGER.reset('normbalanceloss')
             return logits
 
         if False and self.global_iter >= 1000:

@@ -13,6 +13,7 @@ class MOEManager:
             "aux_loss": [],
             "router_z_loss": [],
             "kappa_slope_l2_loss": [],
+            "normbalanceloss": [],
             "kappa_scale_l2_norm": [],
             "kappa_bias_l2_norm": [],
             "kappa_slope_scale_abs_top5p_mean": [],
