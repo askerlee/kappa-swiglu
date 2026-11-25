@@ -131,7 +131,7 @@ parser.add_argument("--warmup-ratio", type=float, default=0.01, help="ratio of S
 parser.add_argument("--warmdown-ratio", type=float, default=0.2, help="ratio of SFT progress used for linear LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.05, help="final LR as a fraction of the peak SFT LR")
 parser.add_argument("--kappa-lr-max-scale",
-                    dest="kappa_lr_max_scale", type=float, default=0.01,
+                    dest="kappa_lr_max_scale", type=float, default=0.1,
                     help="peak LR scale factor for kappa_bias params after warming from 0 before annealing to --kappa-lr-final-scale")
 parser.add_argument("--kappa-lr-final-scale",
                     dest="kappa_lr_final_scale", type=float, default=0.005,
@@ -147,6 +147,8 @@ parser.add_argument(
     default=1e-3,
     help="L2 weight on the pre-transform kappa slope",
 )
+# NOTE: RMSNorm (--swiglu-norm-reg=RMSNorm) is inherited from the base model,
+# while normbalanceloss is disabled during chat SFT.
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -265,6 +267,12 @@ model, tokenizer, meta = load_model(
     refresh_kappa_param_references=False,
 )
 model.set_kappa_training_phase(True)
+if getattr(model.config, "swiglu_norm_reg", None) == "normbalanceloss":
+    model.config.swiglu_norm_reg = None
+    for module in model.modules():
+        if hasattr(module, "use_normbalanceloss"):
+            module.use_normbalanceloss = False
+    print0("Disabled normbalanceloss during chat SFT (inherited from base checkpoint).")
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
 )

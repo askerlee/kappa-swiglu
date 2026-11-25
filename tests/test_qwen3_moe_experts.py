@@ -2738,3 +2738,56 @@ def test_qwen3_experts_do_not_expose_low_rank_gate_factors():
     assert experts.gate_proj.ndim == 3
     assert not hasattr(experts, 'gate_proj_a')
     assert not hasattr(experts, 'gate_proj_b')
+
+
+@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits", "gate_proj", "constant"])
+def test_kappa_activation_inference_matches_training_in_bfloat16(monkeypatch, kappa_input):
+    monkeypatch.setattr("nanochat.gpt.MANAGER", MOEManager())
+    torch.manual_seed(42)
+    config = GPTConfig(
+        n_exp=2,
+        n_embd=4,
+        use_kappa_swiglu=True,
+        constant_kappa_bias_dense_layers=True,
+        kappa_input=kappa_input,
+        kappa_input_constant=1.3,
+        debug=False,
+    )
+    experts = Qwen3MLPExperts(config)
+    dense = Qwen3MLP(config)
+    with torch.no_grad():
+        experts.kappa_bias.uniform_(-1.5, 1.5)
+        if experts.kappa_scale is not None:
+            experts.kappa_scale.uniform_(-1.5, 1.5)
+        dense.kappa_bias.uniform_(-1.5, 1.5)
+
+    gate_out_raw = torch.randn(2, 5, 16, dtype=torch.bfloat16)
+    scores = torch.randn(2, 5, dtype=torch.bfloat16)
+    if kappa_input == "constant":
+        scores = torch.full_like(scores, config.kappa_input_constant)
+
+    experts.train()
+    with torch.no_grad():
+        bias = experts._materialize_kappa_bias()
+        scale = experts._materialize_kappa_scale() if experts.use_kappa_scale_param else None
+        train_out = experts._apply_kappa_slope_scaled_activation_training(
+            gate_out_raw, bias, scores, kappa_scale=scale,
+        )
+    experts.eval()
+    with torch.no_grad():
+        eval_out = experts._apply_kappa_slope_scaled_activation_inference(
+            gate_out_raw, scores,
+        )
+    assert train_out.dtype == torch.bfloat16
+    assert eval_out.dtype == torch.bfloat16
+    torch.testing.assert_close(eval_out, train_out, atol=0.0, rtol=0.0)
+
+    dense_x = torch.randn(2, 5, 4, dtype=torch.bfloat16)
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        dense.train()
+        dense_train_out = dense(dense_x)
+        dense.eval()
+        dense_eval_out = dense(dense_x)
+    assert dense_train_out.dtype == torch.bfloat16
+    assert dense_eval_out.dtype == torch.bfloat16
+    torch.testing.assert_close(dense_eval_out, dense_train_out, atol=0.0, rtol=0.0)

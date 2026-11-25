@@ -62,7 +62,7 @@ def _expert_activation_norm_balance(product, valid_score_mask=None):
         expert_means = token_norms.sum(dim=-1) / token_counts.clamp_min(1)
         mean = expert_means.sum() / expert_count
         variance = (expert_means - mean).square().masked_fill(~active, 0).sum() / expert_count
-    return variance / (mean.square() + 1e-8)
+    return variance / (mean.detach().square() + 1e-8)
 
 
 def _compute_kappa_slope_l2_loss(slope_work, valid_score_mask=None):
@@ -1252,7 +1252,7 @@ class Qwen3MLP(nn.Module):
         return kappa_bias.reshape(1).expand(self.intermediate_size) + 0
 
     def _compute_kappa_slope_scales(self, kappa_bias, loss_accum=None):
-        target_dtype = torch.float32 if self.training else kappa_bias.dtype
+        target_dtype = torch.float32
         kappa_bias = kappa_bias.to(dtype=target_dtype)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
         input_constant = torch.as_tensor(
@@ -1282,8 +1282,8 @@ class Qwen3MLP(nn.Module):
             return self._eval_kappa_slope_scales_cache
         # If kappa_slope_scales is not cached, 
         # compute in the same way as training.
-        kappa_bias = self._materialize_kappa_bias(kappa_slot).to(device=target_device, dtype=target_dtype)
-        slope_scales = self._compute_kappa_slope_scales(kappa_bias)
+        kappa_bias = self._materialize_kappa_bias(kappa_slot).to(device=target_device, dtype=torch.float32)
+        slope_scales = self._compute_kappa_slope_scales(kappa_bias).to(dtype=target_dtype)
         self._eval_kappa_slope_scales_cache = slope_scales
         self._eval_kappa_slope_scales_cache_dtype = target_dtype
         self._eval_kappa_slope_scales_cache_device = target_device
@@ -1761,7 +1761,7 @@ class Qwen3MLPExperts(nn.Module):
         selected_gate_scores,
         kappa_slot=0,
     ):
-        target_dtype = gate_out_raw.dtype
+        target_dtype = torch.float32
         kappa_bias = self._get_kappa_bias_unsqueezed_for_eval(
             target_dtype, gate_out_raw.device, kappa_slot
         )
@@ -1784,6 +1784,7 @@ class Qwen3MLPExperts(nn.Module):
         slope_work.tanh_()
         slope_work.mul_(log_kappa_slope_max_scale)
         slope_work.exp_()
+        slope_work = slope_work.to(dtype=gate_out_raw.dtype)
         self._update_kappa_slope_scale_stats(slope_work, selected_gate_scores)
         return gate_out_raw * torch.sigmoid(gate_out_raw * slope_work)
 
@@ -1971,7 +1972,7 @@ class Qwen3MLPExperts(nn.Module):
                 kappa_bias = self._materialize_kappa_bias(kappa_slot)
             else:
                 kappa_bias = self._materialize_kappa_bias_for_eval(
-                    gate_out_raw.dtype,
+                    torch.float32,
                     gate_out_raw.device,
                     kappa_slot,
                 )
@@ -2947,7 +2948,7 @@ class GPT(nn.Module):
                 lr_scale_warmup_iterations=kappa_lr_warmup_iterations,
                 betas=adam_betas,
                 eps=1e-10,
-                weight_decay=0.0,
+                weight_decay=0.01,
             )
         )
         if getattr(self.config, 'separate_base_sft_kappa', False):

@@ -33,3 +33,4 @@ pbs*.out
 figures/
 *.log
 norm_stats.json
+kappa_sft_notes.md
