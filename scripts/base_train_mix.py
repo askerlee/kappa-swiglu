@@ -324,7 +324,7 @@ parser.add_argument("--normbalanceloss-weight", type=float, default=1e-3,
                     help="weight for the sum of per-layer squared CVs of expert mean activation norms")
 parser.add_argument("--router-weight-noise-prob", type=float, default=0.1,
                     help="probability of perturbing each router's weights per training forward (0 disables)")
-parser.add_argument("--router-weight-noise-std", type=float, default=0.5,
+parser.add_argument("--router-weight-noise-std", type=float, default=1,
                     help="Gaussian router weight noise std before dividing by sqrt(hidden size) (0 disables)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
