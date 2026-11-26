@@ -322,6 +322,8 @@ parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'normbalanc
                     help="SwiGLU gate RMSNorm or cross-expert activation norm penalty (default: None)")
 parser.add_argument("--normbalanceloss-weight", type=float, default=1e-3,
                     help="weight for the sum of per-layer squared CVs of expert mean activation norms")
+parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=False,
+                    help="enable router weight perturbation during training (default: off)")
 parser.add_argument("--router-weight-noise-prob", type=float, default=0.1,
                     help="probability of perturbing each router's weights per training forward (0 disables)")
 parser.add_argument("--router-weight-noise-std", type=float, default=1,
@@ -674,7 +676,7 @@ def build_model_meta(depth):
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         swiglu_norm_reg=args.swiglu_norm_reg,
         normbalanceloss_weight=args.normbalanceloss_weight,
-        router_weight_noise_prob=args.router_weight_noise_prob,
+        router_weight_noise_prob=args.router_weight_noise_prob if args.do_router_weight_perturbation else 0.0,
         router_weight_noise_std=args.router_weight_noise_std,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
