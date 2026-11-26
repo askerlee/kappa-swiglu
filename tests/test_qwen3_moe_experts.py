@@ -715,6 +715,49 @@ def test_router_uses_unscaled_softmax_and_receives_gradient():
     assert router.w_g.weight.grad.abs().sum() > 0
 
 
+@pytest.mark.parametrize(
+    'training,prob,std,draw,perturbed',
+    [
+        (True, 0.1, 0.5, 0.05, True),
+        (True, 0.1, 0.5, 0.15, False),
+        (True, 0.0, 0.5, 0.05, False),
+        (True, 1.0, 0.0, 0.05, False),
+        (False, 1.0, 0.5, 0.05, False),
+    ],
+)
+def test_router_weight_noise_is_training_only_and_preserves_gradients(
+    monkeypatch, training, prob, std, draw, perturbed,
+):
+    monkeypatch.setattr(MANAGER, '_selected_scores_buffer', None)
+    monkeypatch.setattr(MANAGER, '_selected_scores_size', 0)
+    config = GPTConfig(
+        n_exp=3, moe_top_k=2, n_embd=4, router_tie_noise_steps=0,
+        use_aux_loss=False, use_router_z_loss=False,
+        router_weight_noise_prob=prob, router_weight_noise_std=std,
+    )
+    router = Router(config).train(training)
+    clean_weight = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0]])
+    with torch.no_grad():
+        router.w_g.weight.copy_(clean_weight)
+    noise = torch.tensor([[-4.0, 0.0, 0.0, 0.0], [8.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]])
+    monkeypatch.setattr(torch, 'rand', lambda *args, **kwargs: torch.tensor(draw))
+    monkeypatch.setattr(torch, 'randn_like', lambda *args, **kwargs: noise)
+
+    inputs = torch.tensor([[[1.0, 0.0, 0.0, 0.0]]])
+    _, probs, scores, indices, _ = router(inputs)
+    expected_weight = clean_weight + noise * (std / 2) if perturbed else clean_weight
+    expected_scores, expected_indices = F.linear(inputs.flatten(0, 1), expected_weight).topk(2, dim=-1)
+
+    torch.testing.assert_close(indices, expected_indices)
+    torch.testing.assert_close(scores, expected_scores)
+    torch.testing.assert_close(probs, expected_scores.softmax(dim=-1))
+    torch.testing.assert_close(router.w_g.weight, clean_weight)
+    scores.sum().backward()
+    expected_grad = torch.zeros_like(clean_weight)
+    expected_grad[expected_indices.flatten(), 0] = 1
+    torch.testing.assert_close(router.w_g.weight.grad, expected_grad)
+
+
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
     torch.manual_seed(0)
     config = GPTConfig(

@@ -42,6 +42,8 @@ class GPTConfig:
         use_noisy_top_k: bool = False,
         router_tie_noise_steps: int = 10,
         router_tie_noise_scale: float = 1e-6,
+        router_weight_noise_prob: float = 0.0,
+        router_weight_noise_std: float = 0.5,
         aux_loss_weight: float = 0.001,  # default setting from Switch Transformer (see top of page 8)
         # router z loss: around 160~200. So we use a very small weight to avoid overwhelming the main loss, and we also scale down gradients to router inputs when computing z loss to further stabilize training.
         router_z_loss_weight: float = 1e-5,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
@@ -149,6 +151,12 @@ class GPTConfig:
             raise ValueError("router_tie_noise_steps must be >= 0")
         if self.router_tie_noise_scale < 0.0:
             raise ValueError("router_tie_noise_scale must be >= 0")
+        if not 0.0 <= router_weight_noise_prob <= 1.0:
+            raise ValueError("router_weight_noise_prob must be in [0, 1]")
+        if not 0.0 <= router_weight_noise_std < float('inf'):
+            raise ValueError("router_weight_noise_std must be finite and >= 0")
+        self.router_weight_noise_prob = router_weight_noise_prob
+        self.router_weight_noise_std = router_weight_noise_std
         self.aux_loss_weight = aux_loss_weight
         self.router_z_loss_weight = router_z_loss_weight
         self.router_z_loss_input_grad_scale = router_z_loss_input_grad_scale

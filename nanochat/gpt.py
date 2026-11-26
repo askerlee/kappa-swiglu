@@ -714,6 +714,14 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
+def perturb_router_weight(weight, probability, std):
+    if probability == 0.0 or std == 0.0:
+        return weight
+    perturb = torch.rand((), device=weight.device, dtype=torch.float32) < probability
+    noise = torch.randn_like(weight, dtype=torch.float32) * (std / math.sqrt(weight.size(-1)))
+    return torch.where(perturb, weight + noise.to(weight.dtype), weight)
+
+
 class Router(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -728,6 +736,8 @@ class Router(nn.Module):
         self.router_tie_noise_enabled = (
             self.router_tie_noise_steps > 0 and self.router_tie_noise_scale > 0.0
         )
+        self.router_weight_noise_prob = config.router_weight_noise_prob
+        self.router_weight_noise_std = config.router_weight_noise_std
         self.train_capacity = config.train_capacity
         self.eval_capacity = config.eval_capacity
         self.min_capacity = config.min_capacity
@@ -827,7 +837,13 @@ class Router(nn.Module):
         self.expert_bias.sub_(self.expert_bias.mean())
         counts.zero_()
 
-    def forward(self, x, loss_accum=None, router_layer_idx=None, valid_token_mask=None):
+    def sample_weight(self):
+        weight = self.w_g.weight
+        if not self.training:
+            return weight
+        return perturb_router_weight(weight, self.router_weight_noise_prob, self.router_weight_noise_std)
+
+    def forward(self, x, loss_accum=None, router_layer_idx=None, valid_token_mask=None, *, router_weight=None):
         """
         Computes routing information for tokens, including which experts to use,
         the weights for their outputs, and their position within the expert's batch.
@@ -857,7 +873,8 @@ class Router(nn.Module):
 
             # 1. GET ROUTING LOGITS
             # ---------------------
-            router_weight = self.w_g.weight
+            if router_weight is None:
+                router_weight = self.sample_weight()
             logits_wg = F.linear(x_flat, router_weight)  # [B*T, n_exp]
             noise = None  # Initialize noise variable
 
@@ -2188,8 +2205,7 @@ class MOELayer(nn.Module):
             )
         return output_flat
 
-    def _select_kappa_scores(self, top_k_scores, router_probs, top_k_indices=None):
-        conditioning_weight = self.router.w_g.weight
+    def _select_kappa_scores(self, top_k_scores, router_probs, top_k_indices=None, *, router_weight=None):
         if self.kappa_input == 'top_logits':
             if self.kappa_input_logit_norm_exponent <= 0.0:
                 # No normalization.
@@ -2200,6 +2216,7 @@ class MOELayer(nn.Module):
                 raise RuntimeError(
                     "top_k_indices are required when kappa_input_logit_norm_exponent is enabled"
                 )
+            conditioning_weight = self.router.w_g.weight if router_weight is None else router_weight
             # For exp32-d10, router_weight_magnitudes_all has (min, max, std)
             # of (0.24, 0.83, 0.21).
             router_weight_magnitudes_all = torch.linalg.vector_norm(
@@ -2228,7 +2245,7 @@ class MOELayer(nn.Module):
             )
             # Router inputs are RMS-normalized, so each token has L2 norm sqrt(hidden_dim).
             # sqrt(1024) = 32.
-            token_magnitude = math.sqrt(self.router.w_g.weight.size(-1))
+            token_magnitude = math.sqrt(conditioning_weight.size(-1))
             normalizer = token_magnitude * smoothed_router_weight_magnitudes.pow(
                 self.kappa_input_logit_norm_exponent
             ).detach() * scale_compensation
@@ -2264,11 +2281,13 @@ class MOELayer(nn.Module):
         B, T, C = x.size() # Keep track of original shape
 
         # --- Get routing information ---
+        router_weight = self.router.sample_weight()
         expert_mask, router_probs, top_k_scores, top_k_indices, rank = self.router(
             x,
             loss_accum=loss_accum,
             router_layer_idx=router_layer_idx,
             valid_token_mask=valid_token_mask,
+            router_weight=router_weight,
         )
 
         # expert_mask: [B*T, k, n_exp], router_probs/top_k_scores: [B*T, k], etc.
@@ -2287,6 +2306,7 @@ class MOELayer(nn.Module):
             top_k_scores,
             router_probs,
             top_k_indices=top_k_indices,
+            router_weight=router_weight,
         )
         if torch.is_grad_enabled():
             expert_inputs, expert_gate_scores = self._build_expert_inputs_functional(
@@ -2330,7 +2350,7 @@ class MOELayer(nn.Module):
         expert_outputs = self.experts(
             expert_inputs,
             selected_gate_scores=expert_gate_scores,
-            router_weight=self.router.w_g.weight,
+            router_weight=router_weight,
             loss_accum=loss_accum,
             current_ut=current_ut,
             valid_score_mask=valid_score_mask,

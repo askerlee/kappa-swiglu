@@ -301,6 +301,10 @@ parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'normbalanc
                     help="SwiGLU gate RMSNorm or cross-expert activation norm penalty (default: None)")
 parser.add_argument("--normbalanceloss-weight", type=float, default=1e-3,
                     help="weight for the sum of per-layer squared CVs of expert mean activation norms")
+parser.add_argument("--router-weight-noise-prob", type=float, default=0.1,
+                    help="probability of perturbing each router's weights per training forward (0 disables)")
+parser.add_argument("--router-weight-noise-std", type=float, default=0.5,
+                    help="Gaussian router weight noise std before dividing by sqrt(hidden size) (0 disables)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
@@ -629,6 +633,8 @@ def build_model_meta(depth):
         bilinear_mlp_moe=args.bilinear_mlp_moe,
         swiglu_norm_reg=args.swiglu_norm_reg,
         normbalanceloss_weight=args.normbalanceloss_weight,
+        router_weight_noise_prob=args.router_weight_noise_prob,
+        router_weight_noise_std=args.router_weight_noise_std,
         router_z_loss_weight=args.router_z_loss_weight,
         router_z_loss_input_grad_scale=args.router_z_loss_input_grad_scale,
         z_loss_demean_logits=args.z_loss_demean_logits,
