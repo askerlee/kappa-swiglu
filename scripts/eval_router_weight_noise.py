@@ -24,7 +24,9 @@ def parse_args():
     parser.add_argument('--sequence-len', type=int, default=None, help='default: min(512, model context length)')
     parser.add_argument('--device-batch-size', type=int, default=1)
     parser.add_argument('--batches', type=int, default=16, help='number of distinct batches')
-    parser.add_argument('--trials', type=int, default=4, help='independent noisy forwards per batch')
+    parser.add_argument('--mode', choices=('isolated', 'end-to-end'), default='isolated',
+                        help='hold router inputs fixed (default) or allow changes to propagate across layers')
+    parser.add_argument('--trials', type=int, default=4, help='independent noise trials per batch')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--router-weight-noise-prob', type=float, default=0.1,
                         help='probability of perturbing a router on each invocation (1 always perturbs)')
@@ -66,6 +68,18 @@ def routing_change_counts(clean, noisy):
     return torch.stack((replaced.sum(), replaced.any(dim=-1).sum()))
 
 
+def measure_isolated_router(changes, totals, args, router, inputs, kwargs, output):
+    clean = output[3]
+    totals[0] += args.trials * clean.numel()
+    totals[1] += args.trials * clean.shape[0]
+    if args.router_weight_noise_prob == 0.0 or args.router_weight_noise_std == 0.0:
+        return
+    for _ in range(args.trials):
+        weight = perturb_router_weight(router.w_g.weight, args.router_weight_noise_prob, args.router_weight_noise_std)
+        noisy = router.forward(*inputs, **dict(kwargs, router_weight=weight))[3]
+        changes += routing_change_counts(clean, noisy)
+
+
 @torch.inference_mode()
 def measure_routing_changes(model, routers, batches, args, device_type):
     device = routers[0].w_g.weight.device
@@ -75,6 +89,13 @@ def measure_routing_changes(model, routers, batches, args, device_type):
     with autocast:
         for _ in range(args.batches):
             tokens, _ = next(batches)
+            if args.mode == 'isolated':
+                with ExitStack() as stack:
+                    for router, layer_changes, layer_totals in zip(routers, changes, totals, strict=True):
+                        hook = partial(measure_isolated_router, layer_changes, layer_totals, args)
+                        stack.enter_context(router.register_forward_hook(hook, with_kwargs=True))
+                    model(tokens)
+                continue
             clean = capture_routing(model, routers, tokens)
             for _ in range(args.trials):
                 noisy = capture_routing(model, routers, tokens, args.router_weight_noise_prob, args.router_weight_noise_std)
@@ -119,6 +140,8 @@ def main():
         input_tokens = args.batches * args.device_batch_size * sequence_len * world_size
         print0(f'Checkpoint step {meta["step"]} | {args.split}: {input_tokens:,} input tokens | {args.trials} trials')
         print0(f'Router weight noise: probability={args.router_weight_noise_prob:g}, std={args.router_weight_noise_std:g}')
+        comparison = 'fixed clean router inputs' if args.mode == 'isolated' else 'full model forwards'
+        print0(f'Mode: {args.mode} ({comparison})')
         print0('Pre-capacity top-k changes, ignoring order and aggregating all UT passes:')
         for layer_idx, changed, total in zip(layer_indices, changes.tolist(), totals.tolist(), strict=True):
             print_result(f'Layer {layer_idx}', changed, total)
