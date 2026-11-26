@@ -144,7 +144,7 @@ parser.add_argument(
     "--kappa-l2-loss-weight",
     dest="kappa_l2_loss_weight",
     type=float,
-    default=1e-3,
+    default=1e-4,
     help="L2 weight on the pre-transform kappa slope",
 )
 # NOTE: RMSNorm (--swiglu-norm-reg=RMSNorm) is inherited from the base model,
