@@ -718,8 +718,13 @@ def perturb_router_weight(weight, probability, std):
     if probability == 0.0 or std == 0.0:
         return weight
     perturb = torch.rand((), device=weight.device, dtype=torch.float32) < probability
-    noise = torch.randn_like(weight, dtype=torch.float32) * (std / math.sqrt(weight.size(-1)))
-    return torch.where(perturb, weight + noise.to(weight.dtype), weight)
+    row_norm = torch.linalg.vector_norm(
+        weight.detach(), ord=2, dim=-1, keepdim=True, dtype=torch.float32
+    )
+    noise = torch.randn_like(weight, dtype=torch.float32) * (
+        std * row_norm / math.sqrt(weight.size(-1))
+    )
+    return torch.where(perturb, scale_grad(weight, 0.0) + noise.to(weight.dtype), weight)
 
 
 class Router(nn.Module):
@@ -873,6 +878,7 @@ class Router(nn.Module):
 
             # 1. GET ROUTING LOGITS
             # ---------------------
+            clean_router_weight = self.w_g.weight
             if router_weight is None:
                 router_weight = self.sample_weight()
             logits_wg = F.linear(x_flat, router_weight)  # [B*T, n_exp]
@@ -898,14 +904,29 @@ class Router(nn.Module):
                         top_k_indices, valid_token_mask_flat
                     )
 
+                if self.use_router_z_loss or self.use_aux_loss:
+                    if router_weight is clean_router_weight:
+                        clean_logits_wg = logits_wg
+                        clean_logits = logits_for_router
+                        clean_top_k_indices = top_k_indices
+                    else:
+                        clean_logits_wg = F.linear(x_flat, clean_router_weight)
+                        clean_logits = clean_logits_wg if noise is None else clean_logits_wg + noise
+                        if self.use_aux_loss:
+                            with torch.no_grad():
+                                clean_selection_scores = self._get_selection_scores(clean_logits)
+                                _, clean_top_k_indices = clean_selection_scores.topk(self.top_k, dim=-1)
+                        else:
+                            clean_top_k_indices = None
+
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     if self.router_z_loss_input_grad_scale == 1:
-                        logits_for_z_loss = logits_for_router
+                        logits_for_z_loss = clean_logits
                     else:
-                        input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=logits.device, dtype=logits.dtype)
+                        input_alpha_t = torch.as_tensor(self.router_z_loss_input_grad_scale, device=clean_logits.device, dtype=clean_logits.dtype)
                         logits_wg_for_z_loss = ReuseMmWithScaledInputGrad.apply(
-                            logits_wg, x_flat, router_weight, input_alpha_t
+                            clean_logits_wg, x_flat, clean_router_weight, input_alpha_t
                         )
                         logits_for_z_loss = logits_wg_for_z_loss if noise is None else logits_wg_for_z_loss + noise
 
@@ -931,10 +952,10 @@ class Router(nn.Module):
                 if self.use_aux_loss:
                     # Use the full router distribution here so the balancing loss keeps
                     # a meaningful gradient signal even when top_k = 1.
-                    all_probs = F.softmax(logits_for_router, dim=-1)
+                    all_probs = F.softmax(clean_logits, dim=-1)
                     aux_loss = self.compute_aux_loss(
                         all_probs.view(B, T, -1),
-                        top_k_indices.view(B, T, -1),
+                        clean_top_k_indices.view(B, T, -1),
                         valid_token_mask,
                     )
                     if loss_accum is not None:
@@ -943,7 +964,7 @@ class Router(nn.Module):
                         MANAGER.add("aux_loss", aux_loss)
                     if loss_accum is None:
                         self.expert_probs = all_probs.view(B, T, -1).detach().clone()
-                        self.top_k_indices = top_k_indices.view(B, T, -1).clone()
+                        self.top_k_indices = clean_top_k_indices.view(B, T, -1).clone()
             else:
                 # At inference, we just need the top-k
                 selection_scores = self._get_selection_scores(logits_for_router)
@@ -1431,7 +1452,7 @@ class Qwen3MLPExperts(nn.Module):
         )
         self.use_kappa_scale_param = (
             self.use_kappa_swiglu
-            and self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}
+            and self.kappa_input in {'top_logits', 'router_probs'}
         )
         if self.use_kappa_swiglu:
             kappa_bias_shape = (self.num_kappa_slots, *self._get_kappa_bias_parameter_shape())
@@ -1735,31 +1756,25 @@ class Qwen3MLPExperts(nn.Module):
         kappa_bias = kappa_bias.to(dtype=target_dtype)
         if kappa_bias.ndim == 2:
             kappa_bias = kappa_bias.unsqueeze(1)
-        slope_work = (
-            scale_grad(gate_out_raw.to(dtype=target_dtype), 0.1)
-            if self.kappa_input == 'gate_proj'
-            else selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
-        )
+        slope_work = selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
         kappa_slope_max_scale = self.kappa_slope_max_scale.to(device=kappa_bias.device, dtype=target_dtype)
-        if self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
+        if self.kappa_input in {'top_logits', 'router_probs'}:
             if kappa_scale is None:
                 kappa_scale = self._materialize_kappa_scale()
             kappa_scale = kappa_scale.to(dtype=target_dtype).unsqueeze(1)
             slope_work = torch.addcmul(kappa_bias, slope_work, kappa_scale)
         else:
             slope_work = slope_work * kappa_bias
-        reg_scores = None if selected_gate_scores is None else selected_gate_scores.detach()
-        if self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
-            reg_input = gate_out_raw.detach() if self.kappa_input == 'gate_proj' else reg_scores.unsqueeze(-1)
+        reg_scores = selected_gate_scores.detach().unsqueeze(-1)
+        if self.kappa_input in {'top_logits', 'router_probs'}:
             reg_bias = kappa_bias
             reg_scale = kappa_scale
         else:
-            reg_input = reg_scores.unsqueeze(-1)
             reg_bias = kappa_bias.new_zeros(())
             reg_scale = kappa_bias
         reg_loss = checkpoint(
             _kappa_slope_l2_from_conditioning,
-            reg_input, reg_bias, reg_scale, valid_score_mask,
+            reg_scores, reg_bias, reg_scale, valid_score_mask,
             use_reentrant=False, preserve_rng_state=False,
         )
         if loss_accum is not None:
@@ -1782,16 +1797,12 @@ class Qwen3MLPExperts(nn.Module):
         kappa_bias = self._get_kappa_bias_unsqueezed_for_eval(
             target_dtype, gate_out_raw.device, kappa_slot
         )
-        slope_work = (
-            scale_grad(gate_out_raw.to(dtype=target_dtype), 0.1)
-            if self.kappa_input == 'gate_proj'
-            else selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
-        )
+        slope_work = selected_gate_scores.to(dtype=target_dtype).unsqueeze(-1)
         log_kappa_slope_max_scale = self._get_log_kappa_slope_max_scale_for_eval(
             target_dtype,
             kappa_bias.device,
         )
-        if self.kappa_input in {'top_logits', 'router_probs', 'gate_proj'}:
+        if self.kappa_input in {'top_logits', 'router_probs'}:
             kappa_scale = self._get_kappa_scale_unsqueezed_for_eval(
                 target_dtype, kappa_bias.device, kappa_slot
             )
@@ -1981,9 +1992,7 @@ class Qwen3MLPExperts(nn.Module):
         # gate_out_acts: [n_exp, capacity, intermediate_size]
         gate_input = x
         gate_out_raw = torch.bmm(gate_input, self.gate_proj)
-        use_kappa = self.kappa_swiglu_enabled and (
-            selected_gate_scores is not None or self.kappa_input == 'gate_proj'
-        )
+        use_kappa = self.kappa_swiglu_enabled and selected_gate_scores is not None
         if use_kappa:
             if self.training:
                 kappa_bias = self._materialize_kappa_bias(kappa_slot)
@@ -2002,12 +2011,10 @@ class Qwen3MLPExperts(nn.Module):
                         kappa_bias,
                         scale=self._materialize_kappa_scale(kappa_slot) if self.use_kappa_scale_param else None,
                     )
-            scaled_selected_gate_scores = selected_gate_scores
-            if self.kappa_input != 'gate_proj':
-                scaled_selected_gate_scores = scale_grad(
-                    selected_gate_scores,
-                    self.router_confidence_gate_bias_grad_scale,
-                )
+            scaled_selected_gate_scores = scale_grad(
+                selected_gate_scores,
+                self.router_confidence_gate_bias_grad_scale,
+            )
             gate_out_acts = self._apply_kappa_slope_scaled_activation(
                 gate_out_raw,
                 kappa_bias,
@@ -2261,8 +2268,6 @@ class MOELayer(nn.Module):
         if self.kappa_input == 'router_probs':
             # When top_k = 2, router_probs are typically 0.5. * 2 -> 1.0.
             return router_probs * 2
-        if self.kappa_input == 'gate_proj':
-            return torch.ones_like(router_probs)
         if self.kappa_input == 'constant':
             if self.kappa_input_constant is None:
                 raise RuntimeError(

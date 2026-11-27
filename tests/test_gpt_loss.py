@@ -37,7 +37,7 @@ def test_normbalanceloss_is_added_and_preserves_ntp_metric(monkeypatch, activati
     config = GPTConfig(
         n_layer=3, n_head=2, n_embd=32, vocab_size=32, sequence_len=8,
         n_exp=2, moe_start_layer=1, total_ut_steps=2, ut_everypass_ntp=True,
-        use_kappa_swiglu=True, kappa_input='gate_proj', use_router_z_loss=False,
+        use_kappa_swiglu=True, kappa_input='top_logits', use_router_z_loss=False,
         swiglu_norm_reg='normbalanceloss', normbalanceloss_weight=0.25,
         activation_checkpointing=activation_checkpointing,
     )

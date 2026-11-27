@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument('--router-weight-noise-prob', type=float, default=0.1,
                         help='probability of perturbing a router on each invocation (1 always perturbs)')
     parser.add_argument('--router-weight-noise-std', type=float, default=1,
-                        help='Gaussian noise std before dividing by sqrt(hidden size)')
+                        help='Gaussian noise std relative to row norm before dividing by sqrt(hidden size)')
     args = parser.parse_args()
     if not 0.0 <= args.router_weight_noise_prob <= 1.0:
         parser.error('--router-weight-noise-prob must be in [0, 1]')

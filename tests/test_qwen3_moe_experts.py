@@ -92,7 +92,7 @@ def test_checkpointed_kappa_regularization_reuses_gate_storage(masked, compiled)
     assert raw_gate.grad is None
 
 
-@pytest.mark.parametrize('kappa_input', ['router_probs', 'gate_proj'])
+@pytest.mark.parametrize('kappa_input', ['router_probs', 'top_logits'])
 @pytest.mark.parametrize('is_sft', [False, True])
 @pytest.mark.parametrize('ut_steps', [1, 2])
 def test_gpt_kappa_l2_norm_monitoring_reports_effective_values(monkeypatch, kappa_input, is_sft, ut_steps):
@@ -136,7 +136,7 @@ def test_gpt_kappa_l2_norm_monitoring_reports_effective_values(monkeypatch, kapp
         assert losses[f'{name}_1'] == pytest.approx(losses[name][1::2].mean().item())
 
 
-@pytest.mark.parametrize('kappa_input', ['router_probs', 'gate_proj'])
+@pytest.mark.parametrize('kappa_input', ['router_probs', 'top_logits'])
 @pytest.mark.parametrize('is_sft', [False, True])
 def test_kappa_regularization_blocks_inputs_but_preserves_activation_gradients(monkeypatch, kappa_input, is_sft):
     monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
@@ -168,92 +168,9 @@ def test_kappa_regularization_blocks_inputs_but_preserves_activation_gradients(m
     assert layer.router.w_g.weight.grad.abs().sum() > 0
 
 
-@pytest.mark.parametrize('training', [False, True])
-@pytest.mark.parametrize('kappa_slot', [0, 1])
-@pytest.mark.parametrize('granularity', ['per-gate', 'per-expert', 'per-layer', 'global'])
-def test_gate_proj_kappa_formula_and_gradients(monkeypatch, training, kappa_slot, granularity):
-    manager = MOEManager()
-    monkeypatch.setattr('nanochat.gpt.MANAGER', manager)
-    config = GPTConfig(
-        n_exp=2, n_embd=4, use_kappa_swiglu=True, kappa_input='gate_proj',
-        separate_base_sft_kappa=True, global_kappa_param_granularity=granularity,
-    )
-    experts = Qwen3MLPExperts(config)
-    if granularity == 'global':
-        experts.bind_shared_kappa_bias(torch.nn.Parameter(torch.empty(2, 1)))
-        experts.bind_shared_kappa_scale(torch.nn.Parameter(torch.empty(2, 1)))
-    experts.kappa_phase = kappa_slot
-    experts.train(training)
-    with torch.no_grad():
-        for parameter in experts.parameters():
-            parameter.uniform_(-0.3, 0.3)
-        experts._get_kappa_bias_parameter().uniform_(-0.3, 0.3)
-        experts._get_kappa_scale_parameter().uniform_(-0.3, 0.3)
-    inputs = torch.randn(2, 3, 4, requires_grad=True)
-    scores = torch.randn(2, 3, requires_grad=True)
-    raw = torch.bmm(inputs, experts.gate_proj)
-    bias = experts._materialize_kappa_bias(kappa_slot)
-    scale = experts._materialize_kappa_scale(kappa_slot)
-    kappa_raw = scale_grad(raw, 0.1)
-    conditioning_bias = bias.unsqueeze(1)
-    kappa = torch.exp(torch.log(experts.kappa_slope_max_scale) * torch.tanh(
-        scale.unsqueeze(1) * kappa_raw + conditioning_bias
-    ))
-    expected = torch.bmm(
-        raw * torch.sigmoid(raw * kappa) * torch.bmm(inputs, experts.c_fc),
-        experts.c_proj,
-    )
-    valid_mask = torch.tensor([[True, True, False], [True, False, False]])
-    actual = experts(inputs, selected_gate_scores=scores, valid_score_mask=valid_mask)
-    torch.testing.assert_close(actual, expected)
-    if training:
-        slope_loss = manager.aggregate('kappa_slope_l2_loss')
-        expected_slope = scale.unsqueeze(1) * kappa_raw + conditioning_bias
-        torch.testing.assert_close(slope_loss, expected_slope[valid_mask].square().mean())
-    torch.testing.assert_close(experts(inputs, selected_gate_scores=scores * 7), actual)
-    torch.testing.assert_close(experts(inputs), actual)
-    if not training:
-        return
-    parameters = (
-        inputs, experts.gate_proj,
-        experts._get_kappa_scale_parameter(),
-        experts._get_kappa_bias_parameter(),
-    )
-    actual_grads = torch.autograd.grad(actual.sum(), parameters, retain_graph=True)
-    expected_grads = torch.autograd.grad(expected.sum(), parameters)
-    assert torch.autograd.grad(actual.sum(), scores, retain_graph=True, allow_unused=True)[0] is None
-    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
-        torch.testing.assert_close(actual_grad, expected_grad)
-
-
-@pytest.mark.parametrize('granularity', ['per-gate', 'global'])
-def test_gate_proj_kappa_dispatch(monkeypatch, granularity):
-    monkeypatch.setattr('nanochat.gpt.MANAGER', MOEManager())
-    config = GPTConfig(
-        n_layer=1, n_head=2, n_embd=32, n_exp=3, vocab_size=64,
-        sequence_len=8, moe_start_layer=0, use_kappa_swiglu=True,
-        kappa_input='gate_proj',
-        global_kappa_param_granularity=granularity,
-    )
-    model = GPT(config)
-    model.init_weights()
-    layer = model.transformer.h[0].mlp
-    logits = torch.randn(4, config.moe_top_k, requires_grad=True)
-    probabilities = torch.randn_like(logits, requires_grad=True)
-    scores = layer._select_kappa_scores(logits, probabilities)
-    torch.testing.assert_close(scores, torch.ones_like(probabilities))
-    assert not scores.requires_grad
-    tokens = torch.randint(0, config.vocab_size, (1, 4))
-    with torch.no_grad():
-        layer.experts._get_kappa_scale_parameter().fill_(0.2)
-        layer.experts.c_proj.uniform_(-0.1, 0.1)
-    loss, _ = model(tokens, tokens)
-    loss.backward()
-    assert layer.experts._get_kappa_scale_parameter().grad.abs().sum() > 0
-    assert layer.experts.gate_proj.grad.abs().sum() > 0
-    model.eval()
-    with torch.no_grad():
-        assert torch.isfinite(model(tokens)).all()
+def test_gate_proj_kappa_input_is_rejected():
+    with pytest.raises(ValueError, match="kappa_input must be one of"):
+        GPTConfig(n_exp=2, n_embd=4, use_kappa_swiglu=True, kappa_input='gate_proj')
 
 
 @pytest.mark.parametrize('is_sft', [False, True])
@@ -736,16 +653,17 @@ def test_router_weight_noise_is_training_only_and_preserves_gradients(
         router_weight_noise_prob=prob, router_weight_noise_std=std,
     )
     router = Router(config).train(training)
-    clean_weight = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0]])
+    clean_weight = torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0]])
     with torch.no_grad():
         router.w_g.weight.copy_(clean_weight)
-    noise = torch.tensor([[-4.0, 0.0, 0.0, 0.0], [8.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]])
+    noise = torch.tensor([[-4.0, 0.0, 0.0, 0.0], [16.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]])
     monkeypatch.setattr(torch, 'rand', lambda *args, **kwargs: torch.tensor(draw))
     monkeypatch.setattr(torch, 'randn_like', lambda *args, **kwargs: noise)
 
     inputs = torch.tensor([[[1.0, 0.0, 0.0, 0.0]]])
     _, probs, scores, indices, _ = router(inputs)
-    expected_weight = clean_weight + noise * (std / 2) if perturbed else clean_weight
+    row_norms = clean_weight.norm(dim=-1, keepdim=True)
+    expected_weight = clean_weight + noise * (std * row_norms / 2) if perturbed else clean_weight
     expected_scores, expected_indices = F.linear(inputs.flatten(0, 1), expected_weight).topk(2, dim=-1)
 
     torch.testing.assert_close(indices, expected_indices)
@@ -753,9 +671,62 @@ def test_router_weight_noise_is_training_only_and_preserves_gradients(
     torch.testing.assert_close(probs, expected_scores.softmax(dim=-1))
     torch.testing.assert_close(router.w_g.weight, clean_weight)
     scores.sum().backward()
+    assert router.w_g.weight.grad is not None
     expected_grad = torch.zeros_like(clean_weight)
-    expected_grad[expected_indices.flatten(), 0] = 1
+    if not perturbed:
+        expected_grad[expected_indices.flatten(), 0] = 1
     torch.testing.assert_close(router.w_g.weight.grad, expected_grad)
+
+
+@pytest.mark.parametrize('input_grad_scale', [0.1, 1.0])
+def test_router_weight_noise_computes_z_and_aux_losses_on_clean_weights(monkeypatch, input_grad_scale):
+    monkeypatch.setattr(MANAGER, '_selected_scores_buffer', None)
+    monkeypatch.setattr(MANAGER, '_selected_scores_size', 0)
+    clean_config = GPTConfig(
+        n_exp=3, moe_top_k=2, n_embd=4, router_tie_noise_steps=0,
+        use_aux_loss=True, use_router_z_loss=True,
+        router_z_loss_input_grad_scale=input_grad_scale,
+        router_weight_noise_prob=0.0, router_weight_noise_std=0.0,
+    )
+    noisy_config = GPTConfig(
+        n_exp=3, moe_top_k=2, n_embd=4, router_tie_noise_steps=0,
+        use_aux_loss=True, use_router_z_loss=True,
+        router_z_loss_input_grad_scale=input_grad_scale,
+        router_weight_noise_prob=1.0, router_weight_noise_std=1.0,
+    )
+    clean_router = Router(clean_config).train()
+    noisy_router = Router(noisy_config).train()
+    clean_weight = torch.tensor([[2.0, 0.5, 0.0, 0.0], [0.0, 1.0, -0.5, 0.0], [-1.0, 0.0, 0.5, 0.0]])
+    with torch.no_grad():
+        clean_router.w_g.weight.copy_(clean_weight)
+        noisy_router.w_g.weight.copy_(clean_weight)
+    noise = torch.tensor([[-8.0, 0.0, 0.0, 0.0], [12.0, 0.0, 0.0, 0.0], [6.0, 0.0, 0.0, 0.0]])
+    monkeypatch.setattr(torch, 'rand', lambda *args, **kwargs: torch.tensor(0.0))
+    monkeypatch.setattr(torch, 'randn_like', lambda *args, **kwargs: noise)
+
+    clean_inputs = torch.tensor([[[1.0, 0.25, -0.5, 0.0], [0.5, -1.0, 0.25, 0.0]]], requires_grad=True)
+    noisy_inputs = clean_inputs.detach().clone().requires_grad_(True)
+    clean_accum = _UTLossAccum(clean_inputs, 1, 3)
+    noisy_accum = _UTLossAccum(noisy_inputs, 1, 3)
+
+    _, clean_probs, clean_scores, clean_indices, _ = clean_router(
+        clean_inputs, loss_accum=clean_accum, router_layer_idx=0,
+    )
+    _, noisy_probs, noisy_scores, noisy_indices, _ = noisy_router(
+        noisy_inputs, loss_accum=noisy_accum, router_layer_idx=0,
+    )
+    assert not torch.equal(clean_indices, noisy_indices)
+
+    clean_aux = clean_accum.losses[_UT_LOSS_NAMES.index('aux_loss')]
+    noisy_aux = noisy_accum.losses[_UT_LOSS_NAMES.index('aux_loss')]
+    clean_z = clean_accum.losses[_UT_LOSS_NAMES.index('router_z_loss')]
+    noisy_z = noisy_accum.losses[_UT_LOSS_NAMES.index('router_z_loss')]
+    torch.testing.assert_close(noisy_aux, clean_aux)
+    torch.testing.assert_close(noisy_z, clean_z)
+
+    (clean_aux + clean_z).backward()
+    (noisy_probs.sum() + noisy_scores.sum() + noisy_aux + noisy_z).backward()
+    torch.testing.assert_close(noisy_router.w_g.weight.grad, clean_router.w_g.weight.grad)
 
 
 def test_zero_initialized_router_only_randomly_breaks_first_ten_training_ties():
@@ -2116,7 +2087,7 @@ def test_moe_select_kappa_scores_keeps_partial_norm_scale_near_unit():
 
     torch.testing.assert_close(actual, target_gate_confidence)
 
-@pytest.mark.parametrize('kappa_input', ['router_probs', 'top_logits', 'constant', 'gate_proj'])
+@pytest.mark.parametrize('kappa_input', ['router_probs', 'top_logits', 'constant'])
 @pytest.mark.parametrize('empty_mask', [False, True])
 def test_kappa_slope_l2_uses_valid_pre_transform_values(kappa_input, empty_mask):
     config = GPTConfig(
@@ -2143,7 +2114,7 @@ def test_kappa_slope_l2_uses_valid_pre_transform_values(kappa_input, empty_mask)
         raw_gate, bias, scores, kappa_scale=scale, loss_accum=accum,
         valid_score_mask=mask,
     )
-    conditioning = scale_grad(raw_gate, 0.1) if kappa_input == 'gate_proj' else scores.unsqueeze(-1)
+    conditioning = scores.unsqueeze(-1)
     if kappa_input == 'constant':
         slope = bias.unsqueeze(1) * conditioning
     else:
@@ -2153,8 +2124,6 @@ def test_kappa_slope_l2_uses_valid_pre_transform_values(kappa_input, empty_mask)
     loss = accum.aggregate('kappa_slope_l2_loss')
     torch.testing.assert_close(loss, expected)
     loss.backward()
-    if kappa_input == 'gate_proj':
-        assert raw_gate.grad is None
     experts.eval()
     experts._apply_kappa_slope_scaled_activation(
         raw_gate.detach(), bias.detach(), scores.detach(), loss_accum=accum,
@@ -2783,7 +2752,7 @@ def test_qwen3_experts_do_not_expose_low_rank_gate_factors():
     assert not hasattr(experts, 'gate_proj_b')
 
 
-@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits", "gate_proj", "constant"])
+@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits", "constant"])
 def test_kappa_activation_inference_matches_training_in_bfloat16(monkeypatch, kappa_input):
     monkeypatch.setattr("nanochat.gpt.MANAGER", MOEManager())
     torch.manual_seed(42)

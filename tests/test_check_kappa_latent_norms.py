@@ -13,7 +13,7 @@ from scripts.check_kappa_latent_norms import LatentNormProbe, ScalarStats
 
 def test_zerosum_kappa_report_ignores_training_weights():
     config = GPTConfig(
-        n_embd=4, n_exp=2, use_kappa_swiglu=True, kappa_input='gate_proj',
+        n_embd=4, n_exp=2, use_kappa_swiglu=True, kappa_input='top_logits',
         zerosum_kappa_alpha_weight=0.25, zerosum_kappa_bias_weight=0.5,
     )
     experts = Qwen3MLPExperts(config).eval()
@@ -208,7 +208,7 @@ def test_dense_swiglu_norms_match_explicit_branches(has_kappa, mixed_precision, 
     assert not probe.activations
 
 
-@pytest.mark.parametrize("kappa_input", ["router_probs", "gate_proj"])
+@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits"])
 @pytest.mark.parametrize("has_kappa", [False, True])
 @pytest.mark.parametrize("mixed_precision", [False, True])
 @pytest.mark.parametrize("normalize_output", [False, True])
@@ -258,7 +258,7 @@ def test_expert_swiglu_norms_match_explicit_branches(kappa_input, has_kappa, mix
     assert not probe.activations
 
 
-@pytest.mark.parametrize("kappa_input", ["router_probs", "gate_proj"])
+@pytest.mark.parametrize("kappa_input", ["router_probs", "top_logits"])
 @pytest.mark.parametrize("has_kappa", [False, True])
 def test_native_moe_dispatch_with_probe(kappa_input, has_kappa):
     layer = MOELayer(GPTConfig(

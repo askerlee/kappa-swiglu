@@ -96,7 +96,7 @@ class GPTConfig:
         self.z_loss_penalize_mean_logits = z_loss_penalize_mean_logits
         self.use_kappa_swiglu = bool(use_kappa_swiglu)
         self.separate_base_sft_kappa = bool(separate_base_sft_kappa)
-        valid_kappa_inputs = {"top_logits", "router_probs", "constant", "gate_proj"}
+        valid_kappa_inputs = {"top_logits", "router_probs", "constant"}
         if kappa_input not in valid_kappa_inputs:
             raise ValueError(
                 "kappa_input must be one of "

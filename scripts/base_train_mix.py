@@ -263,8 +263,8 @@ parser.add_argument("--use-kappa-swiglu-sft-only", type=str2bool, nargs='?', con
                     help="allocate kappa SwiGLU parameters but use them only on mixed chat-SFT iterations")
 parser.add_argument("--separate-base-sft-kappa", type=str2bool, nargs='?', const=True, default=False,
                     help="use two kappa parameter slots (base=0, SFT=1), shared across UT passes; enables kappa on both sources unless SFT-only is explicitly requested")
-parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="gate_proj", choices=["top_logits", "router_probs", "constant", "gate_proj"],
-                    help="MoE kappa input: selected logits, router probabilities, a constant, or gate_proj preactivations (learned scale * gate_proj(x) + bias)")
+parser.add_argument("--kappa-input", dest="kappa_input", type=str, default="top_logits", choices=["top_logits", "router_probs", "constant"],
+                    help="MoE kappa input: selected logits, router probabilities, or a constant")
 parser.add_argument("--kappa-input-constant", dest="kappa_input_constant", type=float, default=1.0,
                     help="constant confidence value to use when --kappa-input=constant")
 parser.add_argument("--kappa-input-logit-norm-exponent", dest="kappa_input_logit_norm_exponent", type=float, default=0.5,
@@ -327,7 +327,7 @@ parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?',
 parser.add_argument("--router-weight-noise-prob", type=float, default=0.1,
                     help="probability of perturbing each router's weights per training forward (0 disables)")
 parser.add_argument("--router-weight-noise-std", type=float, default=1,
-                    help="Gaussian router weight noise std before dividing by sqrt(hidden size) (0 disables)")
+                    help="Gaussian router weight noise std relative to row norm before dividing by sqrt(hidden size) (0 disables)")
 # router-z-loss is around 200. So * weight ~ 0.002.
 parser.add_argument("--router-z-loss-weight", type=float, default=1e-5, help="weight for router z loss")
 parser.add_argument("--router-z-loss-input-grad-scale", type=float, default=0.1, help="scaling factor for gradients to router input when computing router z loss. Setting this to a value < 1.0 can help stabilize training by preventing large z-loss gradients from destabilizing the router input representations.")
