@@ -147,14 +147,14 @@ parser.add_argument(
     default=1e-4,
     help="L2 weight on the pre-transform kappa slope",
 )
-# NOTE: RMSNorm (--swiglu-norm-reg=RMSNorm) and router weight perturbation are inherited from the base model by default,
-# while normbalanceloss is disabled during chat SFT.
-parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=None,
-                    help="override router weight perturbation during chat SFT (default: inherit from base checkpoint)")
+# NOTE: RMSNorm (--swiglu-norm-reg=RMSNorm) is inherited from the base model,
+# while normbalanceloss and router weight perturbation are disabled by default during chat SFT.
+parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=False,
+                    help="enable router weight perturbation during chat SFT (default: off)")
 parser.add_argument("--router-weight-noise-prob", type=float, default=None,
-                    help="override probability of perturbing each router's weights per training forward during chat SFT (default: inherit)")
+                    help="override probability of perturbing each router's weights per training forward when enabled in chat SFT (default: inherit or 0.1)")
 parser.add_argument("--router-weight-noise-std", type=float, default=None,
-                    help="override Gaussian router weight noise std relative to row norm during chat SFT (default: inherit)")
+                    help="override Gaussian router weight noise std relative to row norm when enabled in chat SFT (default: inherit)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -289,9 +289,11 @@ if args.router_weight_noise_std is not None:
     if args.router_weight_noise_std < 0.0 or not math.isfinite(args.router_weight_noise_std):
         raise ValueError("--router-weight-noise-std must be finite and >= 0")
     sft_router_noise_std = args.router_weight_noise_std
-if args.do_router_weight_perturbation is False:
+if not args.do_router_weight_perturbation:
+    if getattr(model.config, "router_weight_noise_prob", 0.0) > 0.0:
+        print0("Disabled router weight perturbation during chat SFT (inherited from base checkpoint).")
     sft_router_noise_prob = 0.0
-elif args.do_router_weight_perturbation is True and sft_router_noise_prob == 0.0:
+elif sft_router_noise_prob == 0.0:
     sft_router_noise_prob = 0.1
 model.config.router_weight_noise_prob = sft_router_noise_prob
 model.config.router_weight_noise_std = sft_router_noise_std
