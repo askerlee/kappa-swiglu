@@ -148,7 +148,9 @@ parser.add_argument(
     help="L2 weight on the pre-transform kappa slope",
 )
 # NOTE: RMSNorm (--swiglu-norm-reg=RMSNorm) is inherited from the base model,
-# while normbalanceloss is disabled during chat SFT.
+# while normbalanceloss and router weight perturbation are disabled by default during chat SFT.
+parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=False,
+                    help="keep inherited router weight perturbation enabled during chat SFT (default: off)")
 parser.add_argument("--muon-match-rms-adamw", type=str2bool, nargs='?', const=True, default=True, help="use Kimi Muon LR scaling: 0.2*sqrt(max(out,in))")
 parser.add_argument("--weight-decay", type=float, default=0.005, help="cautious weight decay for the Muon optimizer (for weights)")
 parser.add_argument("--router-z-loss-weight", type=float, default=-1, help="weight for router z loss")
@@ -273,6 +275,12 @@ if getattr(model.config, "swiglu_norm_reg", None) == "normbalanceloss":
         if hasattr(module, "use_normbalanceloss"):
             module.use_normbalanceloss = False
     print0("Disabled normbalanceloss during chat SFT (inherited from base checkpoint).")
+if not args.do_router_weight_perturbation and getattr(model.config, "router_weight_noise_prob", 0.0) > 0.0:
+    model.config.router_weight_noise_prob = 0.0
+    for module in model.modules():
+        if hasattr(module, "router_weight_noise_prob"):
+            module.router_weight_noise_prob = 0.0
+    print0("Disabled router weight perturbation during chat SFT (inherited from base checkpoint).")
 checkpoint_used_kappa_swiglu = bool(
     meta.get("model_config", {}).get("use_kappa_swiglu", False)
 )
