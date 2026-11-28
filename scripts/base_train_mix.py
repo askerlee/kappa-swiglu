@@ -318,7 +318,7 @@ parser.add_argument("--kappa-l2-loss-stage1-frac", dest="kappa_l2_loss_stage1_fr
 parser.add_argument("--kappa-l2-loss-final-frac", dest="kappa_l2_loss_final_frac", type=float, default=1, help="fraction of the kappa slope L2 base weight to reach at the end of training during stage 2 (can be above --kappa-l2-loss-stage1-frac to re-increase in stage 2)")
 parser.add_argument("--bilinear-mlp-moe", type=str2bool, nargs='?', const=True, default=False,
                     help="disable the SiLU gate in Qwen3-style MoE MLPs only, using raw bilinear gating in expert layers")
-parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'normbalanceloss'], default=None,
+parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'normbalanceloss'], default='normbalanceloss',
                     help="SwiGLU gate RMSNorm or cross-expert activation norm penalty (default: None)")
 parser.add_argument("--normbalanceloss-weight", type=float, default=1e-3,
                     help="weight for the sum of per-layer squared CVs of expert mean activation norms")
