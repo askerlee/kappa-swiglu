@@ -301,7 +301,7 @@ parser.add_argument("--swiglu-norm-reg", choices=['None', 'RMSNorm', 'normbalanc
                     help="SwiGLU gate RMSNorm or cross-expert activation norm penalty (default: None)")
 parser.add_argument("--normbalanceloss-weight", type=float, default=1e-3,
                     help="weight for the sum of per-layer squared CVs of expert mean activation norms")
-parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=False,
+parser.add_argument("--do-router-weight-perturbation", type=str2bool, nargs='?', const=True, default=True,
                     help="enable router weight perturbation during training (default: off)")
 parser.add_argument("--router-weight-noise-prob", type=float, default=0.1,
                     help="probability of perturbing each router's weights per training forward (0 disables)")
